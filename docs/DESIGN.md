@@ -231,14 +231,14 @@ Each milestone ends with tests passing and something you can run.
 | 2  | Parser                 | `watrc --ast file.watr` pretty-prints the AST               |
 | 3  | First binary           | `function main(): int { return 40 + 2; }`: exit code 42   |
 | 4  | Control flow + locals  | if/else, while, for, recursion (`fib(30)` works)          |
-| 5  | Type system            | all int sizes, bool, pointers, `as`, structs, fixed arrays |
+| 5  | Type system            | all int sizes, floats (SSE), bool, pointers, `as`, structs, fixed arrays |
 | 6  | C FFI                  | `extern function printf(...)` prints via libc             |
 | 7  | Strings + echo         | literals, `echo`, `len`, slices                           |
 | 8  | Modules                | `import`, multi-file programs, a start on `std/`          |
 | 9  | defer + error unions   | `defer`, `T!E`, `?`                                       |
 | 10 | Classes                | fields, methods, `__construct`, `->`                      |
 | 11 | GC                     | `new`, `.` concat, interpolation, mark-and-sweep          |
-| 12 | foreach + enums        | `foreach (x as k => v)`, `enum`, `Enum::Value`            |
+| 12 | foreach, enums, arrays | `foreach (x as k => v)`, `enum`, `Enum::Value`, PHP-style `array` |
 | 13 | Freestanding           | `--freestanding`, inline asm, `volatile`, `export`, packed/aligned structs |
 | 14 | **Boot a kernel**      | multiboot kernel in QEMU prints to VGA, written in watrlang |
 | 15 | Optimizer              | IR + register allocation                                  |
@@ -253,9 +253,17 @@ Each milestone ends with tests passing and something you can run.
   (`#DE`), same as C on x86.
 - **Null:** C-style. `null` is the zero pointer, assignable to any `T*`.
   Dereferencing it is not checked by the compiler.
+- **Floats:** in v1, built in M5 alongside the integer types (`f32`, `f64`,
+  `float`), using SSE registers per the System V ABI.
+- **PHP-style arrays:** yes. `array` is a built-in GC-managed ordered map,
+  like PHP's: keys are `int` or `string`, values can be any type, and
+  insertion order is kept. Values are stored tagged, and you read a typed
+  value back out with a runtime-checked `as`. Because it needs the GC,
+  `array` is a compile error under `--no-gc` / `--freestanding`. Built in M12.
 
-## 7. Still open
-
-1. **PHP-style dynamic arrays** (`array` with mixed keys): a GC-only std
-   type, or not at all?
-2. **Floats in v1?** SSE codegen adds work. They could slip to after M5.
+```php
+array user = ["name" => "watr", "age" => 20];
+user[] = "appended";                  // next int key, like PHP
+int age = user["age"] as int;         // checked at runtime
+foreach (user as k => v) { echo "{k}\n"; }
+```
