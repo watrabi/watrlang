@@ -1,0 +1,15 @@
+1:1 KW_INT_T int
+1:5 IDENT x
+1:7 ASSIGN =
+1:9 INT 5 = 5
+1:10 SEMI ;
+2:1 KW_STRING_T string
+2:8 IDENT s
+2:10 ASSIGN =
+tests/lexer/err_unterminated_string.watr:2:12: error: unterminated string literal
+ 2 | string s = "never closed;
+   |            ^
+2:12 ERROR "never closed;\n
+3:1 EOF
+1 error
+exit: 1

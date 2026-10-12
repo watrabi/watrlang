@@ -1,0 +1,5 @@
+function return if else while do for foreach as break continue
+struct class enum public private import extern export const volatile
+defer new alloc sizeof echo asm this true false null
+void bool int float string array i8 i16 i32 i64 u8 u16 u32 u64 f32 f64 usize
+functions _int int8 __construct

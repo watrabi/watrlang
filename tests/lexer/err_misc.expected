@@ -1,0 +1,48 @@
+1:1 IDENT char
+1:6 IDENT a
+1:8 ASSIGN =
+tests/lexer/err_misc.watr:1:10: error: empty char literal
+ 1 | char a = '';
+   |          ^~
+1:10 ERROR ''
+1:12 SEMI ;
+2:1 IDENT char
+2:6 IDENT b
+2:8 ASSIGN =
+tests/lexer/err_misc.watr:2:10: error: char literal must be a single byte (use a string for more)
+ 2 | char b = 'ab';
+   |          ^~~~
+2:10 ERROR 'ab'
+2:14 SEMI ;
+3:1 KW_STRING_T string
+3:8 IDENT s
+3:10 ASSIGN =
+tests/lexer/err_misc.watr:3:13: error: empty interpolation (write \{ for a literal brace)
+ 3 | string s = "{}";
+   |             ^~
+3:12 ERROR "{}"
+3:16 SEMI ;
+4:1 KW_INT_T int
+tests/lexer/err_misc.watr:4:5: error: identifiers must be ASCII (non-ASCII is fine in strings and comments)
+ 4 | int été = 1;
+   |     ^~~~~
+4:5 ERROR été
+4:11 ASSIGN =
+4:13 INT 1 = 1
+4:14 SEMI ;
+5:1 KW_INT_T int
+tests/lexer/err_misc.watr:5:5: error: identifiers must be ASCII (non-ASCII is fine in strings and comments)
+ 5 | int café = 2;
+   |     ^~~~~
+5:5 ERROR café
+5:11 ASSIGN =
+5:13 INT 2 = 2
+5:14 SEMI ;
+6:1 KW_STRING_T string
+6:8 IDENT ok
+6:11 ASSIGN =
+6:13 STRING "café is fine here"
+6:33 SEMI ;
+7:1 EOF
+5 errors
+exit: 1

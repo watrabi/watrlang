@@ -1,0 +1,5 @@
+int a = 0123;
+int b = 0xZZ;
+int c = 12abc;
+int d = 1__0;
+int e = 99999999999999999999;

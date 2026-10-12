@@ -1,0 +1,4 @@
+string s = "Hi {name";
+int ok = 1;
+string t = "x {f("a")} y {g("{h(
+string u = "back to normal";

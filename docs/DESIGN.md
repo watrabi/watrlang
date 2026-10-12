@@ -144,6 +144,18 @@ function outb(u16 port, u8 val): void {
 
 ## 3. Language rules worth pinning down
 
+- **Lexical rules:**
+  - No `$` anywhere. `$name` is an error that tells PHP users to drop the `$`.
+  - Integers: `42`, `1_000_000`, `0xFF`, `0b1010`, `0o777`. Leading zeros
+    (`0123`) are an error, since C reads them as octal and that surprises people.
+  - Floats need digits on both sides of the dot (`1.5`, `2.5e-3`), so
+    `1 . 2` and `x.y` stay concatenation.
+  - Strings can span lines. Escapes: `\n \t \r \0 \\ \" \' \xHH \{ \}`.
+    `{` always starts an interpolation, so write `\{` for a literal brace.
+    A lone `}` is fine. An interpolation must close on the same line.
+  - Char literals: `'a'`, `'\n'`, `'\x41'`, each a single byte (`u8`).
+  - Comments: `//` and `/* */` (not nested). Identifiers are ASCII; strings
+    and comments can hold any UTF-8.
 - **Strings:** `string` is an immutable `{u8* ptr, usize len}` slice. Literals
   go in `.rodata`, so strings work even when freestanding. Only `.` and
   interpolation allocate, which means they need the runtime/GC (or a

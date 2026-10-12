@@ -1,0 +1,9 @@
+"plain"
+"esc \n \t \r \0 \\ \" \' \x41 \{ \}"
+"Hi {name}, you are {age} years old"
+"nested {f("a{b}c")} and {m[{x}]}"
+"brace char {c == '}'}"
+"lone } is fine"
+"multi
+line"
+'a' '\n' '\x7F' '\''

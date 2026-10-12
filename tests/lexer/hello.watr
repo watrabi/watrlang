@@ -1,0 +1,7 @@
+import "std/io";
+
+function main(): int {
+    string name = "world";
+    echo "Hello, {name}!\n";
+    return 0;
+}

@@ -1,0 +1,43 @@
+1:1 KW_INT_T int
+1:5 IDENT a
+1:7 ASSIGN =
+tests/lexer/err_numbers.watr:1:9: error: leading zeros are not allowed (use 0o for octal)
+ 1 | int a = 0123;
+   |         ^~~~
+1:9 ERROR 0123
+1:13 SEMI ;
+2:1 KW_INT_T int
+2:5 IDENT b
+2:7 ASSIGN =
+tests/lexer/err_numbers.watr:2:9: error: expected digits after '0x'
+ 2 | int b = 0xZZ;
+   |         ^~~~
+2:9 ERROR 0xZZ
+2:13 SEMI ;
+3:1 KW_INT_T int
+3:5 IDENT c
+3:7 ASSIGN =
+tests/lexer/err_numbers.watr:3:11: error: invalid character 'a' in number
+ 3 | int c = 12abc;
+   |           ^~~
+3:9 ERROR 12abc
+3:14 SEMI ;
+4:1 KW_INT_T int
+4:5 IDENT d
+4:7 ASSIGN =
+tests/lexer/err_numbers.watr:4:9: error: '_' must sit between digits
+ 4 | int d = 1__0;
+   |         ^~~~
+4:9 ERROR 1__0
+4:13 SEMI ;
+5:1 KW_INT_T int
+5:5 IDENT e
+5:7 ASSIGN =
+tests/lexer/err_numbers.watr:5:9: error: integer literal is too large (max is 2^64 - 1)
+ 5 | int e = 99999999999999999999;
+   |         ^~~~~~~~~~~~~~~~~~~~
+5:9 ERROR 99999999999999999999
+5:29 SEMI ;
+6:1 EOF
+5 errors
+exit: 1

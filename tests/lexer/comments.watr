@@ -1,0 +1,4 @@
+// line comment
+a /* block */ b
+/* multi
+   line */ c // trailing

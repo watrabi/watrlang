@@ -1,0 +1,27 @@
+1:1 KW_STRING_T string
+1:8 IDENT s
+1:10 ASSIGN =
+tests/lexer/err_unterminated_interp.watr:1:16: error: unterminated interpolation: missing '}' (write \{ for a literal brace)
+ 1 | string s = "Hi {name";
+   |                ^
+1:12 ERROR "Hi {name";
+2:1 KW_INT_T int
+2:5 IDENT ok
+2:8 ASSIGN =
+2:10 INT 1 = 1
+2:11 SEMI ;
+3:1 KW_STRING_T string
+3:8 IDENT t
+3:10 ASSIGN =
+tests/lexer/err_unterminated_interp.watr:3:30: error: unterminated interpolation: missing '}' (write \{ for a literal brace)
+ 3 | string t = "x {f("a")} y {g("{h(
+   |                              ^
+3:12 ERROR "x {f("a")} y {g("{h(
+4:1 KW_STRING_T string
+4:8 IDENT u
+4:10 ASSIGN =
+4:12 STRING "back to normal"
+4:28 SEMI ;
+5:1 EOF
+2 errors
+exit: 1

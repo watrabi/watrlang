@@ -1,0 +1,5 @@
+2:1 IDENT a
+2:15 IDENT b
+4:12 IDENT c
+5:1 EOF
+exit: 0

@@ -1,0 +1,6 @@
+char a = '';
+char b = 'ab';
+string s = "{}";
+int été = 1;
+int café = 2;
+string ok = "café is fine here"; // and hére

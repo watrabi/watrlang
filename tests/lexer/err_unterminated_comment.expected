@@ -1,0 +1,7 @@
+1:1 IDENT a
+tests/lexer/err_unterminated_comment.watr:2:1: error: unterminated /* comment
+ 2 | /* never closed
+   | ^~
+4:1 EOF
+1 error
+exit: 1

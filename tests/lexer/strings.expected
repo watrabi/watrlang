@@ -1,0 +1,13 @@
+1:1 STRING "plain"
+2:1 STRING "esc \n \t \r \0 \\ \" \' \x41 \{ \}"
+3:1 STRING "Hi {name}, you are {age} years old" (interp)
+4:1 STRING "nested {f("a{b}c")} and {m[{x}]}" (interp)
+5:1 STRING "brace char {c == '}'}" (interp)
+6:1 STRING "lone } is fine"
+7:1 STRING "multi\nline"
+9:1 CHAR 'a' = 97
+9:5 CHAR '\n' = 10
+9:10 CHAR '\x7F' = 127
+9:17 CHAR '\'' = 39
+10:1 EOF
+exit: 0

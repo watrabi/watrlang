@@ -1,0 +1,26 @@
+1:1 KW_FUNCTION function
+1:10 IDENT main
+1:14 LPAREN (
+1:15 RPAREN )
+1:16 COLON :
+1:18 KW_INT_T int
+1:22 LBRACE {
+tests/lexer/err_dollar_sigil.watr:2:5: error: watrlang variables have no '$' sigil: write 'name', not '$name'
+ 2 |     $name = 5;
+   |     ^
+2:5 ERROR $
+2:6 IDENT name
+2:11 ASSIGN =
+2:13 INT 5 = 5
+2:14 SEMI ;
+3:5 KW_RETURN return
+tests/lexer/err_dollar_sigil.watr:3:12: error: watrlang variables have no '$' sigil: write 'name', not '$name'
+ 3 |     return $name;
+   |            ^
+3:12 ERROR $
+3:13 IDENT name
+3:17 SEMI ;
+4:1 RBRACE }
+5:1 EOF
+2 errors
+exit: 1
