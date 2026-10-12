@@ -1,0 +1,40 @@
+import "std/io"
+struct Vec2
+  field f32 x
+  field f32 y
+function scale(Vec2* v, f32 k) -> void
+  (= (-> v x) (* (-> v x) k))
+  (= (-> v y) (* (-> v y) k))
+function main() -> int
+  var Vec2 v = (struct Vec2 (x 1.0) (y 2.0))
+  (call scale (& v) 3.0)
+  var u8 b = 255
+  var int big = (as b int)
+  var int* p = (alloc int 16)
+  defer
+    (call free p)
+  (= (index p 0) 42)
+  var Point pt = (new Point 3 4)
+  var Point* q = (alloc Point)
+  defer
+    (call free q)
+  echo (. (. "len2 = " (call (-> pt len2))) "\n")
+  var int[5] nums = (array 1 2 3 4 5)
+  foreach nums as n
+    echo (interp n "\n")
+  foreach nums as i => n
+    echo (interp i ": " n "\n")
+  var array user = (array (=> "name" "watr") (=> "age" 20))
+  (= (append user) "appended")
+  var int age = (as (index user "age") int)
+  foreach user as k => v
+    echo (interp k "\n")
+  return 0
+var volatile u16* VGA = (as 753664 volatile u16*)
+export function kmain() -> void
+  var string msg = "Hello from watrlang!"
+  for (var usize i = 0; (< i (call len msg)); (post++ i))
+    (= (index VGA i) (| (as (index msg i) u16) 3840))
+  while true
+    asm "cli"; "hlt"
+exit: 0

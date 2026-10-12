@@ -1,0 +1,7 @@
+function f(int) {}
+function ok(): int { return 1; }
+struct S { int x = 5; int y; }
+function function() {}
+extern function e() { }
+function nobody();
+export struct T {}

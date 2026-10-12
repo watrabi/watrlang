@@ -1,0 +1,10 @@
+tests/parser/err_ternary.watr:2:14: error: expected ':' in ?: expression, found ';' (for error propagation, write (expr?))
+ 2 |     x = c ? a;
+   |              ^
+tests/parser/err_ternary.watr:3:16: error: expected ':' in ?: expression, found ';' (for error propagation, write (expr?))
+ 3 |     y = f()?[0];
+   |                ^
+function f() -> void
+  (empty)
+2 errors
+exit: 1

@@ -4,6 +4,7 @@
 #include "arena.h"
 #include "diag.h"
 #include "lexer.h"
+#include "parser.h"
 
 #define WATRC_VERSION "0.0.1"
 
@@ -12,6 +13,7 @@ static void usage(FILE *out) {
           "\n"
           "options:\n"
           "  --tokens     print the token stream and exit\n"
+          "  --ast        print the syntax tree and exit\n"
           "  --version    print the compiler version\n"
           "  -h, --help   show this help\n",
           out);
@@ -52,6 +54,7 @@ static void dump_token(const Token *t) {
 int main(int argc, char **argv) {
     const char *path = NULL;
     int dump_tokens = 0;
+    int dump_ast = 0;
 
     for (int i = 1; i < argc; i++) {
         const char *arg = argv[i];
@@ -63,6 +66,8 @@ int main(int argc, char **argv) {
             return 0;
         } else if (strcmp(arg, "--tokens") == 0) {
             dump_tokens = 1;
+        } else if (strcmp(arg, "--ast") == 0) {
+            dump_ast = 1;
         } else if (arg[0] == '-' && arg[1] != '\0') {
             fprintf(stderr, "watrc: unknown option '%s'\n", arg);
             usage(stderr);
@@ -81,25 +86,31 @@ int main(int argc, char **argv) {
     }
 
     /* Keep token dumps and error messages in order when both go to a pipe. */
-    if (dump_tokens) setvbuf(stdout, NULL, _IOLBF, 0);
+    if (dump_tokens || dump_ast) setvbuf(stdout, NULL, _IOLBF, 0);
 
     Arena arena = {0};
     SrcFile *file = src_load(&arena, path);
     if (!file) return 2;
 
-    Lexer lexer;
-    lexer_init(&lexer, file);
-    for (;;) {
-        Token t = lexer_next(&lexer);
-        if (dump_tokens) dump_token(&t);
-        if (t.kind == TOK_EOF) break;
+    if (dump_tokens) {
+        Lexer lexer;
+        lexer_init(&lexer, file);
+        for (;;) {
+            Token t = lexer_next(&lexer);
+            dump_token(&t);
+            if (t.kind == TOK_EOF) break;
+        }
+    } else {
+        /* The tree is printed even after errors, to show how the parser recovered. */
+        Module *m = parse_file(&arena, file);
+        if (dump_ast) ast_print_module(stdout, m);
     }
 
     int errors = diag_error_count();
     if (errors) {
         fprintf(stderr, "%d error%s\n", errors, errors == 1 ? "" : "s");
-    } else if (!dump_tokens) {
-        fprintf(stderr, "watrc: lexing succeeded; parsing and code generation are not implemented yet\n");
+    } else if (!dump_tokens && !dump_ast) {
+        fprintf(stderr, "watrc: parsing succeeded; type checking and code generation are not implemented yet\n");
     }
     fflush(stdout);
     arena_free(&arena);

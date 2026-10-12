@@ -1,0 +1,32 @@
+// Expressions as statements so each line prints one S-expression.
+function f(): void {
+    1 + 2 * 3;
+    (1 + 2) * 3;
+    a - b - c;
+    a = b = c;
+    x += y * 2;
+    s .= "x" . y . "z";
+    "a" . n + 1;          // + binds tighter than . (like PHP 8)
+    x & 1 == 0;           // bitwise binds tighter than == (unlike C)
+    a | b ^ c & d;
+    a << 2 + 1;
+    a || b && c;
+    !a && -b < ~c;
+    (a < b) == c;
+    c ? a : b ? d : e;
+    -x as u8;
+    msg[i] as u16 | 0x0F00;
+    n as int * 2;
+    addr as u8* + 1;
+    *p->field;
+    &v->x;
+    *p++;
+    ++i;
+    i--;
+    f(a, b)(c)[0]->d;
+    open(path)?;
+    open(path)?->size;
+    Color::Red;
+    user[] = "appended";
+    sizeof(u64) + sizeof(Point*);
+}

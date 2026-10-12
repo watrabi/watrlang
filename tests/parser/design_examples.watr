@@ -1,0 +1,48 @@
+// Every example from docs/DESIGN.md must parse.
+import "std/io";
+
+struct Vec2 {
+    f32 x;
+    f32 y;
+}
+
+function scale(Vec2* v, f32 k): void {
+    v->x = v->x * k;
+    v->y = v->y * k;
+}
+
+function main(): int {
+    Vec2 v = Vec2 { x: 1.0, y: 2.0 };
+    scale(&v, 3.0);
+
+    u8 b = 255;
+    int big = b as int;
+    int* p = alloc(int, 16);
+    defer free(p);
+    p[0] = 42;
+
+    Point pt = new Point(3, 4);
+    Point* q = alloc(Point);
+    defer free(q);
+    echo "len2 = " . pt->len2() . "\n";
+
+    int[5] nums = [1, 2, 3, 4, 5];
+    foreach (nums as n) { echo "{n}\n"; }
+    foreach (nums as i => n) { echo "{i}: {n}\n"; }
+
+    array user = ["name" => "watr", "age" => 20];
+    user[] = "appended";
+    int age = user["age"] as int;
+    foreach (user as k => v) { echo "{k}\n"; }
+    return 0;
+}
+
+volatile u16* VGA = 0xB8000 as volatile u16*;
+
+export function kmain(): void {
+    string msg = "Hello from watrlang!";
+    for (usize i = 0; i < len(msg); i++) {
+        VGA[i] = (msg[i] as u16) | 0x0F00;
+    }
+    while (true) { asm { "cli"; "hlt"; } }
+}

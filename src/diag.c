@@ -119,12 +119,16 @@ static void report(Loc loc, const char *kind, const char *color, const char *fmt
     print_snippet(loc, color);
 }
 
+void diag_verror(Loc loc, const char *fmt, va_list ap) {
+    report(loc, "error", C_RED, fmt, ap);
+    error_count++;
+}
+
 void diag_error(Loc loc, const char *fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
-    report(loc, "error", C_RED, fmt, ap);
+    diag_verror(loc, fmt, ap);
     va_end(ap);
-    error_count++;
 }
 
 void diag_note(Loc loc, const char *fmt, ...) {

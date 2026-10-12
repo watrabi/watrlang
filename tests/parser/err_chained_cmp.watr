@@ -1,0 +1,4 @@
+function main(): int {
+    if (a < b < c) { }
+    return 0;
+}

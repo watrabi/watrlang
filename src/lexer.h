@@ -155,6 +155,9 @@ typedef struct {
 } Lexer;
 
 void  lexer_init(Lexer *l, const SrcFile *file);
+/* Lexes only file->text[start, end), e.g. the inside of a {interpolation}.
+ * line/col give the position of `start` so locations stay correct. */
+void  lexer_init_range(Lexer *l, const SrcFile *file, size_t start, size_t end, uint32_t line, uint32_t col);
 Token lexer_next(Lexer *l);
 
 /* "IDENT", "KW_RETURN", "ARROW"... (for --tokens dumps) */

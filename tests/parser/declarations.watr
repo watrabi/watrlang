@@ -1,0 +1,54 @@
+import "std/io";
+import "drivers/vga";
+
+const int MAX = 100;
+int counter = 0;
+volatile u16* VGA = 0xB8000 as volatile u16*;
+export u64 kernel_ticks;
+extern int errno;
+u8[512] sector;
+
+struct Vec2 {
+    f32 x;
+    f32 y;
+}
+
+struct Empty {}
+
+class Point {
+    public int x;
+    private int y = 0;
+    int z;
+
+    function __construct(int x, int y) {
+        this->x = x;
+        this->y = y;
+    }
+
+    public function len2(): int {
+        return this->x * this->x + this->y * this->y;
+    }
+
+    private function secret() {}
+}
+
+enum Color { Red, Green, Blue }
+enum IoError: u8 { NotFound = 1, Denied, Other = 0xFF, }
+
+extern function printf(u8* fmt, ...): i32;
+extern function malloc(usize n): void*;
+extern function abort();
+export function kmain(): void {}
+
+function open(string path): File!IoError {
+    if (!exists(path)) { return IoError::NotFound; }
+    return File { fd: 3 };
+}
+
+function load(): string!IoError {
+    File f = open("config.txt")?;
+    defer close(f);
+    return read_all(f)?;
+}
+
+function types(const u8* s, int[4] a, int[] sl, Node** n, u8[N] buf, Vec2[] vs): void {}

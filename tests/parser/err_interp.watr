@@ -1,0 +1,5 @@
+function f(): void {
+    string s = "a {1 +} b";
+    string t = "{x y}";
+    int ok = 1;
+}

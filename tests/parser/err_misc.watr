@@ -1,0 +1,7 @@
+import "std/{x}";
+import foo;
+function f(): void {
+    asm { 42 }
+    asm("nop" : sideways("ax") x);
+    asm("nop")
+}

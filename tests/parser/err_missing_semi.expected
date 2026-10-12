@@ -1,0 +1,21 @@
+tests/parser/err_missing_semi.watr:2:14: error: expected ';' after variable declaration
+ 2 |     int x = 5
+   |              ^
+tests/parser/err_missing_semi.watr:3:13: error: expected ';' after return
+ 3 |     return x
+   |             ^
+tests/parser/err_missing_semi.watr:5:11: error: expected ';' after import
+ 5 | import "a"
+   |           ^
+tests/parser/err_missing_semi.watr:6:10: error: expected ';' after variable declaration
+ 6 | int g = 1
+   |          ^
+function main() -> int
+  var int x = 5
+  return x
+import "a"
+var int g = 1
+function after() -> void
+  (empty)
+4 errors
+exit: 1

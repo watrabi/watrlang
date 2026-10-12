@@ -1,6 +1,8 @@
 #!/bin/sh
 # Runs every tests/<suite>/*.watr through watrc and compares stdout+stderr
 # and the exit code against the matching .expected file.
+#   tests/lexer/   watrc --tokens
+#   tests/parser/  watrc --ast
 #
 #   UPDATE=1 ./tests/run_tests.sh   rewrite .expected files from current output
 set -u
@@ -11,9 +13,13 @@ export NO_COLOR=1
 
 pass=0
 fail=0
-for src in tests/lexer/*.watr; do
+for src in tests/lexer/*.watr tests/parser/*.watr; do
+    case "$src" in
+        tests/lexer/*)  flag=--tokens ;;
+        tests/parser/*) flag=--ast ;;
+    esac
     expected="${src%.watr}.expected"
-    actual=$("$WATRC" --tokens "$src" 2>&1; echo "exit: $?")
+    actual=$("$WATRC" "$flag" "$src" 2>&1; echo "exit: $?")
 
     if [ "${UPDATE:-0}" = 1 ]; then
         printf '%s\n' "$actual" > "$expected"

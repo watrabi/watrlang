@@ -1,0 +1,18 @@
+function outb(u16 port, u8 val): void {
+    asm("out dx, al" : in("dx") port, in("al") val);
+}
+
+function inb(u16 port): u8 {
+    u8 result;
+    asm("in al, dx" : out("al") result, in("dx") port);
+    return result;
+}
+
+function halt(): void {
+    asm { "cli"; "hlt"; }
+    asm {
+        "mov rax, 60"
+        "syscall"
+    }
+    asm("nop");
+}

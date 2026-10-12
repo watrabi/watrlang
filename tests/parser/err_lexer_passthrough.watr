@@ -1,0 +1,5 @@
+function f(): void {
+    x = 1 @ 2;
+    $y = 3;
+    int ok = 1;
+}

@@ -1,0 +1,16 @@
+tests/parser/err_statements.watr:2:5: error: 'function' is only allowed at the top level of a file
+ 2 |     function inner() {}
+   |     ^~~~~~~~
+tests/parser/err_statements.watr:3:12: error: a declaration can't be the whole body of an if; wrap it in { }
+ 3 |     if (x) int y = 1;
+   |            ^~~
+tests/parser/err_statements.watr:4:13: error: type 'int' can't be used as a value here
+ 4 |     int z = int;
+   |             ^~~
+tests/parser/err_statements.watr:5:11: error: 'defer return' is not allowed
+ 5 |     defer return;
+   |           ^~~~~~
+function f() -> void
+  (empty)
+4 errors
+exit: 1

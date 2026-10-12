@@ -1,0 +1,12 @@
+tests/parser/err_interp.watr:2:23: error: expected an expression, found the end of the interpolation
+ 2 |     string s = "a {1 +} b";
+   |                       ^
+tests/parser/err_interp.watr:3:20: error: unexpected identifier 'y' in interpolation
+ 3 |     string t = "{x y}";
+   |                    ^
+function f() -> void
+  var string s = (interp "a " " b")
+  var string t = (interp x)
+  var int ok = 1
+2 errors
+exit: 1

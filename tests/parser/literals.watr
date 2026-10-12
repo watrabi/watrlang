@@ -1,0 +1,22 @@
+function lits(): void {
+    int[5] nums = [1, 2, 3, 4, 5];
+    array user = ["name" => "watr", "age" => 20,];
+    array empty = [];
+    Vec2 v = Vec2 { x: 1.0, y: 2.0 };
+    Empty e = Empty {};
+    Point p = new Point(3, 4);
+    Thing t = new Thing;
+    f64 big = 6.02e23;
+    float whole = 1e3;
+    u8 c = 'A';
+    u8 nl = '\n';
+    u64 max = 18446744073709551615;
+    int hex = 0xFF;
+    bool yes = true;
+    Point* none = null;
+    string esc = "tab\tquote\"nul\0brace\{";
+    string interp = "Hi {name}, {a + b} and {f("x{y}z")} {m["k"]}!";
+    string only = "{x}";
+    string multi = "line1
+line2 {v}";
+}

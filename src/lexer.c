@@ -84,6 +84,15 @@ void lexer_init(Lexer *l, const SrcFile *file) {
     if (l->len >= 3 && memcmp(l->src, "\xEF\xBB\xBF", 3) == 0) l->pos = 3;
 }
 
+void lexer_init_range(Lexer *l, const SrcFile *file, size_t start, size_t end, uint32_t line, uint32_t col) {
+    l->file = file;
+    l->src = file->text;
+    l->len = end;
+    l->pos = start;
+    l->line = line;
+    l->col = col;
+}
+
 static char peek(const Lexer *l, size_t ahead) {
     return l->pos + ahead < l->len ? l->src[l->pos + ahead] : '\0';
 }

@@ -1,6 +1,7 @@
 #ifndef WATR_DIAG_H
 #define WATR_DIAG_H
 
+#include <stdarg.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -35,6 +36,7 @@ typedef struct {
 SrcFile *src_load(Arena *a, const char *path);
 
 void diag_error(Loc loc, const char *fmt, ...) WATR_PRINTF(2, 3);
+void diag_verror(Loc loc, const char *fmt, va_list ap);
 void diag_note(Loc loc, const char *fmt, ...) WATR_PRINTF(2, 3);
 int  diag_error_count(void);
 

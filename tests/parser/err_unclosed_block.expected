@@ -1,0 +1,7 @@
+tests/parser/err_unclosed_block.watr:1:14: error: unclosed '{': reached end of file
+ 1 | function f() {
+   |              ^
+function f() -> void
+  var int x = 1
+1 error
+exit: 1

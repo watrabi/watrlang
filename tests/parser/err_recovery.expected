@@ -1,0 +1,16 @@
+tests/parser/err_recovery.watr:2:16: error: expected an expression, found ';'
+ 2 |     int x = 1 +;
+   |                ^
+tests/parser/err_recovery.watr:4:9: error: expected an expression, found ';'
+ 4 |     y = ;
+   |         ^
+tests/parser/err_recovery.watr:5:13: error: expected ')' to close argument list, found ';'
+ 5 |     foo(1, 2;
+   |             ^
+function f() -> void
+  var int y = 2
+  var int z = 3
+function g() -> void
+  return 1
+3 errors
+exit: 1

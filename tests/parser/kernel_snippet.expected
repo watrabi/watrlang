@@ -1,0 +1,6 @@
+var volatile u16* VGA = (as 753664 volatile u16*)
+export function kmain() -> void
+  for (var usize i = 0; (< i (call len msg)); (post++ i))
+    (= (index VGA i) (| (as (index msg i) u16) 3840))
+  asm "out dx, al" : in("dx") port, in("al") val
+exit: 0

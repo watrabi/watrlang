@@ -1,0 +1,6 @@
+import "std/io"
+function main() -> int
+  var string name = "world"
+  echo (interp "Hello, " name "!\n")
+  return 0
+exit: 0

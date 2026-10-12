@@ -1,0 +1,19 @@
+tests/parser/err_misc.watr:1:8: error: an import path can't use {interpolation}
+ 1 | import "std/{x}";
+   |        ^~~~~~~~~
+tests/parser/err_misc.watr:2:8: error: expected a string for an import path, found identifier 'foo'
+ 2 | import foo;
+   |        ^~~
+tests/parser/err_misc.watr:4:11: error: expected a string for an asm instruction, found 42
+ 4 |     asm { 42 }
+   |           ^~
+tests/parser/err_misc.watr:5:17: error: expected 'in', 'out' or 'inout' asm operand, found identifier 'sideways'
+ 5 |     asm("nop" : sideways("ax") x);
+   |                 ^~~~~~~~
+tests/parser/err_misc.watr:6:15: error: expected ';' after asm statement
+ 6 |     asm("nop")
+   |               ^
+function f() -> void
+  asm "nop"
+5 errors
+exit: 1

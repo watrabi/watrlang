@@ -1,0 +1,11 @@
+tests/parser/err_lexer_passthrough.watr:2:11: error: unexpected character '@'
+ 2 |     x = 1 @ 2;
+   |           ^
+tests/parser/err_lexer_passthrough.watr:3:5: error: watrlang variables have no '$' sigil: write 'y', not '$y'
+ 3 |     $y = 3;
+   |     ^
+function f() -> void
+  (= x 1)
+  var int ok = 1
+2 errors
+exit: 1

@@ -1,0 +1,27 @@
+tests/parser/err_decls.watr:1:15: error: expected a parameter name, found ')'
+ 1 | function f(int) {}
+   |               ^
+tests/parser/err_decls.watr:3:18: error: struct fields can't have default values (use a class)
+ 3 | struct S { int x = 5; int y; }
+   |                  ^
+tests/parser/err_decls.watr:4:10: error: keyword 'function' can't be used as a function name
+ 4 | function function() {}
+   |          ^~~~~~~~
+tests/parser/err_decls.watr:5:21: error: extern function 'e' can't have a body; end it with ';'
+ 5 | extern function e() { }
+   |                     ^
+tests/parser/err_decls.watr:6:18: error: function 'nobody' needs a body (only extern functions end with ';')
+ 6 | function nobody();
+   |                  ^
+tests/parser/err_decls.watr:7:8: error: 'export' only applies to functions and variables
+ 7 | export struct T {}
+   |        ^~~~~~
+function ok() -> int
+  return 1
+struct S
+  field int y
+function function() -> void
+  (empty)
+struct T
+6 errors
+exit: 1

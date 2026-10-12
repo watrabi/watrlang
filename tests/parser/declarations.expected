@@ -1,0 +1,48 @@
+import "std/io"
+import "drivers/vga"
+var const int MAX = 100
+var int counter = 0
+var volatile u16* VGA = (as 753664 volatile u16*)
+export var u64 kernel_ticks
+extern var int errno
+var u8[512] sector
+struct Vec2
+  field f32 x
+  field f32 y
+struct Empty
+class Point
+  public field int x
+  private field int y = 0
+  field int z
+  function __construct(int x, int y) -> void
+    (= (-> this x) x)
+    (= (-> this y) y)
+  public function len2() -> int
+    return (+ (* (-> this x) (-> this x)) (* (-> this y) (-> this y)))
+  private function secret() -> void
+    (empty)
+enum Color
+  Red
+  Green
+  Blue
+enum IoError: u8
+  NotFound = 1
+  Denied
+  Other = 255
+extern function printf(u8* fmt, ...) -> i32
+extern function malloc(usize n) -> void*
+extern function abort() -> void
+export function kmain() -> void
+  (empty)
+function open(string path) -> File!IoError
+  if (! (call exists path))
+    return IoError::NotFound
+  return (struct File (fd 3))
+function load() -> string!IoError
+  var File f = (try (call open "config.txt"))
+  defer
+    (call close f)
+  return (try (call read_all f))
+function types(const u8* s, int[4] a, int[] sl, Node** n, u8[N] buf, Vec2[] vs) -> void
+  (empty)
+exit: 0

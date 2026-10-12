@@ -1,0 +1,5 @@
+int x = 5;
+return x;
+while (true) {}
+42;
+function after(): void {}

@@ -1,0 +1,6 @@
+function f(): void {
+    function inner() {}
+    if (x) int y = 1;
+    int z = int;
+    defer return;
+}

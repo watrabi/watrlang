@@ -1,0 +1,11 @@
+function f(): void {
+    int x = 1 +;
+    int y = 2;
+    y = ;
+    foo(1, 2;
+    int z = 3;
+}
+
+function g(): void {
+    return 1;
+}

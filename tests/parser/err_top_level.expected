@@ -1,0 +1,11 @@
+tests/parser/err_top_level.watr:2:1: error: expected a declaration (function, struct, class, enum, import or variable), found keyword 'return'
+ 2 | return x;
+   | ^~~~~~
+tests/parser/err_top_level.watr:3:1: error: expected a declaration (function, struct, class, enum, import or variable), found keyword 'while'
+ 3 | while (true) {}
+   | ^~~~~
+var int x = 5
+function after() -> void
+  (empty)
+2 errors
+exit: 1

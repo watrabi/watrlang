@@ -1,0 +1,7 @@
+tests/parser/err_chained_cmp.watr:2:15: error: comparisons can't be chained; write (a < b && b < c) instead
+ 2 |     if (a < b < c) { }
+   |               ^
+function main() -> int
+  return 0
+1 error
+exit: 1

@@ -156,6 +156,36 @@ function outb(u16 port, u8 val): void {
   - Char literals: `'a'`, `'\n'`, `'\x41'`, each a single byte (`u8`).
   - Comments: `//` and `/* */` (not nested). Identifiers are ASCII; strings
     and comments can hold any UTF-8.
+- **Operator precedence**, from tightest to loosest. This follows Rust rather
+  than C, so bitwise operators bind tighter than comparisons and
+  `x & 1 == 0` means `(x & 1) == 0`. `.` sits below `+`/`-`, like PHP 8.
+
+  | Level | Operators | Notes |
+  |-------|-----------|-------|
+  | postfix | `f()` `a[i]` `a[]` `->` `x++` `x--` `expr?` | |
+  | prefix | `-` `!` `~` `&` `*` `++` `--` | |
+  | cast | `as` | `-x as u8` is `(-x) as u8` |
+  | multiply | `*` `/` `%` | |
+  | add | `+` `-` | |
+  | shift | `<<` `>>` | |
+  | bitwise | `&`, then `^`, then `\|` | |
+  | concat | `.` | `"a" . n + 1` is `"a" . (n + 1)` |
+  | compare | `==` `!=` `<` `>` `<=` `>=` | can't chain: `a < b < c` is an error |
+  | logical | `&&`, then `\|\|` | |
+  | ternary | `c ? a : b` | right-associative |
+  | assign | `=` `+=` `-=` `*=` `/=` `%=` `.=` `&=` `\|=` `^=` `<<=` `>>=` | right-associative |
+
+- **`?` has two jobs.** After an expression, `?` means error propagation
+  when the next token can't start an expression (`f()?;`, `f()?->x`).
+  Otherwise it starts a ternary. So `f()?[0]` reads as a ternary; write
+  `(f()?)[0]`.
+- **`*` in casts:** inside `x as T`, a `*` followed by something that can
+  start an expression is multiplication: `n as int * 2` is `(n as int) * 2`,
+  while `addr as u8*;` is a pointer cast.
+- **Return types are optional** and default to `void`:
+  `function __construct(int x) { ... }`.
+- **Struct literals** are `Name { field: value }`. The parser recognizes
+  them by `Name {` followed by `}` or `field:`.
 - **Strings:** `string` is an immutable `{u8* ptr, usize len}` slice. Literals
   go in `.rodata`, so strings work even when freestanding. Only `.` and
   interpolation allocate, which means they need the runtime/GC (or a

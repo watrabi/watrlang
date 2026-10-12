@@ -1,0 +1,51 @@
+function stmts(int n) -> int
+  var int x = 5
+  var u8* buf = (alloc u8 4096)
+  defer
+    (call free buf)
+  var Point p
+  var Point* pp = (& p)
+  var Foo[] items
+  var a* b
+  (+ (* a b) c)
+  (= (index arr i) 5)
+  if (> x 3)
+    echo "big"
+  else
+    if (== x 3)
+      echo "three"
+    else
+      echo "small", x, "\n"
+  while (> n 0)
+    (post-- n)
+  do
+    (post++ n)
+  while (< n 10)
+  for (var int i = 0; (< i 10); (post++ i))
+    if (== (% i 2) 0)
+      continue
+    if (> i 7)
+      break
+  for (; ; )
+    break
+  for ((= i 0); ; )
+    (empty)
+  foreach nums as v
+    echo v
+  foreach map as k => v
+    echo (interp k "=" v "\n")
+  foreach pairs as string k => int v
+    (empty)
+  foreach (as x int[]) as v
+    (empty)
+  defer
+    (call close f)
+    (call free buf)
+  block
+    (empty)
+  block
+    var int scoped = 1
+  return x
+function nothing() -> void
+  return
+exit: 0

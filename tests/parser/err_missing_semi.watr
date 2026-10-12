@@ -1,0 +1,7 @@
+function main(): int {
+    int x = 5
+    return x
+}
+import "a"
+int g = 1
+function after(): void {}

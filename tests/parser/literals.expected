@@ -1,0 +1,21 @@
+function lits() -> void
+  var int[5] nums = (array 1 2 3 4 5)
+  var array user = (array (=> "name" "watr") (=> "age" 20))
+  var array empty = (array)
+  var Vec2 v = (struct Vec2 (x 1.0) (y 2.0))
+  var Empty e = (struct Empty)
+  var Point p = (new Point 3 4)
+  var Thing t = (new Thing)
+  var f64 big = 6.02e+23
+  var float whole = 1000.0
+  var u8 c = 'A'
+  var u8 nl = '\n'
+  var u64 max = 18446744073709551615
+  var int hex = 255
+  var bool yes = true
+  var Point* none = null
+  var string esc = "tab\tquote\"nul\0brace{"
+  var string interp = (interp "Hi " name ", " (+ a b) " and " (call f (interp "x" y "z")) " " (index m "k") "!")
+  var string only = (interp x)
+  var string multi = (interp "line1\nline2 " v)
+exit: 0
