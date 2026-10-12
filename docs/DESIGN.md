@@ -244,14 +244,18 @@ Each milestone ends with tests passing and something you can run.
 | 15 | Optimizer              | IR + register allocation                                  |
 | ∞  | Self-hosting           | watrc rewritten in watrlang                               |
 
-## 6. Open questions
+## 6. Settled after the first pass
 
-1. **Generics?** Needed for nice `list<T>` / `map<K,V>`. Proposal: none in
-   v1, add them after M12.
-2. **Inheritance / interfaces** for classes: after M12?
-3. **Do PHP-style dynamic arrays** (`array` with mixed keys) exist as a
-   GC-only std type, or not at all?
-4. **Floats in v1?** SSE codegen adds work. They could slip to after M5.
-5. **Operator for integer division:** `/` truncates on ints (C-style), or
-   PHP-style `/` → float plus `intdiv()`? Proposal: C-style.
-6. **Null:** plain `null` pointers like C, or nullable types `Foo?`?
+- **Generics:** not in v1. Revisit after M12.
+- **Inheritance / interfaces:** not in v1. Revisit after M12.
+- **Integer division:** C-style. `/` on two ints truncates toward zero;
+  `%` takes the sign of the left operand. Dividing by zero is a CPU fault
+  (`#DE`), same as C on x86.
+- **Null:** C-style. `null` is the zero pointer, assignable to any `T*`.
+  Dereferencing it is not checked by the compiler.
+
+## 7. Still open
+
+1. **PHP-style dynamic arrays** (`array` with mixed keys): a GC-only std
+   type, or not at all?
+2. **Floats in v1?** SSE codegen adds work. They could slip to after M5.
