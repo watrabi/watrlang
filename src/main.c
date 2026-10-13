@@ -5,6 +5,7 @@
 #include "diag.h"
 #include "lexer.h"
 #include "parser.h"
+#include "modules.h"
 #include "prelude.h"
 #include "codegen.h"
 #include "sema.h"
@@ -151,6 +152,7 @@ int main(int argc, char **argv) {
     SrcFile *file = src_load(&arena, path);
     if (!file) return 2;
 
+    Module *m_root = NULL;
     if (dump_tokens) {
         Lexer lexer;
         lexer_init(&lexer, file);
@@ -160,32 +162,24 @@ int main(int argc, char **argv) {
             if (t.kind == TOK_EOF) break;
         }
     } else {
-        /* The tree is printed even after errors, to show how the parser recovered. */
-        Module *m = parse_file(&arena, file);
-        if (dump_ast) ast_print_module(stdout, m);
-
         Program prog = {0};
-        bool ok = !dump_ast && diag_error_count() == 0;
-        if (ok) {
-            /* The runtime prelude is compiled along with every program. */
-            SrcFile *rt = ARENA_NEW(&arena, SrcFile);
-            rt->path = WATR_PRELUDE_PATH;
-            rt->text = watr_prelude_source;
-            rt->len = strlen(watr_prelude_source);
-            Module *rtm = parse_file(&arena, rt);
-            Decl **all = ARENA_ARRAY(&arena, Decl *, m->n + rtm->n);
-            memcpy(all, m->decls, m->n * sizeof *all);
-            memcpy(all + m->n, rtm->decls, rtm->n * sizeof *all);
-            m->decls = all;
-            m->n += rtm->n;
-            ok = diag_error_count() == 0 && sema_check(&arena, m, &prog);
+        bool ok;
+        if (dump_ast) {
+            /* The tree is printed even after errors, to show how the parser recovered. */
+            Module *m = parse_file(&arena, file);
+            ast_print_module(stdout, m);
+            ok = false;
+        } else {
+            ModuleSet set;
+            ok = load_program(&arena, path, &set) && sema_check(&arena, set.mods, set.n, &prog);
+            m_root = ok ? set.mods[0] : NULL;
         }
         if (ok) {
             char *asm_text = NULL;
             size_t asm_len = 0;
             FILE *asm_out = open_memstream(&asm_text, &asm_len);
             if (!asm_out) fatal("open_memstream failed");
-            codegen_x64(m, &prog, asm_out);
+            codegen_x64(m_root, &prog, asm_out);
             fclose(asm_out);
 
             char *def = default_output(path, emit_asm ? ".s" : "");

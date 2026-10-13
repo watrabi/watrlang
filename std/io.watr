@@ -1,0 +1,11 @@
+// Console output.
+
+// Prints a string.
+function print(string s): void {
+    echo s;
+}
+
+// Prints a string and a newline.
+function println(string s): void {
+    echo s, "\n";
+}

@@ -765,6 +765,46 @@ static const Explanation explanations[] = {
      "Strings are immutable, so they can be shared freely. For a mutable\n"
      "buffer, use a u8 array or alloc(u8, n)."},
 
+    {"E0341",
+     "A name is defined by two imported modules, so it's unclear which one\n"
+     "is meant.\n"
+     "\n"
+     "    import \"shapes\";     // defines area()\n"
+     "    import \"land\";       // also defines area()\n"
+     "    area(x);             // error\n"
+     "    shapes::area(x);     // ok\n"
+     "\n"
+     "A definition in the current file always wins over imported ones, so\n"
+     "this only happens between imports."},
+
+    {"E0342",
+     "An imported module's file doesn't exist.\n"
+     "\n"
+     "Import paths are relative to the importing file and leave off the\n"
+     "`.watr` extension: `import \"lib/geometry\";` loads lib/geometry.watr\n"
+     "next to the current file. Paths starting with `std/` come from the\n"
+     "standard library directory (std/ next to watrc, or $WATR_STD)."},
+
+    {"E0343",
+     "An import is invalid: a file importing itself, or two imports that\n"
+     "would go by the same name.\n"
+     "\n"
+     "    import \"a/util\";\n"
+     "    import \"b/util\";            // error: both are `util`\n"
+     "    import \"b/util\" as butil;   // ok"},
+
+    {"E0344",
+     "The part before `::` isn't the name of a module imported by this file.\n"
+     "\n"
+     "A module goes by the last part of its path (`std/math` is `math`),\n"
+     "or by the name given with `as`."},
+
+    {"E0345",
+     "`module::name` refers to something the module doesn't have, or that\n"
+     "it declares `private`.\n"
+     "\n"
+     "`private` keeps a function, struct or global inside its own file."},
+
     {"E0900",
      "This feature is part of watrlang's design but isn't implemented yet.\n"
      "The message names the milestone that will add it; docs/DESIGN.md has\n"

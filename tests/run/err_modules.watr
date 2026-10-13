@@ -1,0 +1,12 @@
+import "mods/geometry";
+import "mods/land";
+import "std/str";
+
+function main(): int {
+    f64 a = area(1.0, 2.0);
+    int s = geometry::secret();
+    int t = geomtry::uses_secret();
+    int u = geometry::missing();
+    string v = str::is_space('x') ? "y" : "n";
+    return 0;
+}

@@ -1,0 +1,8 @@
+// Imported by mods/geometry.watr, relative to that file.
+function scale(f64 v): f64 {
+    return v * units_per_meter();
+}
+
+private function units_per_meter(): f64 {
+    return 1.0;
+}

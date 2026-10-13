@@ -35,8 +35,9 @@ The full plan is in [docs/DESIGN.md](docs/DESIGN.md).
 | 5. Type system: sized ints, bool, floats, pointers, structs, arrays | done |
 | 6. C interop: `extern`/`export`, libc, structs by value, `alloc`/`free` | done |
 | 7. Strings, `echo`, interpolation; runtime written in watrlang | done |
-| 8. Modules (`import`) | next |
-| 9+. defer/errors, classes, GC, ... | planned |
+| 8. Modules, `private`, a first standard library | done |
+| 9. `defer` and error unions (`T!E`, `?`) | next |
+| 10+. Classes, GC, foreach/enums, freestanding, ... | planned |
 
 ## Error messages
 

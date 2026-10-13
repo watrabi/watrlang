@@ -277,6 +277,23 @@ function outb(u16 port, u8 val): void {
   print floats link libc).
 - **Dead code:** only functions reachable from `main` or an `export` are
   compiled. Unused functions get warning W0004.
+- **Modules (milestone 8):** each file is a module. `import "path";`
+  loads `path.watr` relative to the importing file; `import "std/x";`
+  loads from the standard library (`std/` next to watrc, or `$WATR_STD`).
+  Every file is loaded once, and import cycles are fine.
+  - Imported functions, structs and globals can be used unqualified, or
+    as `alias::name` (the alias is the last part of the path, or set with
+    `import "x" as y;`). A file's own definitions win over imported ones;
+    a name defined by two imports must be qualified (E0341).
+  - Imports aren't transitive: you see what you import, not what your
+    imports import.
+  - `private` keeps a declaration inside its module.
+  - Each module's functions get their own symbol prefix (`w.std.str.trim`),
+    so modules can reuse names freely; exported names must stay unique.
+  - Standard library so far: `std/io` (print, println), `std/math` (int
+    helpers, PI/E, and libm functions), `std/str` (substr, index_of,
+    contains, starts_with, ends_with, to_upper, to_lower, trim, repeat,
+    parse_int, from_cstr), `std/mem` (copy, set, equal).
 - **`->` vs `.`:** `->` is *always* member access, auto-dereferencing
   pointers. `.` is *only* concatenation. They never conflict.
 - **Pointer declarations without a sigil:** `Foo* x;` could also parse as

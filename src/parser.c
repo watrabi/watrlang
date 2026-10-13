@@ -259,7 +259,7 @@ static void sync_stmt(Parser *p) {
 }
 
 static bool is_top_level_start(TokenKind k) {
-    return k == TOK_KW_FUNCTION || k == TOK_KW_STRUCT || k == TOK_KW_CLASS || k == TOK_KW_ENUM ||
+    return k == TOK_KW_FUNCTION || k == TOK_KW_STRUCT || k == TOK_KW_CLASS || k == TOK_KW_ENUM || k == TOK_KW_PRIVATE ||
            k == TOK_KW_IMPORT || k == TOK_KW_EXPORT || k == TOK_KW_EXTERN;
 }
 
@@ -519,6 +519,14 @@ static TypeExpr *parse_base_type(Parser *p) {
         advance(p);
         ty = new_type(p, TYPEX_NAMED, t->loc);
         ty->u.name = tok_name(p, t);
+        if (check(p, TOK_COLONCOLON) && peek_at(p, 1)->kind == TOK_IDENT) {   /* module::Type */
+            advance(p);
+            Token *member = advance(p);
+            size_t n = strlen(ty->u.name) + member->loc.len + 3;
+            char *full = arena_alloc(p->arena, n);
+            snprintf(full, n, "%s::%.*s", ty->u.name, (int)member->loc.len, member->start);
+            ty->u.name = full;
+        }
     } else {
         Diag *d = perr_tok(p, "E0100", t, "expected a type, found %s", describe(p, t));
         diag_label(d, "expected a type");
@@ -589,6 +597,7 @@ static bool looks_like_decl(Parser *p) {
     if (k != TOK_IDENT) return false;
 
     size_t i = 1;
+    if (peek_at(p, 1)->kind == TOK_COLONCOLON && peek_at(p, 2)->kind == TOK_IDENT) i = 3;   /* module::Type */
     for (;;) {
         k = peek_at(p, i)->kind;
         if (k == TOK_STAR) {
@@ -729,6 +738,22 @@ static Expr *parse_primary(Parser *p) {
 
     case TOK_IDENT: {
         TokenKind next = peek_at(p, 1)->kind;
+        /* module::Type { field: value } */
+        if (next == TOK_COLONCOLON && peek_at(p, 2)->kind == TOK_IDENT && peek_at(p, 3)->kind == TOK_LBRACE &&
+            (peek_at(p, 4)->kind == TOK_RBRACE ||
+             (peek_at(p, 4)->kind == TOK_IDENT && peek_at(p, 5)->kind == TOK_COLON))) {
+            advance(p);
+            advance(p);
+            Expr *lit = parse_struct_lit(p);
+            if (lit) {
+                size_t n = t->loc.len + strlen(lit->u.struct_lit.type_name) + 3;
+                char *full = arena_alloc(p->arena, n);
+                snprintf(full, n, "%.*s::%s", (int)t->loc.len, t->start, lit->u.struct_lit.type_name);
+                lit->u.struct_lit.type_name = full;
+                lit->loc = span_to_prev(p, t->loc);
+            }
+            return lit;
+        }
         if (next == TOK_COLONCOLON) {
             advance(p);
             advance(p);
@@ -1617,6 +1642,8 @@ static Decl *parse_global_var(Parser *p, Loc start, bool is_export, bool is_exte
     return d;
 }
 
+static Decl *parse_decl_inner(Parser *p, Loc start);
+
 static Decl *parse_decl(Parser *p) {
     Token *t = cur(p);
     Loc start = t->loc;
@@ -1624,12 +1651,32 @@ static Decl *parse_decl(Parser *p) {
     if (t->kind == TOK_KW_IMPORT) {
         advance(p);
         Decl *d = new_decl(p, DECL_IMPORT, start);
-        if (!parse_plain_string(p, "an import path", &d->u.import_path)) return NULL;
+        if (!parse_plain_string(p, "an import path", &d->u.import.path)) return NULL;
+        if (accept(p, TOK_KW_AS)) {   /* import "std/io" as out; */
+            Token *alias = expect_ident(p, "a module alias");
+            if (!alias) return NULL;
+            d->name = tok_name(p, alias);
+            d->name_loc = alias->loc;
+        }
         expect_semi(p, "after import");
         d->loc = span_to_prev(p, start);
         return d;
     }
 
+    /* `private` keeps a declaration inside its module. */
+    bool is_private = accept(p, TOK_KW_PRIVATE);
+    if (is_private && (check(p, TOK_KW_EXPORT) || check(p, TOK_KW_EXTERN) || check(p, TOK_KW_IMPORT))) {
+        Diag *e = perr_tok(p, "E0112", cur(p), "`private` can't be combined with `%s`", token_kind_spelling(cur_kind(p)));
+        diag_label(e, "not allowed with `private`");
+        diag_end(e);
+        return NULL;
+    }
+    Decl *d = parse_decl_inner(p, start);
+    if (d && is_private) d->vis = VIS_PRIVATE;
+    return d;
+}
+
+static Decl *parse_decl_inner(Parser *p, Loc start) {
     bool is_export = false, is_extern = false;
     if (accept(p, TOK_KW_EXPORT)) is_export = true;
     else if (accept(p, TOK_KW_EXTERN)) is_extern = true;

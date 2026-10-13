@@ -1,0 +1,20 @@
+error[E0342]: can't find module `mods/nope`
+ --> tests/run/err_missing_module.watr:1:1
+  |
+1 | import "mods/nope";
+  | ^^^^^^^^^^^^^^^^^^^ no file at tests/run/mods/nope.watr
+  |
+  = note: import paths are relative to the importing file, without the .watr extension
+
+error[E0342]: can't find module `std/nothing`
+ --> tests/run/err_missing_module.watr:2:1
+  |
+2 | import "std/nothing";
+  | ^^^^^^^^^^^^^^^^^^^^^ no file at std/nothing.watr
+  |
+  = note: the standard library is in std (set WATR_STD to change it)
+
+error: could not compile `tests/run/err_missing_module.watr` due to 2 previous errors
+This error has a detailed explanation: E0342.
+For more information about an error, try `watrc --explain E0342`.
+compile failed: 1

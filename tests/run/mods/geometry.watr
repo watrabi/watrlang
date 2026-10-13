@@ -1,0 +1,32 @@
+// Imported by modules.watr.
+import "sub/units";
+
+struct Point {
+    f64 x;
+    f64 y;
+}
+
+const int SIDES = 4;
+int calls = 0;
+
+function area(f64 w, f64 h): f64 {
+    calls++;
+    return scale(w * h);
+}
+
+function origin(): Point {
+    return Point { x: 0.0, y: 0.0 };
+}
+
+private function secret(): int {
+    return 7;
+}
+
+function uses_secret(): int {
+    return secret() * 6;
+}
+
+// Same name as a function in modules.watr: modules keep separate names.
+function helper(): string {
+    return "geometry helper";
+}

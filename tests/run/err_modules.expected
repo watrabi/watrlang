@@ -1,0 +1,57 @@
+error[E0341]: `area` is ambiguous
+  --> tests/run/err_modules.watr:6:13
+   |
+ 6 |     f64 a = area(1.0, 2.0);
+   |             ^^^^ defined by more than one imported module
+  ::: tests/run/mods/geometry.watr:12:10
+   |
+12 | function area(f64 w, f64 h): f64 {
+   |          ---- one `area` is here, in `tests/run/mods/geometry.watr`
+  ::: tests/run/mods/land.watr:1:10
+   |
+ 1 | function area(f64 w, f64 h): f64 {
+   |          ---- another is here, in `tests/run/mods/land.watr`
+   |
+   = help: say which one: `geometry::area` or `land::area`
+
+error[E0345]: `geometry::secret` is private
+  --> tests/run/err_modules.watr:7:13
+   |
+ 7 |     int s = geometry::secret();
+   |             ^^^^^^^^^^^^^^^^ not visible outside `tests/run/mods/geometry.watr`
+  ::: tests/run/mods/geometry.watr:21:18
+   |
+21 | private function secret(): int {
+   |                  ------ declared `private` here
+
+error[E0344]: `geomtry` isn't a module imported here
+ --> tests/run/err_modules.watr:8:13
+  |
+8 |     int t = geomtry::uses_secret();
+  |             ^^^^^^^ unknown module
+  |
+help: a module with a similar name is imported
+  |
+8 |     int t = geometry::uses_secret();
+  |             ~~~~~~~~
+
+error[E0345]: module `geometry` has no function named `missing`
+ --> tests/run/err_modules.watr:9:13
+  |
+9 |     int u = geometry::missing();
+  |             ^^^^^^^^^^^^^^^^^ not found in `tests/run/mods/geometry.watr`
+
+error[E0345]: `str::is_space` is private
+  --> tests/run/err_modules.watr:10:16
+   |
+10 |     string v = str::is_space('x') ? "y" : "n";
+   |                ^^^^^^^^^^^^^ not visible outside `std/str.watr`
+  ::: std/str.watr:64:18
+   |
+64 | private function is_space(u8 c): bool {
+   |                  -------- declared `private` here
+
+error: could not compile `tests/run/err_modules.watr` due to 5 previous errors
+Some errors have detailed explanations: E0341, E0345, E0344.
+For more information about an error, try `watrc --explain E0341`.
+compile failed: 1

@@ -1,0 +1,113 @@
+// String utilities. Strings are immutable: these return new strings.
+
+// Bytes from s[start] for n bytes (clamped to the string).
+function substr(string s, usize start, usize n): string {
+    if (start > len(s)) {
+        start = len(s);
+    }
+    if (n > len(s) - start) {
+        n = len(s) - start;
+    }
+    return __rt_new_string(s->ptr + start, n);
+}
+
+// Where `needle` first appears in `s`, or -1.
+function index_of(string s, string needle): int {
+    if (len(needle) > len(s)) {
+        return -1;
+    }
+    for (usize i = 0; i + len(needle) <= len(s); i++) {
+        bool match = true;
+        for (usize j = 0; j < len(needle); j++) {
+            if (s[i + j] != needle[j]) {
+                match = false;
+                break;
+            }
+        }
+        if (match) {
+            return i as int;
+        }
+    }
+    return -1;
+}
+
+function contains(string s, string needle): bool {
+    return index_of(s, needle) >= 0;
+}
+
+function starts_with(string s, string prefix): bool {
+    return len(prefix) <= len(s) && substr(s, 0, len(prefix)) == prefix;
+}
+
+function ends_with(string s, string suffix): bool {
+    return len(suffix) <= len(s) && substr(s, len(s) - len(suffix), len(suffix)) == suffix;
+}
+
+function to_upper(string s): string {
+    u8* p = __rt_alloc(len(s) + 1);
+    for (usize i = 0; i < len(s); i++) {
+        u8 c = s[i];
+        p[i] = c >= 'a' && c <= 'z' ? c - 32 : c;
+    }
+    return string { ptr: p, len: len(s) };
+}
+
+function to_lower(string s): string {
+    u8* p = __rt_alloc(len(s) + 1);
+    for (usize i = 0; i < len(s); i++) {
+        u8 c = s[i];
+        p[i] = c >= 'A' && c <= 'Z' ? c + 32 : c;
+    }
+    return string { ptr: p, len: len(s) };
+}
+
+private function is_space(u8 c): bool {
+    return c == ' ' || c == '\t' || c == '\n' || c == '\r';
+}
+
+// Without leading and trailing whitespace.
+function trim(string s): string {
+    usize start = 0;
+    usize end = len(s);
+    while (start < end && is_space(s[start])) {
+        start++;
+    }
+    while (end > start && is_space(s[end - 1])) {
+        end--;
+    }
+    return substr(s, start, end - start);
+}
+
+function repeat(string s, usize times): string {
+    string out = "";
+    for (usize i = 0; i < times; i++) {
+        out .= s;
+    }
+    return out;
+}
+
+// Parses an optional '-' followed by decimal digits. Stops at the first
+// other character.
+function parse_int(string s): int {
+    usize i = 0;
+    bool negative = false;
+    if (len(s) > 0 && s[0] == '-') {
+        negative = true;
+        i = 1;
+    }
+    int value = 0;
+    while (i < len(s) && s[i] >= '0' && s[i] <= '9') {
+        value = value * 10 + (s[i] - '0') as int;
+        i++;
+    }
+    return negative ? -value : value;
+}
+
+// Wraps a NUL-terminated C string (copying it).
+function from_cstr(const u8* p): string {
+    usize n = 0;
+    while (p[n] != 0) {
+        n++;
+    }
+    return __rt_new_string(p, n);
+}

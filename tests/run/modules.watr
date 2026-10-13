@@ -1,0 +1,17 @@
+import "mods/geometry";
+import "mods/land" as plot;
+import "std/str";
+
+function helper(): string {
+    return "main helper";
+}
+
+function main(): int {
+    Point p = origin();
+    geometry::Point q = geometry::Point { x: 3.0, y: 4.0 };
+    echo "area: ", geometry::area(2.0, 3.0), " hectare: ", plot::area(1.0, 1.0), "\n";
+    echo helper(), " / ", geometry::helper(), "\n";
+    echo "sides: ", SIDES, ", calls: ", geometry::calls, ", secret: ", uses_secret(), "\n";
+    echo "upper: ", to_upper("mods"), ", q.x: ", q->x, ", p.y: ", p->y, "\n";
+    return 0;
+}

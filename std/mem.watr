@@ -1,0 +1,22 @@
+// Raw memory.
+
+function copy(u8* dst, const u8* src, usize n): void {
+    for (usize i = 0; i < n; i++) {
+        dst[i] = src[i];
+    }
+}
+
+function set(u8* dst, u8 value, usize n): void {
+    for (usize i = 0; i < n; i++) {
+        dst[i] = value;
+    }
+}
+
+function equal(const u8* a, const u8* b, usize n): bool {
+    for (usize i = 0; i < n; i++) {
+        if (a[i] != b[i]) {
+            return false;
+        }
+    }
+    return true;
+}

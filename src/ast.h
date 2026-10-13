@@ -221,7 +221,7 @@ struct Decl {
     struct Symbol *sym;    /* filled in by sema: functions and globals */
     struct Type *type;     /* filled in by sema: structs */
     union {
-        StrBuf import_path;
+        struct { StrBuf path; int module; } import;   /* module: index set by the loader */
         struct {
             Param **params;
             size_t nparams;
@@ -240,6 +240,14 @@ typedef struct {
     const SrcFile *file;
     Decl **decls;
     size_t n;
+
+    /* Filled in by the module loader: */
+    const char *alias;    /* "io" for "std/io": the name used in io::print */
+    const char *prefix;   /* symbol prefix: "" for the main file, "std.io." otherwise */
+    int *imports;         /* indexes of the modules this one imports */
+    const char **import_aliases;   /* the name each import goes by here: `geo` in geo::area */
+    size_t nimports;
+    bool is_runtime;      /* the runtime prelude: visible everywhere */
 } Module;
 
 void ast_print_module(FILE *out, const Module *m);

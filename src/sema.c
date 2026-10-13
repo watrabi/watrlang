@@ -17,7 +17,10 @@
 
 typedef struct {
     Arena *arena;
-    Module *mod;
+    Module *mod;        /* every module's declarations, flattened */
+    Module **mods;      /* mods[0] is the main file; the runtime is last */
+    size_t nmods;
+    int cur;            /* the module whose code is being checked */
     PtrVec funcs;       /* Symbol* */
     PtrVec globals;     /* Symbol* */
     PtrVec structs;     /* Type* */
@@ -118,14 +121,128 @@ static Symbol *new_symbol(Sema *S, SymKind kind, const char *name, Loc loc) {
     s->name = name;
     s->loc = loc;
     s->type = ty_error;
+    s->module = S->cur;
     return s;
 }
 
-static Symbol *find_in(PtrVec *v, const char *name) {
+/* ---- modules ------------------------------------------------------------------ */
+
+static int module_of(Sema *S, const SrcFile *f) {
+    for (size_t i = 0; i < S->nmods; i++)
+        if (S->mods[i]->file == f) return (int)i;
+    return 0;
+}
+
+static bool imports(Sema *S, int from, int mod) {
+    const Module *m = S->mods[from];
+    for (size_t i = 0; i < m->nimports; i++)
+        if (m->imports[i] == mod) return true;
+    return false;
+}
+
+/* Can code in module `from` see a declaration of module `mod`? Its own
+ * declarations, the runtime's, and non-private ones of modules it imports. */
+static bool visible(Sema *S, int from, int mod, bool is_private) {
+    if (mod == from || S->mods[mod]->is_runtime) return true;
+    return !is_private && imports(S, from, mod);
+}
+
+/* The module an alias (`geo` in geo::area) names from the current module, or -1. */
+static int module_by_alias(Sema *S, const char *alias) {
+    const Module *m = S->mods[S->cur];
+    for (size_t i = 0; i < m->nimports; i++)
+        if (strcmp(m->import_aliases[i], alias) == 0) return m->imports[i];
+    return -1;
+}
+
+/* Finds a function or global by name, as seen from the current module: a
+ * definition in the module itself wins; otherwise the visible definitions
+ * of imported modules. If two imports define it, *other gets the second. */
+static Symbol *find_in(Sema *S, PtrVec *v, const char *name, Symbol **other) {
+    if (other) *other = NULL;
     for (size_t i = 0; i < v->len; i++) {
         Symbol *s = v->items[i];
-        if (strcmp(s->name, name) == 0) return s;
+        if (s->module == S->cur && strcmp(s->name, name) == 0) return s;
     }
+    Symbol *found = NULL;
+    for (size_t i = 0; i < v->len; i++) {
+        Symbol *s = v->items[i];
+        if (s->module == S->cur || strcmp(s->name, name) != 0) continue;
+        if (!visible(S, S->cur, s->module, s->is_private)) continue;
+        if (!found) found = s;
+        else if (other && !*other) *other = s;
+    }
+    return found;
+}
+
+/* A public function or global of a specific module. */
+static Symbol *find_in_module(PtrVec *v, int mod, const char *name) {
+    for (size_t i = 0; i < v->len; i++) {
+        Symbol *s = v->items[i];
+        if (s->module == mod && strcmp(s->name, name) == 0) return s;
+    }
+    return NULL;
+}
+
+/* E0341 */
+static void report_ambiguous(Sema *S, Loc loc, const char *name, const Symbol *a, const Symbol *b) {
+    Diag *d = diag_start(DIAG_ERROR, "E0341", loc, "`%s` is ambiguous", name);
+    diag_label(d, "defined by more than one imported module");
+    diag_span(d, a->loc, "one `%s` is here, in `%s`", name, S->mods[a->module]->file->path);
+    diag_span(d, b->loc, "another is here, in `%s`", S->mods[b->module]->file->path);
+    const Module *m = S->mods[S->cur];
+    const char *alias_a = NULL, *alias_b = NULL;
+    for (size_t i = 0; i < m->nimports; i++) {
+        if (m->imports[i] == a->module) alias_a = m->import_aliases[i];
+        if (m->imports[i] == b->module) alias_b = m->import_aliases[i];
+    }
+    if (alias_a && alias_b) diag_help(d, "say which one: `%s::%s` or `%s::%s`", alias_a, name, alias_b, name);
+    diag_end(d);
+}
+
+/* E0344 */
+static void report_unknown_module(Sema *S, Loc loc, const char *alias) {
+    loc.len = (uint32_t)strlen(alias);   /* just the module part of `alias::name` */
+    Diag *d = diag_start(DIAG_ERROR, "E0344", loc, "`%s` isn't a module imported here", alias);
+    diag_label(d, "unknown module");
+    const Module *m = S->mods[S->cur];
+    const char *names[64];
+    size_t n = 0;
+    for (size_t i = 0; i < m->nimports && n < 64; i++) names[n++] = m->import_aliases[i];
+    const char *guess = NULL;
+    size_t best = (size_t)-1;
+    for (size_t i = 0; i < n; i++) {
+        size_t dist = diag_edit_distance(alias, names[i]);
+        if (diag_similar(alias, names[i]) && dist < best) {
+            best = dist;
+            guess = names[i];
+        }
+    }
+    if (guess) diag_fix(d, loc, guess, "a module with a similar name is imported");
+    else if (n == 0) diag_help(d, "import it first, like `import \"std/%s\";`", alias);
+    else diag_note(d, "enums (Color::Red) are coming in milestone 12");
+    diag_end(d);
+}
+
+/* `alias::name` for functions (want_func) or globals. */
+static Symbol *find_qualified(Sema *S, PtrVec *v, Loc loc, const char *alias, const char *name, const char *what) {
+    int mod = module_by_alias(S, alias);
+    if (mod < 0) {
+        report_unknown_module(S, loc, alias);
+        return NULL;
+    }
+    Symbol *s = find_in_module(v, mod, name);
+    if (s && !s->is_private) return s;
+    Diag *d;
+    if (s) {
+        d = diag_start(DIAG_ERROR, "E0345", loc, "`%s::%s` is private", alias, name);
+        diag_label(d, "not visible outside `%s`", S->mods[mod]->file->path);
+        diag_span(d, s->loc, "declared `private` here");
+    } else {
+        d = diag_start(DIAG_ERROR, "E0345", loc, "module `%s` has no %s named `%s`", alias, what, name);
+        diag_label(d, "not found in `%s`", S->mods[mod]->file->path);
+    }
+    diag_end(d);
     return NULL;
 }
 
@@ -139,19 +256,47 @@ static Symbol *find_local(Sema *S, const char *name) {
 
 static Symbol *find_var(Sema *S, const char *name) {
     Symbol *s = find_local(S, name);
-    return s ? s : find_in(&S->globals, name);
+    return s ? s : find_in(S, &S->globals, name, NULL);
 }
 
 static Symbol *find_func(Sema *S, const char *name) {
-    return find_in(&S->funcs, name);
+    return find_in(S, &S->funcs, name, NULL);
 }
 
-static Type *find_struct(Sema *S, const char *name) {
-    for (size_t i = 0; i < S->structs.len; i++) {
-        Type *t = S->structs.items[i];
-        if (strcmp(t->name, name) == 0) return t;
+/* A runtime prelude function (never shadowed by user code). */
+static Symbol *find_runtime_func(Sema *S, const char *name) {
+    for (size_t i = 0; i < S->funcs.len; i++) {
+        Symbol *s = S->funcs.items[i];
+        if (s->is_runtime && strcmp(s->name, name) == 0) return s;
     }
     return NULL;
+}
+
+/* Struct types follow the same visibility rules; `geo::Point` names one
+ * in a specific module. */
+static Type *find_struct(Sema *S, const char *name) {
+    const char *sep = strstr(name, "::");
+    if (sep) {
+        char alias[128];
+        snprintf(alias, sizeof alias, "%.*s", (int)(sep - name), name);
+        int mod = module_by_alias(S, alias);
+        if (mod < 0) return NULL;
+        for (size_t i = 0; i < S->structs.len; i++) {
+            Type *t = S->structs.items[i];
+            if (module_of(S, t->decl->loc.file) == mod && t->decl->vis != VIS_PRIVATE && strcmp(t->name, sep + 2) == 0)
+                return t;
+        }
+        return NULL;
+    }
+    Type *found = NULL;
+    for (size_t i = 0; i < S->structs.len; i++) {
+        Type *t = S->structs.items[i];
+        int mod = module_of(S, t->decl->loc.file);
+        if (strcmp(t->name, name) != 0 || !visible(S, S->cur, mod, t->decl->vis == VIS_PRIVATE)) continue;
+        if (mod == S->cur) return t;
+        if (!found) found = t;
+    }
+    return found;
 }
 
 static void push_scope(Sema *S) {
@@ -233,6 +378,7 @@ static Symbol *similar_var(Sema *S, const char *name) {
         for (size_t i = 0; i < v->len; i++) {
             Symbol *s = v->items[i];
             if (!diag_similar(name, s->name)) continue;
+            if (pass == 1 && (s->is_runtime || !visible(S, S->cur, s->module, s->is_private))) continue;
             size_t d = diag_edit_distance(name, s->name);
             if (d < best_dist) {
                 best = s;
@@ -352,6 +498,8 @@ static Type *resolve_type(Sema *S, const TypeExpr *te, bool allow_void) {
 static void layout_struct(Sema *S, Type *st) {
     if (st->layout_state == 2) return;
     const Decl *d = st->decl;
+    int saved_cur = S->cur;
+    S->cur = module_of(S, d->loc.file);
     if (st->layout_state == 1) return;  /* cycle: reported by the field that closes it */
     st->layout_state = 1;
 
@@ -410,6 +558,7 @@ static void layout_struct(Sema *S, Type *st) {
     st->align = align;
     st->size = (offset + align - 1) & ~(align - 1);
     st->layout_state = 2;
+    S->cur = saved_cur;
 }
 
 static const Field *find_field(const Type *st, const char *name) {
@@ -647,7 +796,7 @@ static Expr *new_node(Sema *S, ExprKind kind, Loc loc, Type *t) {
 
 /* A call to a runtime prelude function, with already-checked arguments. */
 static Expr *rt_call(Sema *S, const char *name, Loc loc, Expr **args, size_t n) {
-    Symbol *fn = find_func(S, name);
+    Symbol *fn = find_runtime_func(S, name);
     if (!fn) fatal("runtime function %s is missing", name);
     Expr *callee = new_node(S, EXPR_IDENT, loc, ty_error);
     callee->u.name = fn->name;
@@ -892,7 +1041,15 @@ static Type *check_int_literal(Sema *S, Expr *e, Type *hint, bool negated) {
 }
 
 static Type *check_ident(Sema *S, Expr *e, bool counts_as_read) {
-    Symbol *v = find_var(S, e->u.name);
+    Symbol *v = find_local(S, e->u.name);
+    if (!v) {
+        Symbol *other;
+        v = find_in(S, &S->globals, e->u.name, &other);
+        if (v && other) {
+            report_ambiguous(S, e->loc, e->u.name, v, other);
+            return set_type(e, ty_error);
+        }
+    }
     if (v) {
         e->sym = v;
         if (counts_as_read) v->reads++;
@@ -1195,11 +1352,29 @@ static Type *check_ternary(Sema *S, Expr *e, Type *hint) {
 
 static Type *check_call(Sema *S, Expr *e) {
     Expr *callee = e->u.call.callee;
+    if (callee->kind == EXPR_SCOPE) {   /* module::function(...) */
+        Symbol *qf = find_qualified(S, &S->funcs, callee->loc, callee->u.scope.scope, callee->u.scope.member, "function");
+        if (!qf) {
+            for (size_t i = 0; i < e->u.call.nargs; i++) check(S, &e->u.call.args[i], NULL);
+            return set_type(e, ty_error);
+        }
+        const char *name = qf->name;
+        callee->kind = EXPR_IDENT;
+        callee->u.name = name;
+        callee->sym = qf;
+    }
     if (callee->kind != EXPR_IDENT) {
         not_yet(callee->loc, "calling anything but a named function", 10);
         return set_type(e, ty_error);
     }
-    Symbol *fn = find_func(S, callee->u.name);
+    Symbol *other_fn = NULL;
+    Symbol *fn = callee->sym && callee->sym->kind == SYM_FUNC ? callee->sym : NULL;
+    if (!fn) fn = find_in(S, &S->funcs, callee->u.name, &other_fn);
+    if (fn && other_fn) {
+        report_ambiguous(S, callee->loc, callee->u.name, fn, other_fn);
+        for (size_t i = 0; i < e->u.call.nargs; i++) check(S, &e->u.call.args[i], NULL);
+        return set_type(e, ty_error);
+    }
 
     /* len(array) is a compile-time constant. */
     if (!fn && strcmp(callee->u.name, "len") == 0 && !find_var(S, "len")) {
@@ -1270,7 +1445,10 @@ static Type *check_call(Sema *S, Expr *e) {
             diag_label(d, "not found");
             const char *names[256];
             size_t n = 0;
-            for (size_t i = 0; i < S->funcs.len && n < 256; i++) names[n++] = ((Symbol *)S->funcs.items[i])->name;
+            for (size_t i = 0; i < S->funcs.len && n < 256; i++) {
+                Symbol *f = S->funcs.items[i];
+                if (!f->is_runtime && visible(S, S->cur, f->module, f->is_private)) names[n++] = f->name;
+            }
             const char *guess = closest(callee->u.name, names, n);
             if (guess) {
                 diag_span(d, find_func(S, guess)->loc, "a function with a similar name is defined here");
@@ -1598,6 +1776,15 @@ static Type *check(Sema *S, Expr **slot, Type *hint) {
     case EXPR_ASSIGN:
         report_assign_as_value(e);
         return set_type(e, ty_error);
+    case EXPR_SCOPE: {   /* module::global */
+        Symbol *g = find_qualified(S, &S->globals, e->loc, e->u.scope.scope, e->u.scope.member, "global variable");
+        if (!g) return set_type(e, ty_error);
+        e->kind = EXPR_IDENT;
+        e->u.name = g->name;
+        e->sym = g;
+        g->reads++;
+        return set_type(e, g->type);
+    }
 
     case EXPR_STRING:
         /* A literal is a `string`, or, where a byte pointer is expected
@@ -1608,7 +1795,7 @@ static Type *check(Sema *S, Expr **slot, Type *hint) {
     case EXPR_INTERP:
         return check_interp(S, slot);
     case EXPR_THIS:       not_yet(e->loc, "classes", 10); break;
-    case EXPR_SCOPE:      not_yet(e->loc, "enums", 12); break;
+
     case EXPR_NEW:        not_yet(e->loc, "`new`", 11); break;
     case EXPR_ALLOC: {
         /* alloc(T) or alloc(T, n): zeroed memory for n values of T. */
@@ -2237,6 +2424,7 @@ static bool falls_through(Sema *S, const Stmt *s) {
 static void check_function_body(Sema *S, Symbol *fn) {
     const Decl *d = fn->decl;
     S->fn = fn;
+    S->cur = fn->module;
     S->fn_errors_before = diag_error_count();
     S->locals.len = 0;
     S->nmarks = 0;
@@ -2302,9 +2490,10 @@ static void set_asm_name(Sema *S, Symbol *sym, const Decl *d) {
     sym->is_extern = d->is_extern;
     sym->is_export = d->is_export;
     if (!d->is_extern && !d->is_export) {
-        size_t n = strlen(sym->name) + 3;
+        const char *prefix = S->mods[sym->module]->prefix;
+        size_t n = strlen(prefix) + strlen(sym->name) + 3;
         char *name = arena_alloc(S->arena, n);
-        snprintf(name, n, "w.%s", sym->name);
+        snprintf(name, n, "w.%s%s", prefix, sym->name);
         sym->asm_name = name;
         return;
     }
@@ -2318,7 +2507,9 @@ static void set_asm_name(Sema *S, Symbol *sym, const Decl *d) {
         return;
     }
     sym->asm_name = sym->name;
-    if (d->is_extern) S->needs_libc = true;  /* defined elsewhere: link with the C toolchain */
+    /* C functions link libc only if something reachable calls them (see the
+     * reachability pass); C globals as soon as they're declared. */
+    if (d->is_extern && d->kind == DECL_VAR) S->needs_libc = true;
     if (is_register_name(sym->name)) {
         Diag *e = diag_start(DIAG_ERROR, "E0336", sym->loc, "`%s` can't be %s because it's an x86 register name",
                              sym->name, d->is_extern ? "an extern symbol" : "exported");
@@ -2331,6 +2522,7 @@ static void set_asm_name(Sema *S, Symbol *sym, const Decl *d) {
 static void declare_function(Sema *S, Decl *d) {
     Symbol *fn = new_symbol(S, SYM_FUNC, d->name, d->name_loc);
     fn->decl = d;
+    fn->is_private = d->vis == VIS_PRIVATE;
     fn->is_runtime = is_runtime_file(d->loc.file);
     d->sym = fn;
     ptrvec_push(&S->funcs, fn);
@@ -2367,6 +2559,7 @@ static void declare_global(Sema *S, Decl *d) {
     VarDecl *vd = d->u.var;
     Symbol *g = new_symbol(S, SYM_GLOBAL, vd->name, vd->loc);
     g->decl = d;
+    g->is_private = d->vis == VIS_PRIVATE;
     g->type_expr = vd->type;
     g->is_const = vd->type->is_const;
     d->sym = g;
@@ -2408,6 +2601,18 @@ static void check_duplicates(Sema *S) {
         if (!is_type && !is_value) continue;
         for (size_t j = 0; j < i; j++) {
             const Decl *prev = m->decls[j];
+            if (prev->loc.file != d->loc.file) {
+                /* Different modules may reuse names, but not exported symbols,
+                 * which share the linker's single namespace. */
+                if (d->is_export && prev->is_export && d->kind == prev->kind && strcmp(prev->name, d->name) == 0) {
+                    Diag *e = diag_start(DIAG_ERROR, "E0202", d->name_loc, "`%s` is exported by two modules", d->name);
+                    diag_label(e, "exported here");
+                    diag_span(e, prev->name_loc, "and here");
+                    diag_note(e, "exported names keep their plain names, so they must be unique in the program");
+                    diag_end(e);
+                }
+                continue;
+            }
             bool same_space = is_type ? prev->kind == DECL_STRUCT : (prev->kind == DECL_FUNC || prev->kind == DECL_VAR);
             if (!same_space || strcmp(prev->name, d->name) != 0) continue;
             Diag *e = diag_start(DIAG_ERROR, "E0202", d->name_loc, "the name `%s` is defined more than once", d->name);
@@ -2420,10 +2625,20 @@ static void check_duplicates(Sema *S) {
     }
 }
 
-bool sema_check(Arena *arena, Module *m, Program *prog) {
+bool sema_check(Arena *arena, Module **mods, size_t nmods, Program *prog) {
     int errors_before = diag_error_count();
     Sema S = {0};
     S.arena = arena;
+    S.mods = mods;
+    S.nmods = nmods;
+
+    /* One flat list of declarations; each knows its module through its file. */
+    size_t total = 0;
+    for (size_t i = 0; i < nmods; i++) total += mods[i]->n;
+    Module flat = {mods[0]->file, ARENA_ARRAY(arena, Decl *, total ? total : 1), 0, "", "", NULL, NULL, 0, false};
+    for (size_t i = 0; i < nmods; i++)
+        for (size_t j = 0; j < mods[i]->n; j++) flat.decls[flat.n++] = mods[i]->decls[j];
+    Module *m = &flat;
     S.mod = m;
 
     check_duplicates(&S);
@@ -2431,14 +2646,21 @@ bool sema_check(Arena *arena, Module *m, Program *prog) {
     /* Types first, so functions and globals can use any struct. */
     for (size_t i = 0; i < m->n; i++) {
         Decl *d = m->decls[i];
+        S.cur = module_of(&S, d->loc.file);
         switch (d->kind) {
-        case DECL_STRUCT:
-            if (!find_struct(&S, d->name)) {
+        case DECL_STRUCT: {
+            bool dup = false;
+            for (size_t j = 0; j < S.structs.len; j++) {
+                Type *t = S.structs.items[j];
+                dup |= t->decl->loc.file == d->loc.file && strcmp(t->name, d->name) == 0;
+            }
+            if (!dup) {
                 d->type = type_new_struct(d->name, d);
                 ptrvec_push(&S.structs, d->type);
             }
             break;
-        case DECL_IMPORT: not_yet(d->loc, "imports", 8); break;
+        }
+        case DECL_IMPORT: break;   /* handled by the module loader */
         case DECL_CLASS:  not_yet(d->loc, "classes", 10); break;
         case DECL_ENUM:   not_yet(d->loc, "enums", 12); break;
         default: break;
@@ -2446,12 +2668,20 @@ bool sema_check(Arena *arena, Module *m, Program *prog) {
     }
     for (size_t i = 0; i < S.structs.len; i++) layout_struct(&S, S.structs.items[i]);
 
-    for (size_t i = 0; i < m->n; i++)
-        if (m->decls[i]->kind == DECL_FUNC && !find_func(&S, m->decls[i]->name)) declare_function(&S, m->decls[i]);
-    for (size_t i = 0; i < m->n; i++)
-        if (m->decls[i]->kind == DECL_VAR) declare_global(&S, m->decls[i]);
+    for (size_t i = 0; i < m->n; i++) {
+        Decl *d = m->decls[i];
+        if (d->kind != DECL_FUNC) continue;
+        S.cur = module_of(&S, d->loc.file);
+        if (!find_in_module(&S.funcs, S.cur, d->name)) declare_function(&S, d);
+    }
+    for (size_t i = 0; i < m->n; i++) {
+        if (m->decls[i]->kind != DECL_VAR) continue;
+        S.cur = module_of(&S, m->decls[i]->loc.file);
+        declare_global(&S, m->decls[i]);
+    }
 
-    Symbol *main_fn = find_func(&S, "main");
+    S.cur = 0;
+    Symbol *main_fn = find_in_module(&S.funcs, 0, "main");
     if (!main_fn) {
         Loc loc = {m->file, 0, 0, 0, 0};
         Diag *d = diag_start(DIAG_ERROR, "E0305", loc, "`main` function not found in `%s`", m->file->path);
@@ -2494,12 +2724,17 @@ bool sema_check(Arena *arena, Module *m, Program *prog) {
         }
     }
     free(work.items);
-    Symbol *fmt = find_func(&S, "__rt_fmt_f64");
-    if (fmt && fmt->reachable) S.needs_libc = true;   /* float formatting uses snprintf */
+    for (size_t i = 0; i < S.funcs.len; i++) {
+        Symbol *fn = S.funcs.items[i];
+        if (!fn->reachable) continue;
+        if (fn->is_extern && !fn->is_runtime) S.needs_libc = true;   /* calls into C */
+        if (fn->is_runtime && strcmp(fn->name, "__rt_fmt_f64") == 0) S.needs_libc = true;   /* snprintf */
+    }
     if (diag_error_count() == errors_before) {
         for (size_t i = 0; i < S.funcs.len; i++) {
             Symbol *fn = S.funcs.items[i];
             if (fn->reachable || fn->is_runtime || fn->is_extern || fn->name[0] == '_') continue;
+            if (fn->module != 0) continue;   /* libraries may have functions a program doesn't use */
             Diag *d = diag_start(DIAG_WARNING, "W0004", fn->loc, "function `%s` is never used", fn->name);
             diag_label(d, "never called");
             char renamed[128];

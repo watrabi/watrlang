@@ -41,6 +41,8 @@ typedef struct Symbol {
     size_t ncallees, callees_cap;
     bool reachable;
     bool is_runtime;            /* from the runtime prelude */
+    int module;                 /* index of the defining module */
+    bool is_private;            /* `private`: invisible to importing modules */
 
     /* globals */
     unsigned char *init;        /* initial bytes (type->size of them); NULL = all zero */
@@ -65,7 +67,8 @@ typedef struct {
     bool needs_libc;            /* uses extern symbols or alloc/free: link with the C runtime */
 } Program;
 
-/* Returns false if errors were reported. */
-bool sema_check(Arena *arena, Module *m, Program *prog);
+/* Checks a whole program: mods[0] is the main file, the runtime prelude is
+ * last. Returns false if errors were reported. */
+bool sema_check(Arena *arena, Module **mods, size_t nmods, Program *prog);
 
 #endif

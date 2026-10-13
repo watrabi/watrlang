@@ -389,7 +389,8 @@ static void print_decl(FILE *out, const Decl *d, int indent) {
     switch (d->kind) {
     case DECL_IMPORT:
         fputs("import ", out);
-        print_escaped(out, d->u.import_path.data, d->u.import_path.len, '"');
+        print_escaped(out, d->u.import.path.data, d->u.import.path.len, '"');
+        if (d->name) fprintf(out, " as %s", d->name);
         fputc('\n', out);
         break;
     case DECL_FUNC:
