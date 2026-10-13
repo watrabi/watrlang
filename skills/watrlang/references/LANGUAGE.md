@@ -886,6 +886,10 @@ Written in watrlang, and needing no C library. Full signatures are in
 | `std/os` | args, argc, getenv, has_env, exit, pid |
 | `std/time` | now_ns, elapsed_ms, unix, sleep_ms, utc, format |
 | `std/rand` | `Rng` (seeded, repeatable) and module-level range, unit, chance, shuffle, pick |
+| `std/json` | encode, pretty, decode, valid: PHP-compatible JSON for `array`/`mixed` |
+| `std/hash` | SHA-256, SHA-512, SHA-1, MD5, BLAKE2b, HMAC, HKDF, PBKDF2 |
+| `std/crypto` | secure random bytes/ints/tokens, constant-time equal, hex, base64(url), XChaCha20-Poly1305 seal/open, ChaCha20, Poly1305, signed expiring tokens |
+| `std/password` | PHP-compatible password hash/verify/needs_rehash: Argon2id (and Argon2i/d), bcrypt, PBKDF2 formats; derive_key |
 | `std/mem` | copy, set, equal on raw bytes |
 | `std/gc` | collect, live_bytes, heap_bytes |
 | `std/sys` | raw Linux system calls |

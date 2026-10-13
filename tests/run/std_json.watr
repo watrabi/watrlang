@@ -1,0 +1,20 @@
+import "std/json";
+
+function main(): int {
+    echo json::encode(["ok" => true, "n" => 5, "f" => 2.5, "whole" => 3.0, "list" => [1, 2, 3], "none" => null]), "\n";
+    echo json::encode(["html" => "<b>&</b>", "quote" => "say \"hi\"", "uni" => "héllo", "ctl" => "a\tb\x01"]), "\n";
+    echo json::encode([]), " ", json::encode([1 => "a"]), " ", json::encode(0.1 + 0.2), " ", json::encode(1e25), "\n";
+    echo json::pretty(["a" => [1, 2], "b" => []]), "\n";
+    mixed v = json::decode(" \{\"name\": \"ada\", \"tags\": [\"x\", \"y\"], \"n\": -12, \"big\": 1.5e3, \"u\": \"\\u00e9\\ud83d\\udc1f\"\} ") ?? null;
+    array doc = v as array;
+    array tags = doc["tags"] as array;
+    echo doc["name"] as string, " ", len(tags), " ", tags[1] as string, " ", doc["n"] as int, " ", doc["big"] as f64, " ", doc["u"] as string, "\n";
+    echo json::encode(v), "\n";
+    string[6] bad = ["\{", "[1,]", "\{\"a\" 1\}", "01", "\"\\ud800\"", "[1] x"];
+    foreach (bad as b) {
+        mixed!json::JsonError r = json::decode(b);
+        echo r->ok ? "accepted " : "rejected ";
+    }
+    echo "\n", json::valid("[true, false, null]"), " ", json::valid("tru"), "\n";
+    return 0;
+}

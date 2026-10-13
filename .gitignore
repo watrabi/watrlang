@@ -2,3 +2,5 @@ build/
 *.o
 *.s
 a.out
+!tests/run/*.s
+!examples/kernel/*.s

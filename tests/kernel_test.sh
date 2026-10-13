@@ -17,7 +17,7 @@ mkdir -p build/kernel
 objcopy -O elf32-i386 build/kernel/kernel.elf build/kernel/kernel32.elf || exit 1   # QEMU loads ELF32 multiboot kernels
 
 out=$(timeout 60 qemu-system-x86_64 -kernel build/kernel/kernel32.elf -serial stdio -display none -no-reboot \
-      -m 64 -device isa-debug-exit,iobase=0xf4,iosize=0x04 2>&1)
+      -m 64 -device isa-debug-exit,iobase=0xf4,iosize=0x04 < /dev/null 2>&1)
 status=$?
 if [ "$status" -ne 33 ]; then   # kmain exits with code 0x10: (0x10 << 1) | 1
     printf 'kernel: FAIL (qemu exited with %s)\n%s\n' "$status" "$out"

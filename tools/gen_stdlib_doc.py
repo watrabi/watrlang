@@ -11,7 +11,7 @@ import re
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 STD = os.path.join(ROOT, "std")
-ORDER = ["io", "str", "fmt", "math", "vec", "map", "sort", "arrays", "fs", "os", "time", "rand", "mem", "gc", "sys"]
+ORDER = ["io", "str", "fmt", "math", "vec", "map", "sort", "arrays", "fs", "os", "time", "rand", "json", "hash", "crypto", "password", "mem", "gc", "sys"]
 
 DECL = re.compile(r"^(?:(?:public|static|abstract)\s+)*(function|class|interface|enum|struct|const)\b")
 

@@ -4,7 +4,7 @@ Generated from the sources by `tools/gen_stdlib_doc.py`; don't edit by hand.
 Import a module with `import "std/NAME";` and call its functions as
 `NAME::function(...)` (or unqualified, when no other import uses the name).
 
-Modules: [`std/io`](#stdmodule-io), [`std/str`](#stdmodule-str), [`std/fmt`](#stdmodule-fmt), [`std/math`](#stdmodule-math), [`std/vec`](#stdmodule-vec), [`std/map`](#stdmodule-map), [`std/sort`](#stdmodule-sort), [`std/arrays`](#stdmodule-arrays), [`std/fs`](#stdmodule-fs), [`std/os`](#stdmodule-os), [`std/time`](#stdmodule-time), [`std/rand`](#stdmodule-rand), [`std/mem`](#stdmodule-mem), [`std/gc`](#stdmodule-gc), [`std/sys`](#stdmodule-sys).
+Modules: [`std/io`](#stdmodule-io), [`std/str`](#stdmodule-str), [`std/fmt`](#stdmodule-fmt), [`std/math`](#stdmodule-math), [`std/vec`](#stdmodule-vec), [`std/map`](#stdmodule-map), [`std/sort`](#stdmodule-sort), [`std/arrays`](#stdmodule-arrays), [`std/fs`](#stdmodule-fs), [`std/os`](#stdmodule-os), [`std/time`](#stdmodule-time), [`std/rand`](#stdmodule-rand), [`std/json`](#stdmodule-json), [`std/hash`](#stdmodule-hash), [`std/crypto`](#stdmodule-crypto), [`std/password`](#stdmodule-password), [`std/mem`](#stdmodule-mem), [`std/gc`](#stdmodule-gc), [`std/sys`](#stdmodule-sys).
 
 <a id="stdmodule-io"></a>
 ## std/io
@@ -271,8 +271,9 @@ Clocks and sleeping, through Linux system calls.
 ## std/rand
 
 Pseudo-random numbers: xoshiro256** seeded through splitmix64. Not for
-cryptography. Rng objects give repeatable sequences from a seed; the
-module-level functions use one seeded from the kernel's randomness.
+cryptography: use std/crypto for keys, tokens and anything secret.
+Rng objects give repeatable sequences from a seed; the module-level
+functions use one seeded from the kernel's randomness.
 
 ### `class Rng`
 
@@ -289,6 +290,148 @@ module-level functions use one seeded from the kernel's randomness.
 - `function chance(f64 p): bool`
 - `function shuffle<T>(vec::Vec<T> v, Rng r): void` — Shuffles a Vec in place (Fisher-Yates).
 - `function pick<T>(vec::Vec<T> v, Rng r): T` — A random element.
+
+<a id="stdmodule-json"></a>
+## std/json
+
+JSON, like PHP's json_encode/json_decode, for PHP-style arrays and mixed:
+
+```watr
+import "std/json";
+string text = json::encode(["ok" => true, "items" => [1, 2, 3], "user" => ["name" => "ada"]]);
+// {"ok":true,"items":[1,2,3],"user":{"name":"ada"}}
+mixed data = json::decode("\{\"n\": 5\}") ?? null;   // \{ is a literal brace
+```
+
+encode: arrays with keys 0, 1, 2... become JSON arrays, other arrays
+become objects (an empty array is []). Strings are written as UTF-8
+(invalid bytes become U+FFFD), and < > & are escaped as < >
+& so the output is safe inside an HTML <script>. Floats use the
+shortest form that reads back exactly and keep a ".0" (so 1.0 stays a
+float); NaN and infinity become null, as do objects.
+decode: objects become arrays with string keys, arrays become lists,
+numbers become int (or float when they have a fraction, an exponent or
+don't fit in 64 bits). Input must be strict JSON (RFC 8259).
+
+- `enum JsonError { Syntax, Depth }`
+- `function encode(mixed value): string` — Compact JSON for any value: arrays (nested), strings, ints, floats, bools and null.
+- `function pretty(mixed value): string` — Like encode, indented by 4 spaces (PHP's JSON_PRETTY_PRINT).
+
+<a id="stdmodule-hash"></a>
+## std/hash
+
+Cryptographic hashes and what's built on them: SHA-256, SHA-512, SHA-1,
+MD5, BLAKE2b, HMAC, HKDF and PBKDF2. Everything takes and returns byte
+strings; turn a digest into text with crypto::hex or crypto::base64.
+
+```watr
+import "std/hash";
+import "std/crypto";
+echo crypto::hex(hash::sha256("abc")), "\n";
+```
+
+For passwords use std/password (Argon2id), not these directly.
+SHA-1 and MD5 are broken for security; they're here for old protocols
+and checksums only.
+
+- `function sha256(string data): string` — SHA-256: 32 bytes.
+- `function sha512(string data): string` — SHA-512: 64 bytes.
+- `function sha1(string data): string` — SHA-1: 20 bytes. Broken for security; only for old protocols.
+- `function md5(string data): string` — MD5: 16 bytes. Broken for security; only for checksums and old protocols.
+- `function blake2b(string data, usize out_len, string key): string` — BLAKE2b with an output of 1-64 bytes and an optional key (0-64 bytes; "" for none). The same as libsodium's crypto_generichash.
+- `function hmac_sha256(string key, string message): string` — HMAC-SHA-256: 32 bytes.
+- `function hmac_sha512(string key, string message): string` — HMAC-SHA-512: 64 bytes.
+- `function hmac_sha1(string key, string message): string` — HMAC-SHA-1: 20 bytes (legacy protocols, TOTP).
+- `function hkdf_sha256(string ikm, string salt, string info, usize length): string` — Derives `length` bytes (at most 8160) from input key material. salt may be ""; info separates keys for different purposes.
+- `function hkdf_sha512(string ikm, string salt, string info, usize length): string` — HKDF with SHA-512 (at most 16320 bytes).
+- `function pbkdf2_sha256(string password, string salt, int iterations, usize length): string` — PBKDF2-HMAC-SHA-256. OWASP suggests 600000 iterations for passwords, but prefer std/password (Argon2id) for new password storage.
+- `function pbkdf2_sha512(string password, string salt, int iterations, usize length): string` — PBKDF2-HMAC-SHA-512 (OWASP: 210000 iterations).
+
+<a id="stdmodule-crypto"></a>
+## std/crypto
+
+Secure randomness, constant-time comparison, hex and base64, authenticated
+encryption (XChaCha20-Poly1305, as in libsodium) and signed tokens.
+
+```watr
+import "std/crypto";
+string key = crypto::new_key();                 // keep it secret, 32 bytes
+string box = crypto::seal(key, "card 4242");    // encrypted and authenticated
+string back = crypto::open(key, box) ?? "";     // "" if tampered with
+string token = crypto::sign(key, "user=42", 3600);   // valid for an hour
+string who = crypto::unsign(key, token) ?? "";
+```
+
+Everything works on byte strings. Randomness comes from the kernel
+(getrandom), never from std/rand.
+
+- `enum CryptoError { Invalid, Forged, Expired }`
+- `function random_bytes(usize n): string` — n bytes from the kernel's cryptographic random generator.
+- `function random_int(int lo, int hi): int` — A uniformly random integer in [lo, hi], inclusive, without modulo bias.
+- `function random_token(usize bytes): string` — A random URL-safe token carrying `bytes` bytes of randomness (32 is a good size for session ids and reset links).
+- `function equal(string a, string b): bool` — True if a and b are equal. Takes the same time wherever they differ, so it's safe for comparing MACs, tokens and hashes.
+- `function hex(string data): string` — Lower-case hex.
+- `function unhex(string text): string!CryptoError`
+- `function base64(string data): string` — Standard base64 with '=' padding.
+- `function unbase64(string text): string!CryptoError`
+- `function base64url(string data): string` — URL- and filename-safe base64 (- and _), without padding.
+- `function unbase64url(string text): string!CryptoError`
+- `function chacha20(string key, string nonce, u32 counter, string data): string` — XORs data with the ChaCha20 keystream (32-byte key, 12-byte nonce). Encryption and decryption are the same operation. Unauthenticated: use seal()/aead_encrypt() unless you're building a protocol.
+- `function poly1305(string key, string msg): string` — A 16-byte one-time authenticator. The 32-byte key must never be reused.
+- `function aead_encrypt(string key, string nonce, string plaintext, string aad): string` — ChaCha20-Poly1305 (RFC 8439, the IETF variant): ciphertext followed by a 16-byte tag. Never encrypt two messages with the same key and nonce.
+- `function aead_decrypt(string key, string nonce, string sealed, string aad): string!CryptoError`
+- `function xaead_encrypt(string key, string nonce, string plaintext, string aad): string` — XChaCha20-Poly1305 with a 24-byte nonce (random nonces are safe). Matches libsodium's crypto_aead_xchacha20poly1305_ietf_*.
+- `function xaead_decrypt(string key, string nonce, string sealed, string aad): string!CryptoError`
+- `function new_key(): string` — A fresh random 32-byte key for seal() and sign().
+- `function seal(string key, string plaintext): string` — Encrypts and authenticates with a random nonce: the result is nonce (24) + ciphertext + tag (16), 40 bytes longer than the message. Store it as is, or base64url() it for cookies and URLs.
+- `function open(string key, string sealed): string!CryptoError` — Undoes seal(); Forged if the data was altered or the key is wrong.
+- `function sign(string key, string message, int seconds): string` — A tamper-proof (not secret) token carrying `message`, valid for `seconds` (0 = forever): for cookies, password-reset and email links. Format: base64url(message).expiry.base64url(HMAC-SHA-256).
+- `function unsign(string key, string token): string!CryptoError` — The message inside a token from sign(), if its signature is valid and it hasn't expired.
+
+<a id="stdmodule-password"></a>
+## std/password
+
+Password hashing, compatible with PHP's password_hash/password_verify:
+
+```watr
+import "std/password";
+string stored = password::hash("correct horse");          // Argon2id
+if (password::verify("correct horse", stored)) {
+    echo "welcome back\n";
+}
+if (password::needs_rehash(stored)) {
+    stored = password::hash("correct horse");   // then save it
+}
+```
+
+password::hash makes Argon2id hashes in the standard PHC format
+($argon2id$v=19$m=...,t=...,p=...$salt$hash), the same strings PHP,
+libsodium, Python's argon2-cffi and others produce and accept.
+password::verify also accepts bcrypt ($2y$, $2b$, $2a$, as made by PHP's
+PASSWORD_BCRYPT and most frameworks) and PBKDF2 ($pbkdf2-sha256$ from
+passlib, pbkdf2_sha256$ from Django), so users can log in after moving
+from another system and be upgraded with needs_rehash.
+
+- `const int MEMORY_KIB = 19456` — Argon2id cost: 19 MiB of memory and 2 passes, OWASP's recommended minimum. Raise MEMORY_KIB if logins can afford more time.
+- `const int TIME_COST = 2`
+- `const int LANES = 1`
+- `const int BCRYPT_COST = 12`
+- `const int ARGON2D = 0`
+- `const int ARGON2I = 1`
+- `const int ARGON2ID = 2`
+- `function argon2(int kind, string password, string salt, int t, int m, int p, usize out_len, int version): string` — Raw Argon2: `out_len` bytes from a password and salt (at least 8 bytes). kind is ARGON2ID (use this), ARGON2I or ARGON2D; t passes over m KiB of memory with p lanes. version is 0x13 (current) or 0x10. Returns "" for parameters out of range.
+- `function hash_argon2id(string password, int memory_kib, int time_cost, int lanes): string` — An Argon2id hash with chosen costs (memory in KiB).
+- `function hash(string password): string` — The recommended way to store a password: Argon2id with the costs above.
+- `function derive_key(string password, string salt): string` — A 32-byte encryption key from a password (Argon2id), for use with crypto::seal. Store the salt (16 random bytes) next to the data.
+### `class Argon2Hash`
+
+The parts of a $argon2...$ string (see parse_argon2).
+
+
+- `function parse_argon2(string stored): Argon2Hash` — Splits a $argon2...$ string.
+- `function hash_bcrypt(string password, int cost): string` — A bcrypt hash ($2y$, as PHP's PASSWORD_BCRYPT makes) with cost 4-31. bcrypt only uses the first 72 bytes of a password and can't take NUL bytes; prefer password::hash (Argon2id) unless you need bcrypt.
+- `function verify(string password, string stored): bool` — Checks a password against any hash this module understands, in constant time. False for a wrong password or an unknown format.
+- `function needs_rehash(string stored): bool` — True if `stored` isn't an Argon2id hash at least as strong as what password::hash makes today: after a successful login, hash the password again and save the new hash.
 
 <a id="stdmodule-mem"></a>
 ## std/mem

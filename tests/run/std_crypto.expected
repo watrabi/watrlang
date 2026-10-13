@@ -1,0 +1,17 @@
+948cbcd4a5330fa197947b19a456fa86ed7c1780f7cf6d51cf46b3516c3b
+attack at dawn
+wrong aad: Forged
+sealed adds 40 bytes
+secret note
+tampered: Forged
+other key: Forged
+user=42; admin=no
+forged: Forged
+never-expiring with ttl<=0: true
+junk: Invalid
+YW55IGNhcm5hbCBwbGVhcw== -_8 any carnal pleas
+bad base64: Invalid
+007fff true false false
+random_int in range: true, every face common: true
+token length: 43, tokens differ: true
+exit: 0

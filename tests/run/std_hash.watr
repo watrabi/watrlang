@@ -1,0 +1,17 @@
+import "std/hash";
+import "std/crypto";
+
+function main(): int {
+    echo crypto::hex(hash::sha256("abc")), "\n";
+    echo crypto::hex(hash::sha512("abc")), "\n";
+    echo crypto::hex(hash::sha1("abc")), "\n";
+    echo crypto::hex(hash::md5("abc")), "\n";
+    echo crypto::hex(hash::blake2b("abc", 64, "")), "\n";
+    echo crypto::hex(hash::hmac_sha512("Jefe", "what do ya want for nothing?")), "\n";
+    echo crypto::hex(hash::pbkdf2_sha256("password", "salt", 2, 32)), "\n";
+    string ikm = crypto::unhex("0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b") ?? "";
+    string salt = crypto::unhex("000102030405060708090a0b0c") ?? "";
+    string info = crypto::unhex("f0f1f2f3f4f5f6f7f8f9") ?? "";
+    echo crypto::hex(hash::hkdf_sha256(ikm, salt, info, 42)), "\n";
+    return 0;
+}

@@ -1,0 +1,538 @@
+// Secure randomness, constant-time comparison, hex and base64, authenticated
+// encryption (XChaCha20-Poly1305, as in libsodium) and signed tokens.
+//
+//     import "std/crypto";
+//     string key = crypto::new_key();                 // keep it secret, 32 bytes
+//     string box = crypto::seal(key, "card 4242");    // encrypted and authenticated
+//     string back = crypto::open(key, box) ?? "";     // "" if tampered with
+//     string token = crypto::sign(key, "user=42", 3600);   // valid for an hour
+//     string who = crypto::unsign(key, token) ?? "";
+//
+// Everything works on byte strings. Randomness comes from the kernel
+// (getrandom), never from std/rand.
+
+import "std/sys";
+import "std/hash";
+import "std/time";
+
+enum CryptoError { Invalid, Forged, Expired }
+
+// --- randomness ---
+
+// n bytes from the kernel's cryptographic random generator.
+function random_bytes(usize n): string {
+    u8* p = __rt_alloc_bytes(n + 1);
+    usize got = 0;
+    while (got < n) {
+        i64 r = sys::syscall3(sys::GETRANDOM, (p + got) as i64, (n - got) as i64, 0);
+        if (r > 0) {
+            got += r as usize;
+        } else if (r != -4) {
+            __rt_panic("crypto::random_bytes: getrandom failed");
+        }
+    }
+    return string { ptr: p, len: n };
+}
+
+private function random_u64(): u64 {
+    string b = random_bytes(8);
+    u64 v = 0;
+    foreach (b as c) {
+        v = (v << 8) | (c as u64);
+    }
+    return v;
+}
+
+// A uniformly random integer in [lo, hi], inclusive, without modulo bias.
+function random_int(int lo, int hi): int {
+    if (hi <= lo) {
+        return lo;
+    }
+    u64 range = (hi - lo) as u64 + 1;
+    if (range == 0) {
+        return random_u64() as int;
+    }
+    u64 threshold = (0 - range) % range;
+    while (true) {
+        u64 x = random_u64();
+        if (x >= threshold) {
+            return lo + (x % range) as int;
+        }
+    }
+}
+
+// A random URL-safe token carrying `bytes` bytes of randomness
+// (32 is a good size for session ids and reset links).
+function random_token(usize bytes): string {
+    return base64url(random_bytes(bytes));
+}
+
+// --- comparison ---
+
+// True if a and b are equal. Takes the same time wherever they differ, so
+// it's safe for comparing MACs, tokens and hashes.
+function equal(string a, string b): bool {
+    if (len(a) != len(b)) {
+        return false;
+    }
+    u8 diff = 0;
+    for (usize i = 0; i < len(a); i++) {
+        diff = diff | (a[i] ^ b[i]);
+    }
+    return diff == 0;
+}
+
+// --- hex and base64 ---
+
+private const string HEX = "0123456789abcdef";
+private const string B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+private const string B64URL = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+
+// Lower-case hex.
+function hex(string data): string {
+    u8* out = __rt_alloc_bytes(len(data) * 2 + 1);
+    for (usize i = 0; i < len(data); i++) {
+        out[i * 2] = HEX[(data[i] >> 4) as usize];
+        out[i * 2 + 1] = HEX[(data[i] & 15) as usize];
+    }
+    return string { ptr: out, len: len(data) * 2 };
+}
+
+private function hexval(u8 c): int {
+    if (c >= '0' && c <= '9') { return (c - '0') as int; }
+    if (c >= 'a' && c <= 'f') { return (c - 'a') as int + 10; }
+    if (c >= 'A' && c <= 'F') { return (c - 'A') as int + 10; }
+    return -1;
+}
+
+function unhex(string text): string!CryptoError {
+    if (len(text) % 2 != 0) {
+        return CryptoError::Invalid;
+    }
+    u8* out = __rt_alloc_bytes(len(text) / 2 + 1);
+    for (usize i = 0; i < len(text) / 2; i++) {
+        int hi = hexval(text[i * 2]);
+        int lo = hexval(text[i * 2 + 1]);
+        if (hi < 0 || lo < 0) {
+            return CryptoError::Invalid;
+        }
+        out[i] = (hi * 16 + lo) as u8;
+    }
+    return string { ptr: out, len: len(text) / 2 };
+}
+
+private function b64enc(string data, string alphabet, bool pad): string {
+    usize n = len(data);
+    u8* out = __rt_alloc_bytes((n + 2) / 3 * 4 + 1);
+    usize o = 0;
+    usize i = 0;
+    while (i + 2 < n) {
+        u32 v = (data[i] as u32 << 16) | (data[i + 1] as u32 << 8) | (data[i + 2] as u32);
+        out[o] = alphabet[((v >> 18) & 63) as usize];
+        out[o + 1] = alphabet[((v >> 12) & 63) as usize];
+        out[o + 2] = alphabet[((v >> 6) & 63) as usize];
+        out[o + 3] = alphabet[(v & 63) as usize];
+        o += 4;
+        i += 3;
+    }
+    if (i < n) {
+        u32 v2 = data[i] as u32 << 16;
+        if (i + 1 < n) {
+            v2 = v2 | (data[i + 1] as u32 << 8);
+        }
+        out[o] = alphabet[((v2 >> 18) & 63) as usize];
+        out[o + 1] = alphabet[((v2 >> 12) & 63) as usize];
+        o += 2;
+        if (i + 1 < n) {
+            out[o] = alphabet[((v2 >> 6) & 63) as usize];
+            o++;
+        } else if (pad) {
+            out[o] = '=';
+            o++;
+        }
+        if (pad) {
+            out[o] = '=';
+            o++;
+        }
+    }
+    return string { ptr: out, len: o };
+}
+
+private function b64val(u8 c, bool url): int {
+    if (c >= 'A' && c <= 'Z') { return (c - 'A') as int; }
+    if (c >= 'a' && c <= 'z') { return (c - 'a') as int + 26; }
+    if (c >= '0' && c <= '9') { return (c - '0') as int + 52; }
+    if (c == (url ? '-' : '+')) { return 62; }
+    if (c == (url ? '_' : '/')) { return 63; }
+    return -1;
+}
+
+// Strict: anything but the alphabet (and correct '=' padding) is an error.
+private function b64dec(string text, bool url): string!CryptoError {
+    usize n = len(text);
+    while (n > 0 && text[n - 1] == '=') {
+        n--;
+    }
+    if (len(text) - n > 2 || n % 4 == 1 || (!url && len(text) % 4 != 0 && len(text) != n)) {
+        return CryptoError::Invalid;
+    }
+    u8* out = __rt_alloc_bytes(n * 3 / 4 + 1);
+    usize o = 0;
+    u32 acc = 0;
+    int bits = 0;
+    for (usize i = 0; i < n; i++) {
+        int v = b64val(text[i], url);
+        if (v < 0) {
+            return CryptoError::Invalid;
+        }
+        acc = (acc << 6) | (v as u32);
+        bits += 6;
+        if (bits >= 8) {
+            bits -= 8;
+            out[o] = ((acc >> (bits as u32)) & 0xff) as u8;
+            o++;
+        }
+    }
+    return string { ptr: out, len: o };
+}
+
+// Standard base64 with '=' padding.
+function base64(string data): string { return b64enc(data, B64, true); }
+function unbase64(string text): string!CryptoError { return b64dec(text, false); }
+
+// URL- and filename-safe base64 (- and _), without padding.
+function base64url(string data): string { return b64enc(data, B64URL, false); }
+function unbase64url(string text): string!CryptoError { return b64dec(text, true); }
+
+// --- ChaCha20 (RFC 8439) ---
+
+private function rotl(u32 x, u32 n): u32 { return (x << n) | (x >> (32 - n)); }
+
+private function le32(const u8* p): u32 {
+    return (p[0] as u32) | (p[1] as u32 << 8) | (p[2] as u32 << 16) | (p[3] as u32 << 24);
+}
+
+private function qr(u32* x, int a, int b, int c, int d) {
+    x[a] = x[a] + x[b]; x[d] = rotl(x[d] ^ x[a], 16);
+    x[c] = x[c] + x[d]; x[b] = rotl(x[b] ^ x[c], 12);
+    x[a] = x[a] + x[b]; x[d] = rotl(x[d] ^ x[a], 8);
+    x[c] = x[c] + x[d]; x[b] = rotl(x[b] ^ x[c], 7);
+}
+
+private function rounds(u32* x) {
+    for (int i = 0; i < 10; i++) {
+        qr(x, 0, 4, 8, 12); qr(x, 1, 5, 9, 13); qr(x, 2, 6, 10, 14); qr(x, 3, 7, 11, 15);
+        qr(x, 0, 5, 10, 15); qr(x, 1, 6, 11, 12); qr(x, 2, 7, 8, 13); qr(x, 3, 4, 9, 14);
+    }
+}
+
+private function setup(u32* s, const u8* key) {
+    s[0] = 0x61707865; s[1] = 0x3320646e; s[2] = 0x79622d32; s[3] = 0x6b206574;
+    for (usize i = 0; i < 8; i++) {
+        s[4 + i] = le32(key + i * 4);
+    }
+}
+
+private function need(string v, usize n, string what) {
+    if (len(v) != n) {
+        __rt_panic(what);
+    }
+}
+
+// XORs data with the ChaCha20 keystream (32-byte key, 12-byte nonce).
+// Encryption and decryption are the same operation. Unauthenticated:
+// use seal()/aead_encrypt() unless you're building a protocol.
+function chacha20(string key, string nonce, u32 counter, string data): string {
+    need(key, 32, "crypto::chacha20: key must be 32 bytes");
+    need(nonce, 12, "crypto::chacha20: nonce must be 12 bytes");
+    u32[16] s;
+    u32[16] x;
+    setup(&s[0], key->ptr);
+    s[12] = counter;
+    s[13] = le32(nonce->ptr);
+    s[14] = le32(nonce->ptr + 4);
+    s[15] = le32(nonce->ptr + 8);
+    u8* out = __rt_alloc_bytes(len(data) + 1);
+    usize off = 0;
+    while (off < len(data)) {
+        for (usize i = 0; i < 16; i++) {
+            x[i] = s[i];
+        }
+        rounds(&x[0]);
+        for (usize j = 0; j < 64 && off + j < len(data); j++) {
+            u32 word = x[j / 4] + s[j / 4];
+            u8 ks = ((word >> (((j % 4) * 8) as u32)) & 0xff) as u8;
+            out[off + j] = data[off + j] ^ ks;
+        }
+        s[12] = s[12] + 1;
+        off += 64;
+    }
+    return string { ptr: out, len: len(data) };
+}
+
+// HChaCha20: a 32-byte subkey from a key and a 16-byte input.
+private function hchacha20(string key, const u8* n16): string {
+    u32[16] x;
+    setup(&x[0], key->ptr);
+    for (usize i = 0; i < 4; i++) {
+        x[12 + i] = le32(n16 + i * 4);
+    }
+    rounds(&x[0]);
+    u8* out = __rt_alloc_bytes(32);
+    int[8] pick = [0, 1, 2, 3, 12, 13, 14, 15];
+    for (usize k = 0; k < 8; k++) {
+        u32 w = x[pick[k]];
+        out[k * 4] = w as u8;
+        out[k * 4 + 1] = (w >> 8) as u8;
+        out[k * 4 + 2] = (w >> 16) as u8;
+        out[k * 4 + 3] = (w >> 24) as u8;
+    }
+    return string { ptr: out, len: 32 };
+}
+
+// --- Poly1305 (RFC 8439) ---
+
+// A 16-byte one-time authenticator. The 32-byte key must never be reused.
+function poly1305(string key, string msg): string {
+    need(key, 32, "crypto::poly1305: key must be 32 bytes");
+    const u8* k = key->ptr;
+    u64 r0 = (le32(k) as u64) & 0x3ffffff;
+    u64 r1 = ((le32(k + 3) >> 2) as u64) & 0x3ffff03;
+    u64 r2 = ((le32(k + 6) >> 4) as u64) & 0x3ffc0ff;
+    u64 r3 = ((le32(k + 9) >> 6) as u64) & 0x3f03fff;
+    u64 r4 = ((le32(k + 12) >> 8) as u64) & 0x00fffff;
+    u64 s1 = r1 * 5;
+    u64 s2 = r2 * 5;
+    u64 s3 = r3 * 5;
+    u64 s4 = r4 * 5;
+    u64 h0 = 0;
+    u64 h1 = 0;
+    u64 h2 = 0;
+    u64 h3 = 0;
+    u64 h4 = 0;
+    u64 mask = 0x3ffffff;
+    u8[16] block;
+    usize off = 0;
+    while (off < len(msg)) {
+        usize n = len(msg) - off;
+        u64 hibit = 1 << 24;
+        if (n >= 16) {
+            n = 16;
+            for (usize i = 0; i < 16; i++) {
+                block[i] = msg[off + i];
+            }
+        } else {
+            for (usize j = 0; j < 16; j++) {
+                block[j] = j < n ? msg[off + j] : (j == n ? 1 : 0);
+            }
+            hibit = 0;
+        }
+        const u8* m = &block[0];
+        h0 += (le32(m) as u64) & mask;
+        h1 += ((le32(m + 3) >> 2) as u64) & mask;
+        h2 += ((le32(m + 6) >> 4) as u64) & mask;
+        h3 += ((le32(m + 9) >> 6) as u64) & mask;
+        h4 += ((le32(m + 12) >> 8) as u64) | hibit;
+        u64 d0 = h0 * r0 + h1 * s4 + h2 * s3 + h3 * s2 + h4 * s1;
+        u64 d1 = h0 * r1 + h1 * r0 + h2 * s4 + h3 * s3 + h4 * s2;
+        u64 d2 = h0 * r2 + h1 * r1 + h2 * r0 + h3 * s4 + h4 * s3;
+        u64 d3 = h0 * r3 + h1 * r2 + h2 * r1 + h3 * r0 + h4 * s4;
+        u64 d4 = h0 * r4 + h1 * r3 + h2 * r2 + h3 * r1 + h4 * r0;
+        u64 c = d0 >> 26; h0 = d0 & mask;
+        d1 += c; c = d1 >> 26; h1 = d1 & mask;
+        d2 += c; c = d2 >> 26; h2 = d2 & mask;
+        d3 += c; c = d3 >> 26; h3 = d3 & mask;
+        d4 += c; c = d4 >> 26; h4 = d4 & mask;
+        h0 += c * 5; c = h0 >> 26; h0 = h0 & mask;
+        h1 += c;
+        off += n;
+    }
+    u64 cc = h1 >> 26; h1 = h1 & mask;
+    h2 += cc; cc = h2 >> 26; h2 = h2 & mask;
+    h3 += cc; cc = h3 >> 26; h3 = h3 & mask;
+    h4 += cc; cc = h4 >> 26; h4 = h4 & mask;
+    h0 += cc * 5; cc = h0 >> 26; h0 = h0 & mask;
+    h1 += cc;
+    // h + -p: if that doesn't go negative, it's the reduced value.
+    u64 g0 = h0 + 5; cc = g0 >> 26; g0 = g0 & mask;
+    u64 g1 = h1 + cc; cc = g1 >> 26; g1 = g1 & mask;
+    u64 g2 = h2 + cc; cc = g2 >> 26; g2 = g2 & mask;
+    u64 g3 = h3 + cc; cc = g3 >> 26; g3 = g3 & mask;
+    u64 g4 = h4 + cc - (1 << 26);
+    u64 sel = (g4 >> 63) - 1;          // all ones when g >= 0 (use g), else 0 (keep h)
+    h0 = (h0 & ~sel) | (g0 & sel);
+    h1 = (h1 & ~sel) | (g1 & sel);
+    h2 = (h2 & ~sel) | (g2 & sel);
+    h3 = (h3 & ~sel) | (g3 & sel);
+    h4 = (h4 & ~sel) | (g4 & sel & mask);
+    u64 w0 = (h0 | (h1 << 26)) & 0xffffffff;
+    u64 w1 = ((h1 >> 6) | (h2 << 20)) & 0xffffffff;
+    u64 w2 = ((h2 >> 12) | (h3 << 14)) & 0xffffffff;
+    u64 w3 = ((h3 >> 18) | (h4 << 8)) & 0xffffffff;
+    u64 f = w0 + (le32(k + 16) as u64);
+    u8* out = __rt_alloc_bytes(16);
+    u64[4] words;
+    words[0] = f & 0xffffffff;
+    f = w1 + (le32(k + 20) as u64) + (f >> 32);
+    words[1] = f & 0xffffffff;
+    f = w2 + (le32(k + 24) as u64) + (f >> 32);
+    words[2] = f & 0xffffffff;
+    f = w3 + (le32(k + 28) as u64) + (f >> 32);
+    words[3] = f & 0xffffffff;
+    for (usize q = 0; q < 4; q++) {
+        out[q * 4] = words[q] as u8;
+        out[q * 4 + 1] = (words[q] >> 8) as u8;
+        out[q * 4 + 2] = (words[q] >> 16) as u8;
+        out[q * 4 + 3] = (words[q] >> 24) as u8;
+    }
+    return string { ptr: out, len: 16 };
+}
+
+// --- AEAD: ChaCha20-Poly1305 and XChaCha20-Poly1305 ---
+
+private function le64_str(u64 v): string {
+    u8* p = __rt_alloc_bytes(8);
+    for (usize i = 0; i < 8; i++) {
+        p[i] = ((v >> ((i * 8) as u64)) & 0xff) as u8;
+    }
+    return string { ptr: p, len: 8 };
+}
+
+private function pad16(usize n): string {
+    usize k = (16 - n % 16) % 16;
+    return string { ptr: __rt_alloc_bytes(16), len: k };
+}
+
+private function aead_tag(string key, string nonce, string ct, string aad): string {
+    string otk = chacha20(key, nonce, 0, string { ptr: __rt_alloc_bytes(32), len: 32 });
+    string mac = aad . pad16(len(aad)) . ct . pad16(len(ct)) . le64_str(len(aad) as u64) . le64_str(len(ct) as u64);
+    return poly1305(otk, mac);
+}
+
+// ChaCha20-Poly1305 (RFC 8439, the IETF variant): ciphertext followed by a
+// 16-byte tag. Never encrypt two messages with the same key and nonce.
+function aead_encrypt(string key, string nonce, string plaintext, string aad): string {
+    string ct = chacha20(key, nonce, 1, plaintext);
+    return ct . aead_tag(key, nonce, ct, aad);
+}
+
+function aead_decrypt(string key, string nonce, string sealed, string aad): string!CryptoError {
+    if (len(sealed) < 16) {
+        return CryptoError::Invalid;
+    }
+    string ct = string { ptr: sealed->ptr, len: len(sealed) - 16 };
+    string tag = string { ptr: sealed->ptr + len(sealed) - 16, len: 16 };
+    if (!equal(aead_tag(key, nonce, ct, aad), tag)) {
+        return CryptoError::Forged;
+    }
+    return chacha20(key, nonce, 1, ct);
+}
+
+private function xkey(string key, string nonce24, u8* n12): string {
+    need(nonce24, 24, "crypto: XChaCha20 nonce must be 24 bytes");
+    need(key, 32, "crypto: key must be 32 bytes (use crypto::new_key or hash::hkdf_sha256)");
+    for (usize i = 0; i < 8; i++) {
+        n12[4 + i] = nonce24[16 + i];
+    }
+    return hchacha20(key, nonce24->ptr);
+}
+
+// XChaCha20-Poly1305 with a 24-byte nonce (random nonces are safe).
+// Matches libsodium's crypto_aead_xchacha20poly1305_ietf_*.
+function xaead_encrypt(string key, string nonce, string plaintext, string aad): string {
+    u8* n12 = __rt_alloc_bytes(12);
+    string sub = xkey(key, nonce, n12);
+    return aead_encrypt(sub, string { ptr: n12, len: 12 }, plaintext, aad);
+}
+
+function xaead_decrypt(string key, string nonce, string sealed, string aad): string!CryptoError {
+    u8* n12 = __rt_alloc_bytes(12);
+    string sub = xkey(key, nonce, n12);
+    return aead_decrypt(sub, string { ptr: n12, len: 12 }, sealed, aad);
+}
+
+// A fresh random 32-byte key for seal() and sign().
+function new_key(): string {
+    return random_bytes(32);
+}
+
+// Encrypts and authenticates with a random nonce: the result is
+// nonce (24) + ciphertext + tag (16), 40 bytes longer than the message.
+// Store it as is, or base64url() it for cookies and URLs.
+function seal(string key, string plaintext): string {
+    string nonce = random_bytes(24);
+    return nonce . xaead_encrypt(key, nonce, plaintext, "");
+}
+
+// Undoes seal(); Forged if the data was altered or the key is wrong.
+function open(string key, string sealed): string!CryptoError {
+    if (len(sealed) < 40) {
+        return CryptoError::Invalid;
+    }
+    string nonce = string { ptr: sealed->ptr, len: 24 };
+    string rest = string { ptr: sealed->ptr + 24, len: len(sealed) - 24 };
+    return xaead_decrypt(key, nonce, rest, "");
+}
+
+// --- signed tokens ---
+
+private function decimal(i64 v): string {
+    return "{v}";
+}
+
+private function parse_decimal(string s, bool* ok): i64 {
+    *ok = len(s) > 0 && len(s) <= 18;
+    i64 v = 0;
+    foreach (s as c) {
+        if (c < '0' || c > '9') {
+            *ok = false;
+        }
+        v = v * 10 + (c - '0') as i64;
+    }
+    return v;
+}
+
+// A tamper-proof (not secret) token carrying `message`, valid for
+// `seconds` (0 = forever): for cookies, password-reset and email links.
+// Format: base64url(message).expiry.base64url(HMAC-SHA-256).
+function sign(string key, string message, int seconds): string {
+    i64 expires = seconds > 0 ? time::unix() + seconds as i64 : 0;
+    string body = base64url(message) . "." . decimal(expires);
+    return body . "." . base64url(hash::hmac_sha256(key, "watr-sign-v1." . body));
+}
+
+// The message inside a token from sign(), if its signature is valid and
+// it hasn't expired.
+function unsign(string key, string token): string!CryptoError {
+    usize dot1 = len(token);
+    usize dot2 = len(token);
+    for (usize i = 0; i < len(token); i++) {
+        if (token[i] == '.') {
+            if (dot1 == len(token)) {
+                dot1 = i;
+            } else if (dot2 == len(token)) {
+                dot2 = i;
+            } else {
+                return CryptoError::Invalid;
+            }
+        }
+    }
+    if (dot2 == len(token)) {
+        return CryptoError::Invalid;
+    }
+    string body = string { ptr: token->ptr, len: dot2 };
+    string sig = string { ptr: token->ptr + dot2 + 1, len: len(token) - dot2 - 1 };
+    string want = base64url(hash::hmac_sha256(key, "watr-sign-v1." . body));
+    if (!equal(sig, want)) {
+        return CryptoError::Forged;
+    }
+    bool ok = false;
+    i64 expires = parse_decimal(string { ptr: token->ptr + dot1 + 1, len: dot2 - dot1 - 1 }, &ok);
+    if (!ok) {
+        return CryptoError::Invalid;
+    }
+    if (expires != 0 && time::unix() > expires) {
+        return CryptoError::Expired;
+    }
+    return unbase64url(string { ptr: token->ptr, len: dot1 }) ?? "";
+}

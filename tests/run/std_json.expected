@@ -1,0 +1,15 @@
+{"ok":true,"n":5,"f":2.5,"whole":3.0,"list":[1,2,3],"none":null}
+{"html":"\u003Cb\u003E\u0026\u003C/b\u003E","quote":"say \"hi\"","uni":"héllo","ctl":"a\tb\u0001"}
+[] {"1":"a"} 0.30000000000000004 1.0e+25
+{
+    "a": [
+        1,
+        2
+    ],
+    "b": []
+}
+ada 2 y -12 1500 é🐟
+{"name":"ada","tags":["x","y"],"n":-12,"big":1500.0,"u":"é🐟"}
+rejected rejected rejected rejected rejected rejected 
+true false
+exit: 0

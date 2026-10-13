@@ -1,6 +1,7 @@
 // Pseudo-random numbers: xoshiro256** seeded through splitmix64. Not for
-// cryptography. Rng objects give repeatable sequences from a seed; the
-// module-level functions use one seeded from the kernel's randomness.
+// cryptography: use std/crypto for keys, tokens and anything secret.
+// Rng objects give repeatable sequences from a seed; the module-level
+// functions use one seeded from the kernel's randomness.
 
 import "std/sys";
 import "std/vec";

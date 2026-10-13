@@ -1,0 +1,64 @@
+import "std/crypto";
+
+function main(): int {
+    string key = "kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk";
+    string nonce = "nnnnnnnnnnnnnnnnnnnnnnnn";
+    string ct = crypto::xaead_encrypt(key, nonce, "attack at dawn", "hdr");
+    echo crypto::hex(ct), "\n";
+    echo crypto::xaead_decrypt(key, nonce, ct, "hdr") ?? "?", "\n";
+    string!crypto::CryptoError wrong_aad = crypto::xaead_decrypt(key, nonce, ct, "HDR");
+    echo "wrong aad: ", wrong_aad->error, "\n";
+
+    string k2 = crypto::new_key();
+    string box = crypto::seal(k2, "secret note");
+    echo "sealed adds ", len(box) - len("secret note"), " bytes\n";
+    echo crypto::open(k2, box) ?? "?", "\n";
+    u8* flip = box->ptr as u8*;
+    flip[30] = flip[30] ^ 1;
+    string!crypto::CryptoError tampered = crypto::open(k2, box);
+    echo "tampered: ", tampered->error, "\n";
+    string!crypto::CryptoError other_key = crypto::open(crypto::new_key(), crypto::seal(k2, "x"));
+    echo "other key: ", other_key->error, "\n";
+
+    string tok = crypto::sign(k2, "user=42; admin=no", 60);
+    echo crypto::unsign(k2, tok) ?? "?", "\n";
+    string!crypto::CryptoError forged = crypto::unsign(k2, crypto::base64url("user=42; admin=yes") . str_after_first_dot(tok));
+    echo "forged: ", forged->error, "\n";
+    string!crypto::CryptoError expired = crypto::unsign(k2, crypto::sign(k2, "old", -5));
+    echo "never-expiring with ttl<=0: ", expired->ok, "\n";
+    string!crypto::CryptoError junk = crypto::unsign(k2, "not-a-token");
+    echo "junk: ", junk->error, "\n";
+
+    echo crypto::base64("any carnal pleas"), " ", crypto::base64url("\xfb\xff"), " ", crypto::unbase64("YW55IGNhcm5hbCBwbGVhcw==") ?? "?", "\n";
+    string!crypto::CryptoError bad64 = crypto::unbase64("YW5*");
+    echo "bad base64: ", bad64->error, "\n";
+    echo crypto::hex("\x00\x7f\xff"), " ", crypto::equal("abc", "abc"), " ", crypto::equal("abc", "abd"), " ", crypto::equal("abc", "ab"), "\n";
+    bool in_range = true;
+    int[6] seen = [0, 0, 0, 0, 0, 0];
+    for (int i = 0; i < 6000; i++) {
+        int r = crypto::random_int(1, 6);
+        if (r < 1 || r > 6) {
+            in_range = false;
+        } else {
+            seen[r - 1]++;
+        }
+    }
+    bool all_seen = true;
+    foreach (seen as n) {
+        if (n < 800) {
+            all_seen = false;
+        }
+    }
+    echo "random_int in range: ", in_range, ", every face common: ", all_seen, "\n";
+    echo "token length: ", len(crypto::random_token(32)), ", tokens differ: ", crypto::random_token(16) != crypto::random_token(16), "\n";
+    return 0;
+}
+
+function str_after_first_dot(string s): string {
+    for (usize i = 0; i < len(s); i++) {
+        if (s[i] == '.') {
+            return string { ptr: s->ptr + i, len: len(s) - i };
+        }
+    }
+    return "";
+}

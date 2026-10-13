@@ -1,0 +1,621 @@
+// JSON, like PHP's json_encode/json_decode, for PHP-style arrays and mixed:
+//
+//     import "std/json";
+//     string text = json::encode(["ok" => true, "items" => [1, 2, 3], "user" => ["name" => "ada"]]);
+//     // {"ok":true,"items":[1,2,3],"user":{"name":"ada"}}
+//     mixed data = json::decode("\{\"n\": 5\}") ?? null;   // \{ is a literal brace
+//
+// encode: arrays with keys 0, 1, 2... become JSON arrays, other arrays
+// become objects (an empty array is []). Strings are written as UTF-8
+// (invalid bytes become U+FFFD), and < > & are escaped as < >
+// & so the output is safe inside an HTML <script>. Floats use the
+// shortest form that reads back exactly and keep a ".0" (so 1.0 stays a
+// float); NaN and infinity become null, as do objects.
+// decode: objects become arrays with string keys, arrays become lists,
+// numbers become int (or float when they have a fraction, an exponent or
+// don't fit in 64 bits). Input must be strict JSON (RFC 8259).
+
+import "std/arrays";
+import "std/str";
+
+extern function snprintf(u8* buf, usize n, const u8* fmt, ...): i32;
+extern function strtod(const u8* s, u8** end): f64;
+
+enum JsonError { Syntax, Depth }
+
+private const string HEX = "0123456789abcdef";
+
+// --- encoding ---
+
+private class Out {
+    public u8* data;
+    public usize n = 0;
+    private usize cap = 0;
+
+    public function __construct() {
+        this->cap = 256;
+        this->data = __rt_alloc_bytes(256);
+    }
+
+    public function need(usize k) {
+        if (this->n + k <= this->cap) {
+            return;
+        }
+        usize want = this->cap * 2;
+        while (want < this->n + k) {
+            want = want * 2;
+        }
+        u8* bigger = __rt_alloc_bytes(want);
+        __rt_copy(bigger, this->data, this->n);
+        this->data = bigger;
+        this->cap = want;
+    }
+
+    public function byte(u8 b) {
+        this->need(1);
+        this->data[this->n] = b;
+        this->n++;
+    }
+
+    public function add(string s) {
+        this->need(len(s));
+        __rt_copy(this->data + this->n, s->ptr, len(s));
+        this->n += len(s);
+    }
+
+    public function text(): string {
+        return string { ptr: this->data, len: this->n };
+    }
+}
+
+// Length of a valid UTF-8 sequence starting at s[i], or 0 if invalid.
+private function utf8_len(string s, usize i): usize {
+    u8 c = s[i];
+    usize need = 0;
+    u32 min = 0;
+    u32 cp = 0;
+    if (c < 0x80) {
+        return 1;
+    } else if (c >= 0xC2 && c <= 0xDF) {
+        need = 1;
+        min = 0x80;
+        cp = (c & 0x1F) as u32;
+    } else if (c >= 0xE0 && c <= 0xEF) {
+        need = 2;
+        min = 0x800;
+        cp = (c & 0x0F) as u32;
+    } else if (c >= 0xF0 && c <= 0xF4) {
+        need = 3;
+        min = 0x10000;
+        cp = (c & 0x07) as u32;
+    } else {
+        return 0;
+    }
+    if (i + need >= len(s)) {
+        return 0;
+    }
+    for (usize k = 1; k <= need; k++) {
+        u8 cc = s[i + k];
+        if ((cc & 0xC0) != 0x80) {
+            return 0;
+        }
+        cp = (cp << 6) | ((cc & 0x3F) as u32);
+    }
+    if (cp < min || cp > 0x10FFFF || (cp >= 0xD800 && cp <= 0xDFFF)) {
+        return 0;
+    }
+    return need + 1;
+}
+
+// How many bytes an invalid sequence at s[i] covers: a lead byte plus the
+// continuation bytes that were still valid (Unicode's "maximal subpart",
+// as PHP and browsers do it).
+private function bad_len(string s, usize i): usize {
+    u8 c = s[i];
+    usize need = 0;
+    u8 lo = 0x80;
+    u8 hi = 0xBF;
+    if (c >= 0xC2 && c <= 0xDF) {
+        need = 1;
+    } else if (c >= 0xE0 && c <= 0xEF) {
+        need = 2;
+        if (c == 0xE0) { lo = 0xA0; }
+        if (c == 0xED) { hi = 0x9F; }
+    } else if (c >= 0xF0 && c <= 0xF4) {
+        need = 3;
+        if (c == 0xF0) { lo = 0x90; }
+        if (c == 0xF4) { hi = 0x8F; }
+    } else {
+        return 1;
+    }
+    usize k = 1;
+    while (k <= need && i + k < len(s)) {
+        u8 cc = s[i + k];
+        bool ok = k == 1 ? cc >= lo && cc <= hi : (cc & 0xC0) == 0x80;
+        if (!ok) {
+            break;
+        }
+        k++;
+    }
+    return k;
+}
+
+private function write_string(Out o, string s) {
+    o->byte('"');
+    usize i = 0;
+    while (i < len(s)) {
+        u8 c = s[i];
+        if (c == '"') {
+            o->add("\\\"");
+        } else if (c == '\\') {
+            o->add("\\\\");
+        } else if (c == '\n') {
+            o->add("\\n");
+        } else if (c == '\r') {
+            o->add("\\r");
+        } else if (c == '\t') {
+            o->add("\\t");
+        } else if (c == 0x08) {
+            o->add("\\b");
+        } else if (c == 0x0C) {
+            o->add("\\f");
+        } else if (c == '<') {
+            o->add("\\u003C");
+        } else if (c == '>') {
+            o->add("\\u003E");
+        } else if (c == '&') {
+            o->add("\\u0026");
+        } else if (c < 0x20) {
+            o->add("\\u00");
+            o->byte(HEX[(c >> 4) as usize]);
+            o->byte(HEX[(c & 15) as usize]);
+        } else if (c < 0x80) {
+            o->byte(c);
+        } else {
+            usize n = utf8_len(s, i);
+            if (n == 0) {
+                o->add("\xef\xbf\xbd");              // U+FFFD per bad sequence
+                i += bad_len(s, i);
+                continue;
+            }
+            if (n == 3 && c == 0xE2 && s[i + 1] == 0x80 && (s[i + 2] == 0xA8 || s[i + 2] == 0xA9)) {
+                o->add(s[i + 2] == 0xA8 ? "\\u2028" : "\\u2029");   // JavaScript line terminators
+            } else {
+                o->add(string { ptr: s->ptr + i, len: n });
+            }
+            i += n;
+            continue;
+        }
+        i++;
+    }
+    o->byte('"');
+}
+
+// The shortest digits that read back as exactly x, written like PHP:
+// 100.0, 0.1, 1.0e+25, 1.0e-7 (exponent form below 1e-4 and from 1e15).
+private function write_float(Out o, f64 x) {
+    if (x != x || x > 1.7976931348623157e308 || x < -1.7976931348623157e308) {
+        o->add("null");
+        return;
+    }
+    u8[64] buf;
+    i32 digits = 1;
+    usize n = 0;
+    while (digits <= 17) {
+        n = snprintf(&buf[0], 64, "%.*e"->ptr, digits - 1, x) as usize;
+        if (strtod(&buf[0], null) == x) {
+            break;
+        }
+        digits++;
+    }
+    // buf is now like "-1.2345e+07": find the exponent.
+    string sci = string { ptr: &buf[0], len: n };
+    int epos = str::index_of(sci, "e");
+    int exp = str::to_int(str::substr(sci, (epos + 1) as usize, len(sci))) ?? 0;
+    if (exp >= -4 && exp < 15) {
+        i32 decimals = digits - 1 - exp as i32;
+        if (decimals < 0) {
+            decimals = 0;
+        }
+        u8[400] fixed;
+        usize fn_ = snprintf(&fixed[0], 400, "%.*f"->ptr, decimals, x) as usize;
+        string text = string { ptr: &fixed[0], len: fn_ };
+        o->add(text);
+        if (!str::contains(text, ".")) {
+            o->add(".0");
+        }
+        return;
+    }
+    string mantissa = str::substr(sci, 0, epos as usize);
+    o->add(mantissa);
+    if (!str::contains(mantissa, ".")) {
+        o->add(".0");
+    }
+    o->add(exp < 0 ? "e-" : "e+");
+    o->add("{exp < 0 ? -exp : exp}");
+}
+
+private function is_list(array a): bool {
+    int i = 0;
+    foreach (a as k => _v) {
+        if (arrays::type_of(k) != "int" || k as int != i) {
+            return false;
+        }
+        i++;
+    }
+    return true;
+}
+
+private function newline(Out o, int indent, int depth) {
+    if (indent > 0) {
+        o->byte('\n');
+        for (int i = 0; i < indent * depth; i++) {
+            o->byte(' ');
+        }
+    }
+}
+
+private function write_value(Out o, mixed v, int indent, int depth) {
+    string t = arrays::type_of(v);
+    if (t == "null" || t == "object" || depth > 512) {
+        o->add("null");
+    } else if (t == "bool") {
+        o->add(v as bool ? "true" : "false");
+    } else if (t == "int") {
+        int n = v as int;
+        o->add("{n}");
+    } else if (t == "float") {
+        write_float(o, v as f64);
+    } else if (t == "string") {
+        write_string(o, v as string);
+    } else {
+        array a = v as array;
+        bool list = is_list(a);
+        if (len(a) == 0) {
+            o->add(list ? "[]" : "\{\}");
+            return;
+        }
+        o->byte(list ? '[' : '{');
+        bool first = true;
+        foreach (a as k => item) {
+            if (!first) {
+                o->byte(',');
+            }
+            first = false;
+            newline(o, indent, depth + 1);
+            if (!list) {
+                write_string(o, arrays::type_of(k) == "int" ? "{k as int}" : k as string);
+                o->add(indent > 0 ? ": " : ":");
+            }
+            write_value(o, item, indent, depth + 1);
+        }
+        newline(o, indent, depth);
+        o->byte(list ? ']' : '}');
+    }
+}
+
+// Compact JSON for any value: arrays (nested), strings, ints, floats,
+// bools and null.
+function encode(mixed value): string {
+    Out o = new Out();
+    write_value(o, value, 0, 0);
+    return o->text();
+}
+
+// Like encode, indented by 4 spaces (PHP's JSON_PRETTY_PRINT).
+function pretty(mixed value): string {
+    Out o = new Out();
+    write_value(o, value, 4, 0);
+    return o->text();
+}
+
+// --- decoding ---
+
+private class Parser {
+    public string s;
+    public usize i = 0;
+    public bool bad = false;
+    public bool too_deep = false;
+
+    public function __construct(string s) {
+        this->s = s;
+    }
+
+    public function ws() {
+        while (this->i < len(this->s)) {
+            u8 c = this->s[this->i];
+            if (c != ' ' && c != '\t' && c != '\n' && c != '\r') {
+                return;
+            }
+            this->i++;
+        }
+    }
+
+    public function fail(): mixed {
+        this->bad = true;
+        return null;
+    }
+
+    private function literal(string word, mixed v): mixed {
+        if (this->i + len(word) > len(this->s) || str::substr(this->s, this->i, len(word)) != word) {
+            return this->fail();
+        }
+        this->i += len(word);
+        return v;
+    }
+
+    public function value(int depth): mixed {
+        if (depth > 512) {
+            this->too_deep = true;
+            return this->fail();
+        }
+        this->ws();
+        if (this->i >= len(this->s)) {
+            return this->fail();
+        }
+        u8 c = this->s[this->i];
+        if (c == '{') {
+            return this->object(depth);
+        }
+        if (c == '[') {
+            return this->list(depth);
+        }
+        if (c == '"') {
+            return this->string_value();
+        }
+        if (c == 't') {
+            return this->literal("true", true);
+        }
+        if (c == 'f') {
+            return this->literal("false", false);
+        }
+        if (c == 'n') {
+            return this->literal("null", null);
+        }
+        if (c == '-' || (c >= '0' && c <= '9')) {
+            return this->number();
+        }
+        return this->fail();
+    }
+
+    private function object(int depth): mixed {
+        array out;
+        this->i++;
+        this->ws();
+        if (this->i < len(this->s) && this->s[this->i] == '}') {
+            this->i++;
+            return out;
+        }
+        while (true) {
+            this->ws();
+            if (this->i >= len(this->s) || this->s[this->i] != '"') {
+                return this->fail();
+            }
+            mixed key = this->string_value();
+            if (this->bad) {
+                return null;
+            }
+            this->ws();
+            if (this->i >= len(this->s) || this->s[this->i] != ':') {
+                return this->fail();
+            }
+            this->i++;
+            mixed v = this->value(depth + 1);
+            if (this->bad) {
+                return null;
+            }
+            out[key as string] = v;
+            this->ws();
+            if (this->i >= len(this->s)) {
+                return this->fail();
+            }
+            u8 c = this->s[this->i];
+            this->i++;
+            if (c == '}') {
+                return out;
+            }
+            if (c != ',') {
+                return this->fail();
+            }
+        }
+    }
+
+    private function list(int depth): mixed {
+        array out;
+        this->i++;
+        this->ws();
+        if (this->i < len(this->s) && this->s[this->i] == ']') {
+            this->i++;
+            return out;
+        }
+        while (true) {
+            mixed v = this->value(depth + 1);
+            if (this->bad) {
+                return null;
+            }
+            out[] = v;
+            this->ws();
+            if (this->i >= len(this->s)) {
+                return this->fail();
+            }
+            u8 c = this->s[this->i];
+            this->i++;
+            if (c == ']') {
+                return out;
+            }
+            if (c != ',') {
+                return this->fail();
+            }
+        }
+    }
+
+    private function hex4(): int {
+        if (this->i + 4 > len(this->s)) {
+            return -1;
+        }
+        int v = 0;
+        for (usize k = 0; k < 4; k++) {
+            u8 c = this->s[this->i + k];
+            int d = -1;
+            if (c >= '0' && c <= '9') { d = (c - '0') as int; }
+            else if (c >= 'a' && c <= 'f') { d = (c - 'a') as int + 10; }
+            else if (c >= 'A' && c <= 'F') { d = (c - 'A') as int + 10; }
+            if (d < 0) {
+                return -1;
+            }
+            v = v * 16 + d;
+        }
+        this->i += 4;
+        return v;
+    }
+
+    private function put_utf8(Out o, int cp) {
+        if (cp < 0x80) {
+            o->byte(cp as u8);
+        } else if (cp < 0x800) {
+            o->byte((0xC0 | (cp >> 6)) as u8);
+            o->byte((0x80 | (cp & 0x3F)) as u8);
+        } else if (cp < 0x10000) {
+            o->byte((0xE0 | (cp >> 12)) as u8);
+            o->byte((0x80 | ((cp >> 6) & 0x3F)) as u8);
+            o->byte((0x80 | (cp & 0x3F)) as u8);
+        } else {
+            o->byte((0xF0 | (cp >> 18)) as u8);
+            o->byte((0x80 | ((cp >> 12) & 0x3F)) as u8);
+            o->byte((0x80 | ((cp >> 6) & 0x3F)) as u8);
+            o->byte((0x80 | (cp & 0x3F)) as u8);
+        }
+    }
+
+    public function string_value(): mixed {
+        this->i++;
+        Out o = new Out();
+        while (true) {
+            if (this->i >= len(this->s)) {
+                return this->fail();
+            }
+            u8 c = this->s[this->i];
+            if (c == '"') {
+                this->i++;
+                return o->text();
+            }
+            if (c < 0x20) {
+                return this->fail();               // raw control characters aren't allowed
+            }
+            if (c != '\\') {
+                o->byte(c);
+                this->i++;
+                continue;
+            }
+            this->i++;
+            if (this->i >= len(this->s)) {
+                return this->fail();
+            }
+            u8 e = this->s[this->i];
+            this->i++;
+            if (e == '"') { o->byte('"'); }
+            else if (e == '\\') { o->byte('\\'); }
+            else if (e == '/') { o->byte('/'); }
+            else if (e == 'b') { o->byte(0x08); }
+            else if (e == 'f') { o->byte(0x0C); }
+            else if (e == 'n') { o->byte('\n'); }
+            else if (e == 'r') { o->byte('\r'); }
+            else if (e == 't') { o->byte('\t'); }
+            else if (e == 'u') {
+                int cp = this->hex4();
+                if (cp < 0) {
+                    return this->fail();
+                }
+                if (cp >= 0xD800 && cp <= 0xDBFF && this->i + 6 <= len(this->s)
+                    && this->s[this->i] == '\\' && this->s[this->i + 1] == 'u') {
+                    usize save = this->i;
+                    this->i += 2;
+                    int lo = this->hex4();
+                    if (lo >= 0xDC00 && lo <= 0xDFFF) {
+                        cp = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00);
+                    } else {
+                        this->i = save;
+                    }
+                }
+                if (cp >= 0xD800 && cp <= 0xDFFF) {
+                    return this->fail();               // a lone surrogate (PHP rejects these too)
+                }
+                this->put_utf8(o, cp);
+            } else {
+                return this->fail();
+            }
+        }
+    }
+
+    private function digits(): usize {
+        usize start = this->i;
+        while (this->i < len(this->s) && this->s[this->i] >= '0' && this->s[this->i] <= '9') {
+            this->i++;
+        }
+        return this->i - start;
+    }
+
+    private function number(): mixed {
+        usize start = this->i;
+        if (this->s[this->i] == '-') {
+            this->i++;
+        }
+        if (this->i >= len(this->s)) {
+            return this->fail();
+        }
+        if (this->s[this->i] == '0') {
+            this->i++;
+        } else if (this->digits() == 0) {
+            return this->fail();
+        }
+        bool is_float = false;
+        if (this->i < len(this->s) && this->s[this->i] == '.') {
+            this->i++;
+            if (this->digits() == 0) {
+                return this->fail();
+            }
+            is_float = true;
+        }
+        if (this->i < len(this->s) && (this->s[this->i] == 'e' || this->s[this->i] == 'E')) {
+            this->i++;
+            if (this->i < len(this->s) && (this->s[this->i] == '+' || this->s[this->i] == '-')) {
+                this->i++;
+            }
+            if (this->digits() == 0) {
+                return this->fail();
+            }
+            is_float = true;
+        }
+        string text = str::substr(this->s, start, this->i - start);
+        if (!is_float) {
+            // Integers that fit in 64 bits stay ints; larger ones become floats (like PHP).
+            usize nd = len(text) - (text[0] == '-' ? 1 : 0);
+            if (nd < 19 || (nd == 19 && (text[0] == '-' ? str::substr(text, 1, 19) <= "9223372036854775808" : text <= "9223372036854775807"))) {
+                return str::to_int(text) ?? 0;
+            }
+        }
+        string z = text . "\x00";
+        return strtod(z->ptr, null);
+    }
+}
+
+// Parses JSON text. Syntax for malformed input, Depth for nesting past 512.
+function decode(string text): mixed!JsonError {
+    Parser p = new Parser(text);
+    mixed v = p->value(0);
+    if (!p->bad) {
+        p->ws();
+        if (p->i != len(text)) {
+            p->bad = true;                       // trailing garbage
+        }
+    }
+    if (p->bad) {
+        return p->too_deep ? JsonError::Depth : JsonError::Syntax;
+    }
+    return v;
+}
+
+// True if text is valid JSON.
+function valid(string text): bool {
+    return decode(text)->ok;
+}
