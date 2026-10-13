@@ -1,0 +1,26 @@
+function gcd(int a, int b): int {
+    while (b != 0) {
+        int t = b;
+        b = a % b;
+        a = t;
+    }
+    return a;
+}
+
+function is_prime(int n): int {
+    if (n < 2) return 0;
+    for (int d = 2; d * d <= n; d++) {
+        if (n % d == 0) return 0;
+    }
+    return 1;
+}
+
+function count_primes(int below): int {
+    int count = 0;
+    for (int n = 0; n < below; n++) count += is_prime(n);
+    return count;
+}
+
+function main(): int {
+    return (gcd(1071, 462) == 21) + (count_primes(1000) == 168) * 2;
+}

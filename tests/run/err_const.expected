@@ -1,0 +1,26 @@
+tests/run/err_const.watr:3:5: error: can't assign to 'p' because it's a constant
+ 3 |     p = 2;
+   |     ^
+tests/run/err_const.watr:2:22: note: 'p' is declared const here
+ 2 | function f(const int p): int {
+   |                      ^
+tests/run/err_const.watr:8:5: error: can't increment 'local' because it's a constant
+ 8 |     local++;
+   |     ^~~~~
+tests/run/err_const.watr:7:15: note: 'local' is declared const here
+ 7 |     const int local = 1;
+   |               ^~~~~
+tests/run/err_const.watr:9:5: error: can't assign to 'K' because it's a constant
+ 9 |     K = 6;
+   |     ^
+tests/run/err_const.watr:1:11: note: 'K' is declared const here
+ 1 | const int K = 5;
+   |           ^
+tests/run/err_const.watr:10:15: error: constant 'missing' needs a value
+ 10 |     const int missing;
+    |               ^~~~~~~
+tests/run/err_const.watr:11:5: error: 'f' is a function, not a variable
+ 11 |     f = 3;
+    |     ^
+5 errors
+compile failed: 1

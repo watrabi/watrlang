@@ -1,0 +1,17 @@
+tests/run/err_args.watr:3:20: error: 'two' takes 2 arguments, but 1 was given
+ 3 |     int two_args = two(1);
+   |                    ^~~~~~
+tests/run/err_args.watr:1:10: note: 'two' is defined here
+ 1 | function two(int a, int b): int { return a + b; }
+   |          ^~~
+tests/run/err_args.watr:4:16: error: 'two' takes 2 arguments, but 3 were given
+ 4 |     two_args = two(1, 2, 3);
+   |                ^~~~~~~~~~~~
+tests/run/err_args.watr:1:10: note: 'two' is defined here
+ 1 | function two(int a, int b): int { return a + b; }
+   |          ^~~
+tests/run/err_args.watr:5:13: error: 'two_args' is a variable, not a function
+ 5 |     int v = two_args();
+   |             ^~~~~~~~
+3 errors
+compile failed: 1

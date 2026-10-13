@@ -1,0 +1,13 @@
+const int K = 5;
+function f(const int p): int {
+    p = 2;
+    return p;
+}
+function main(): int {
+    const int local = 1;
+    local++;
+    K = 6;
+    const int missing;
+    f = 3;
+    return 0;
+}

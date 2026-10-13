@@ -186,6 +186,19 @@ function outb(u16 port, u8 val): void {
   `function __construct(int x) { ... }`.
 - **Struct literals** are `Name { field: value }`. The parser recognizes
   them by `Name {` followed by `}` or `field:`.
+- **Variables start at zero.** `int x;` is `0`, never leftover stack
+  garbage.
+- **No shadowing inside a function.** A local can't reuse the name of
+  another local or parameter that's still in scope (it may reuse a
+  global's name). Separate blocks can reuse names.
+- **Assignment is a statement, not a value.** `if (x = 5)` and
+  `a = b = c` are errors. `++`/`--` still produce values (`arr[i++]`).
+- **Evaluation order is left to right**, for operands and for function
+  arguments alike.
+- **Global initializers must be constant.** They're evaluated at compile
+  time; `const` globals can be used in later initializers.
+- **Return checking:** an `int` function must not be able to reach its end.
+  `while (1) { ... }` with no `break` counts as never ending.
 - **Strings:** `string` is an immutable `{u8* ptr, usize len}` slice. Literals
   go in `.rodata`, so strings work even when freestanding. Only `.` and
   interpolation allocate, which means they need the runtime/GC (or a

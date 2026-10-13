@@ -1,0 +1,20 @@
+int shared = 100;
+
+function main(): int {
+    int result = 0;
+    {
+        int inner = 1;
+        result += inner;
+    }
+    {
+        int inner = 2;   // a new variable: the first `inner` is gone
+        result += inner;
+    }
+    for (int i = 0; i < 2; i++) {
+        int each = 10;   // fresh (and zeroed) every iteration
+        each += i;
+        result += each;
+    }
+    int shared = 5;      // locals may shadow globals
+    return result + shared;   // 1 + 2 + 10 + 11 + 5 = 29
+}

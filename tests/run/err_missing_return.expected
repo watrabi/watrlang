@@ -1,0 +1,11 @@
+tests/run/err_missing_return.watr:1:10: error: function 'f' can reach its end without returning a value
+ 1 | function f(int x): int {
+   |          ^
+tests/run/err_missing_return.watr:4:10: error: function 'g' can reach its end without returning a value
+ 4 | function g(int x): int {
+   |          ^
+tests/run/err_missing_return.watr:7:10: error: function 'h' can reach its end without returning a value
+ 7 | function h(): int {
+   |          ^
+3 errors
+compile failed: 1

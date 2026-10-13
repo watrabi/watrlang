@@ -1,0 +1,5 @@
+function main(): int {
+    break;
+    if (1) { continue; }
+    return nope + missing();
+}

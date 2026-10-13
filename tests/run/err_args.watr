@@ -1,0 +1,7 @@
+function two(int a, int b): int { return a + b; }
+function main(): int {
+    int two_args = two(1);
+    two_args = two(1, 2, 3);
+    int v = two_args();
+    return 0;
+}

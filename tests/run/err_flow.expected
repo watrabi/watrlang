@@ -1,0 +1,14 @@
+tests/run/err_flow.watr:2:5: error: 'break' can only be used inside a loop
+ 2 |     break;
+   |     ^~~~~
+tests/run/err_flow.watr:3:14: error: 'continue' can only be used inside a loop
+ 3 |     if (1) { continue; }
+   |              ^~~~~~~~
+tests/run/err_flow.watr:4:12: error: there is no variable named 'nope'
+ 4 |     return nope + missing();
+   |            ^~~~
+tests/run/err_flow.watr:4:19: error: there is no function named 'missing'
+ 4 |     return nope + missing();
+   |                   ^~~~~~~
+4 errors
+compile failed: 1

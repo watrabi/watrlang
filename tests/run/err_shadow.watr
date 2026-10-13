@@ -1,0 +1,9 @@
+function f(int a): int {
+    int a = 2;
+    int b = 1;
+    if (b) {
+        int b = 3;
+    }
+    return a;
+}
+function main(): int { return f(1); }

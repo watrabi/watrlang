@@ -1,0 +1,5 @@
+int counter = 0;
+int bad = counter + 1;
+const int DIV = 10 / 0;
+int call = main();
+function main(): int { return 0; }

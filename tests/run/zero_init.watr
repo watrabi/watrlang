@@ -1,0 +1,16 @@
+function dirty(): int {
+    int a = 111;
+    int b = 222;
+    return a + b;
+}
+
+function clean(): int {
+    int x;   // starts at 0 even though dirty() just used this stack space
+    int y;
+    return x + y;
+}
+
+function main(): int {
+    dirty();
+    return clean() == 0;
+}

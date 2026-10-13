@@ -1,0 +1,5 @@
+tests/run/err_self_init.watr:2:13: error: there is no variable named 'x'
+ 2 |     int x = x + 1;
+   |             ^
+1 error
+compile failed: 1

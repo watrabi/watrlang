@@ -1,0 +1,11 @@
+tests/run/err_assign_value.watr:3:9: error: an assignment can't be used as a value (did you mean '=='?)
+ 3 |     if (x = 2) { return 1; }
+   |         ^~~~~
+tests/run/err_assign_value.watr:4:14: error: an assignment can't be used as a value
+ 4 |     int y = (x += 1);
+   |              ^~~~~~
+tests/run/err_assign_value.watr:5:9: error: assignments can't be chained; assign each variable separately
+ 5 |     x = y = 3;
+   |         ^~~~~
+3 errors
+compile failed: 1

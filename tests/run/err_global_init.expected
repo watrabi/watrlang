@@ -1,0 +1,11 @@
+tests/run/err_global_init.watr:2:11: error: 'counter' isn't a constant; global initializers must be constant
+ 2 | int bad = counter + 1;
+   |           ^~~~~~~
+tests/run/err_global_init.watr:3:17: error: division by zero
+ 3 | const int DIV = 10 / 0;
+   |                 ^~~~~~
+tests/run/err_global_init.watr:4:12: error: global initializers must be constant expressions
+ 4 | int call = main();
+   |            ^~~~~~
+3 errors
+compile failed: 1

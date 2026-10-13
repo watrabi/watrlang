@@ -1,0 +1,30 @@
+function sum_to(int n): int {
+    int total = 0;
+    for (int i = 1; i <= n; i++) {
+        total += i;
+    }
+    return total;
+}
+
+function count_down(int n): int {
+    int steps = 0;
+    while (n > 0) {
+        n -= 1;
+        steps++;
+    }
+    return steps;
+}
+
+function do_once(): int {
+    int runs = 0;
+    do {
+        runs++;
+    } while (runs < 0);   // condition is false, but the body runs once
+    return runs;
+}
+
+function main(): int {
+    return (sum_to(100) == 5050)
+         + (count_down(7) == 7) * 2
+         + (do_once() == 1) * 4;
+}

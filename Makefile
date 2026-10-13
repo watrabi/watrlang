@@ -30,6 +30,7 @@ $(BUILD):
 test: $(BUILD)/watrc
 	./tests/run_tests.sh
 	python3 tests/expr_fuzz.py
+	python3 tests/prog_fuzz.py
 
 clean:
 	rm -rf $(BUILD)

@@ -1,0 +1,16 @@
+const int BASE = 10;
+const int LIMIT = BASE * 4 + 2;   // folded at compile time: 42
+int counter;                      // starts at 0
+int start = -5;
+
+function bump(): void {
+    counter++;
+}
+
+function main(): int {
+    bump();
+    bump();
+    bump();
+    start += counter;
+    return (LIMIT == 42) + (counter == 3) * 2 + (start == -2) * 4;
+}

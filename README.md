@@ -23,8 +23,9 @@ The full plan is in [docs/DESIGN.md](docs/DESIGN.md).
 | 1. Lexer | done |
 | 2. Parser | done |
 | 3. First binary: int math, calls, return | done |
-| 4. Variables, if/while/for, parameters | next |
-| 5+. Types, FFI, strings, ... | planned |
+| 4. Variables, if/while/for, parameters, globals | done |
+| 5. Type system (sized ints, bool, pointers, structs, floats) | next |
+| 6+. FFI, strings, modules, ... | planned |
 
 ## Build
 
@@ -46,8 +47,13 @@ Each `tests/lexer/*.watr` (token dump), `tests/parser/*.watr` (syntax
 tree) and `tests/run/*.watr` (compiled and run) has a `.expected` file
 holding the output, error messages and exit code.
 
-`tests/expr_fuzz.py` is a differential tester: it compiles thousands of
-random integer expressions and checks every result against a Python model
-of watrlang's arithmetic. `make test` runs a quick pass; for a long one:
-`python3 tests/expr_fuzz.py --seed 5 --programs 500`. After an intentional output change, regenerate
+Two differential testers compile random code and check every result
+against a Python model of watrlang:
+
+- `tests/expr_fuzz.py`: integer expressions
+- `tests/prog_fuzz.py`: whole programs with variables, if/else, loops,
+  break/continue and calls with up to 8 arguments
+
+`make test` runs a quick pass of each; for a long one add
+`--seed 5 --programs 500`. After an intentional output change, regenerate
 them with `UPDATE=1 ./tests/run_tests.sh` and review the diff.

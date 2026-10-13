@@ -1,0 +1,29 @@
+// Sum of odd numbers below 20, stopping early at 15: 1+3+...+13 = 49
+function main(): int {
+    int total = 0;
+    for (int i = 0; ; i++) {
+        if (i >= 15) break;
+        if (i % 2 == 0) continue;
+        total += i;
+    }
+
+    // break/continue apply to the innermost loop only
+    int pairs = 0;
+    for (int a = 0; a < 5; a++) {
+        for (int b = 0; b < 5; b++) {
+            if (b > a) break;
+            pairs++;
+        }
+    }
+
+    int n = 0;
+    do {
+        n++;
+        if (n < 3) continue;
+        break;
+    } while (true_ish());
+
+    return (total == 49) + (pairs == 15) * 2 + (n == 3) * 4;
+}
+
+function true_ish(): int { return 1; }

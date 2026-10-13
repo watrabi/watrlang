@@ -1,14 +1,8 @@
-tests/run/err_not_yet.watr:2:5: error: not supported yet: local variables (planned for milestone 4)
- 2 |     int x = 5;
-   |     ^~~~~~~~~
-tests/run/err_not_yet.watr:3:5: error: not supported yet: 'if' (planned for milestone 4)
- 3 |     if (x) { return 1; }
-   |     ^~
 tests/run/err_not_yet.watr:4:5: error: not supported yet: 'echo' (planned for milestone 7)
  4 |     echo "hi";
    |     ^~~~~~~~~~
 tests/run/err_not_yet.watr:5:12: error: not supported yet: strings (planned for milestone 7)
  5 |     return "nope";
    |            ^~~~~~
-4 errors
+2 errors
 compile failed: 1
