@@ -1,26 +1,65 @@
-tests/run/err_const.watr:3:5: error: can't assign to 'p' because it's a constant
- 3 |     p = 2;
-   |     ^
-tests/run/err_const.watr:2:22: note: 'p' is declared const here
+error[E0207]: cannot assign to `p`, because it's a constant
+ --> tests/run/err_const.watr:3:5
+  |
+2 | function f(const int p): int {
+  |                      - `p` is declared `const` here
+3 |     p = 2;
+  |     ^ can't assign to a constant
+  |
+help: if `p` needs to change, remove `const`
+  |
+2 | function f(const int p): int {
+  |            ------
+
+error[E0207]: cannot increment `local`, because it's a constant
+ --> tests/run/err_const.watr:8:5
+  |
+7 |     const int local = 1;
+  |               ----- `local` is declared `const` here
+8 |     local++;
+  |     ^^^^^ can't increment a constant
+  |
+help: if `local` needs to change, remove `const`
+  |
+7 |     const int local = 1;
+  |     ------
+
+error[E0207]: cannot assign to `K`, because it's a constant
+ --> tests/run/err_const.watr:9:5
+  |
+1 | const int K = 5;
+  |           - `K` is declared `const` here
+...
+9 |     K = 6;
+  |     ^ can't assign to a constant
+  |
+help: if `K` needs to change, remove `const`
+  |
+1 | const int K = 5;
+  | ------
+
+error[E0208]: constant `missing` needs a value
+  --> tests/run/err_const.watr:10:15
+   |
+10 |     const int missing;
+   |               ^^^^^^^ declared without a value
+   |
+   = note: a constant can never be assigned later, so it must be given a value here
+help: give it a value
+   |
+10 |     const int missing = 0;
+   |                      ++++
+
+error[E0209]: can't assign to `f` because it's a function
+  --> tests/run/err_const.watr:11:5
+   |
  2 | function f(const int p): int {
-   |                      ^
-tests/run/err_const.watr:8:5: error: can't increment 'local' because it's a constant
- 8 |     local++;
-   |     ^~~~~
-tests/run/err_const.watr:7:15: note: 'local' is declared const here
- 7 |     const int local = 1;
-   |               ^~~~~
-tests/run/err_const.watr:9:5: error: can't assign to 'K' because it's a constant
- 9 |     K = 6;
-   |     ^
-tests/run/err_const.watr:1:11: note: 'K' is declared const here
- 1 | const int K = 5;
-   |           ^
-tests/run/err_const.watr:10:15: error: constant 'missing' needs a value
- 10 |     const int missing;
-    |               ^~~~~~~
-tests/run/err_const.watr:11:5: error: 'f' is a function, not a variable
- 11 |     f = 3;
-    |     ^
-5 errors
+   |          - `f` is defined here
+...
+11 |     f = 3;
+   |     ^ not a variable
+
+error: could not compile `tests/run/err_const.watr` due to 5 previous errors
+Some errors have detailed explanations: E0207, E0208, E0209.
+For more information about an error, try `watrc --explain E0207`.
 compile failed: 1

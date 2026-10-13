@@ -3,7 +3,7 @@ function weigh(int a, int b, int c, int d, int e, int f, int g, int h): int {
     return a + 2*b + 3*c + 4*d + 5*e + 6*f + 7*g + 8*h;
 }
 
-function seven(int a, int b, int c, int d, int e, int f, int g): int {
+function seven(int a, int _b, int _c, int _d, int _e, int _f, int g): int {
     return g - a;
 }
 

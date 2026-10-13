@@ -1,14 +1,30 @@
-tests/run/err_flow.watr:2:5: error: 'break' can only be used inside a loop
- 2 |     break;
-   |     ^~~~~
-tests/run/err_flow.watr:3:14: error: 'continue' can only be used inside a loop
- 3 |     if (1) { continue; }
-   |              ^~~~~~~~
-tests/run/err_flow.watr:4:12: error: there is no variable named 'nope'
- 4 |     return nope + missing();
-   |            ^~~~
-tests/run/err_flow.watr:4:19: error: there is no function named 'missing'
- 4 |     return nope + missing();
-   |                   ^~~~~~~
-4 errors
+error[E0212]: `break` outside of a loop
+ --> tests/run/err_flow.watr:2:5
+  |
+2 |     break;
+  |     ^^^^^ can only be used inside a loop
+  |
+  = help: to leave the function early, use `return`
+
+error[E0212]: `continue` outside of a loop
+ --> tests/run/err_flow.watr:3:14
+  |
+3 |     if (1) { continue; }
+  |              ^^^^^^^^ can only be used inside a loop
+
+error[E0200]: cannot find variable `nope` in this scope
+ --> tests/run/err_flow.watr:4:12
+  |
+4 |     return nope + missing();
+  |            ^^^^ not found in this scope
+
+error[E0201]: cannot find function `missing`
+ --> tests/run/err_flow.watr:4:19
+  |
+4 |     return nope + missing();
+  |                   ^^^^^^^ not found
+
+error: could not compile `tests/run/err_flow.watr` due to 4 previous errors
+Some errors have detailed explanations: E0212, E0200, E0201.
+For more information about an error, try `watrc --explain E0212`.
 compile failed: 1

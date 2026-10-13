@@ -1,5 +1,16 @@
-tests/run/err_main_void.watr:1:10: error: main must return int (its value is the program's exit code)
- 1 | function main(): void {}
-   |          ^~~~
-1 error
+error[E0306]: `main` must return `int`
+ --> tests/run/err_main_void.watr:1:18
+  |
+1 | function main(): void {}
+  |                  ^^^^ expected `int` here
+  |
+  = note: main's return value becomes the program's exit code
+help: change the return type
+  |
+1 | function main(): int {}
+  |                  ~~~
+
+error: could not compile `tests/run/err_main_void.watr` due to 1 previous error
+This error has a detailed explanation: E0306.
+For more information about an error, try `watrc --explain E0306`.
 compile failed: 1

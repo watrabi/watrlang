@@ -1,16 +1,38 @@
-tests/parser/err_statements.watr:2:5: error: 'function' is only allowed at the top level of a file
- 2 |     function inner() {}
-   |     ^~~~~~~~
-tests/parser/err_statements.watr:3:12: error: a declaration can't be the whole body of an if; wrap it in { }
- 3 |     if (x) int y = 1;
-   |            ^~~
-tests/parser/err_statements.watr:4:13: error: type 'int' can't be used as a value here
- 4 |     int z = int;
-   |             ^~~
-tests/parser/err_statements.watr:5:11: error: 'defer return' is not allowed
- 5 |     defer return;
-   |           ^~~~~~
+error[E0107]: `function` is only allowed at the top level of a file
+ --> tests/parser/err_statements.watr:2:5
+  |
+2 |     function inner() {}
+  |     ^^^^^^^^ not allowed inside a function
+  |
+  = help: watrlang has no nested functions; if this should be a separate function, check that the one before it ends with `}`
+
+error[E0106]: a variable declaration can't be the whole body of an if
+ --> tests/parser/err_statements.watr:3:12
+  |
+3 |     if (x) int y = 1;
+  |            ^^^ the variable would go out of scope immediately
+  |
+  = help: if this is intentional, wrap it in braces: `{ ... }`
+
+error[E0105]: expected a value, found the type `int`
+ --> tests/parser/err_statements.watr:4:13
+  |
+4 |     int z = int;
+  |             ^^^ this is a type, not a value
+  |
+  = help: to convert a value to `int`, use `as`: `value as int`
+
+error[E0108]: `defer return` is not allowed
+ --> tests/parser/err_statements.watr:5:11
+  |
+5 |     defer return;
+  |     ----- ^^^^^^ can't be deferred
+  |     |
+  |     `defer` runs its statement when the block exits
+
 function f() -> void
   (empty)
-4 errors
+error: could not compile `tests/parser/err_statements.watr` due to 4 previous errors
+Some errors have detailed explanations: E0107, E0106, E0105, E0108.
+For more information about an error, try `watrc --explain E0107`.
 exit: 1

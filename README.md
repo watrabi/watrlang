@@ -27,6 +27,30 @@ The full plan is in [docs/DESIGN.md](docs/DESIGN.md).
 | 5. Type system (sized ints, bool, pointers, structs, floats) | next |
 | 6+. FFI, strings, modules, ... | planned |
 
+## Error messages
+
+watrc's errors follow Rust's style: an error code, the exact location,
+labeled spans, notes, and suggested fixes.
+
+```
+error[E0200]: cannot find variable `countr` in this scope
+ --> demo.watr:7:30
+  |
+6 |     int counter = 5;
+  |         ------- a variable with a similar name is declared here
+7 |     int total = compute_total(countr);
+  |                               ^^^^^^ not found in this scope
+  |
+help: a variable with a similar name exists
+  |
+7 |     int total = compute_total(counter);
+  |                               ~~~~~~~
+```
+
+Every code has a longer explanation with examples:
+`watrc --explain E0200`. Warnings (`W0001` unused variable, `W0002`
+unreachable code) don't stop compilation.
+
 ## Build
 
 Needs a C99 compiler, `make`, and GNU binutils (`as`, `ld`) on x86-64 Linux.

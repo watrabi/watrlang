@@ -136,7 +136,10 @@ static void skip_trivia(Lexer *l) {
             for (;;) {
                 if (at_end(l)) {
                     start.len = 2;
-                    diag_error(start, "unterminated /* comment");
+                    Diag *d = diag_start(DIAG_ERROR, "E0001", start, "unterminated block comment");
+                    diag_label(d, "this comment is never closed");
+                    diag_help(d, "add `*/` where the comment should end");
+                    diag_end(d);
                     return;
                 }
                 if (peek(l, 0) == '*' && peek(l, 1) == '/') {
@@ -150,6 +153,13 @@ static void skip_trivia(Lexer *l) {
             return;
         }
     }
+}
+
+static void report_non_ascii(Loc loc) {
+    Diag *d = diag_start(DIAG_ERROR, "E0015", loc, "identifiers must be ASCII");
+    diag_label(d, "contains non-ASCII characters");
+    diag_note(d, "names may use ASCII letters, digits and `_`; any UTF-8 is fine in strings and comments");
+    diag_end(d);
 }
 
 static TokenKind keyword_or_ident(const char *s, size_t n) {
@@ -214,7 +224,11 @@ static Token lex_number(Lexer *l) {
         if (lex_digits(l, base, &val, &overflow, &bad_underscore) == 0) {
             /* Report the bad digit itself if there is one, e.g. 0xZZ. */
             while (is_ident_char(peek(l, 0))) advance(l);
-            diag_error(span_from(l, start), "expected digits after '%.2s'", t.start);
+            const char *kind = base == 16 ? "hex" : base == 2 ? "binary" : "octal";
+            Diag *d = diag_start(DIAG_ERROR, "E0003", span_from(l, start), "missing %s digits after `%.2s`", kind, t.start);
+            diag_label(d, "expected %s digits", kind);
+            diag_note(d, "%s digits are %s", kind, base == 16 ? "0-9 and a-f" : base == 2 ? "0 and 1" : "0-7");
+            diag_end(d);
             t.kind = TOK_ERROR;
             t.loc = span_from(l, start);
             return t;
@@ -246,7 +260,17 @@ static Token lex_number(Lexer *l) {
         if (int_len > 1 && t.start[0] == '0' && is_digit(t.start[1])) {
             Loc zl = start;
             zl.len = (uint32_t)int_len;
-            diag_error(zl, "leading zeros are not allowed (use 0o for octal)");
+            size_t skip = 0;
+            while (skip + 1 < int_len && (t.start[skip] == '0' || t.start[skip] == '_')) skip++;
+            char fixed[80];
+            int digits_len = (int)(int_len - skip) < 60 ? (int)(int_len - skip) : 60;
+            Diag *d = diag_start(DIAG_ERROR, "E0002", zl, "integer literal `%.*s` has a leading zero", (int)int_len, t.start);
+            diag_label(d, "C would silently read this as octal");
+            snprintf(fixed, sizeof fixed, "%.*s", digits_len, t.start + skip);
+            diag_fix(d, zl, fixed, "if you meant a decimal number, remove the leading zero");
+            snprintf(fixed, sizeof fixed, "0o%.*s", digits_len, t.start + skip);
+            diag_fix(d, zl, fixed, "if you meant octal, use the `0o` prefix");
+            diag_end(d);
             t.kind = TOK_ERROR;
         }
     }
@@ -255,7 +279,22 @@ static Token lex_number(Lexer *l) {
         Loc bad = here(l);
         while (is_ident_char(peek(l, 0))) advance(l);
         bad = span_from(l, bad);
-        diag_error(bad, "invalid character '%c' in number", t.start[bad.offset - start.offset]);
+        char first = t.start[bad.offset - start.offset];
+        Diag *d;
+        if (base != 10 && (is_digit(first) || base == 16)) {
+            const char *kind = base == 16 ? "hex" : base == 2 ? "binary" : "octal";
+            bad.len = 1;
+            d = diag_start(DIAG_ERROR, "E0004", bad, "invalid digit `%c` in %s literal", first, kind);
+            diag_label(d, "not a %s digit", kind);
+            diag_note(d, "%s digits are %s", kind, base == 16 ? "0-9 and a-f" : base == 2 ? "0 and 1" : "0-7");
+        } else {
+            d = diag_start(DIAG_ERROR, "E0004", bad, "invalid suffix `%.*s` on number", (int)bad.len,
+                           t.start + (bad.offset - start.offset));
+            diag_label(d, "invalid suffix");
+            diag_help(d, "watrlang numbers have no suffixes; to pick a type, cast: `10 as u64`");
+            diag_help(d, "if this is a separate name, put an operator or space before it");
+        }
+        diag_end(d);
         t.kind = TOK_ERROR;
     }
 
@@ -263,7 +302,10 @@ static Token lex_number(Lexer *l) {
     if (t.kind == TOK_ERROR) return t;
 
     if (bad_underscore) {
-        diag_error(t.loc, "'_' must sit between digits");
+        Diag *d = diag_start(DIAG_ERROR, "E0005", t.loc, "`_` must be between two digits");
+        diag_label(d, "misplaced `_` in this number");
+        diag_help(d, "underscores only separate digits, as in `1_000_000`");
+        diag_end(d);
         t.kind = TOK_ERROR;
         return t;
     }
@@ -279,7 +321,10 @@ static Token lex_number(Lexer *l) {
         t.v.float_val = strtod(buf, NULL);
         free(buf);
     } else if (overflow) {
-        diag_error(t.loc, "integer literal is too large (max is 2^64 - 1)");
+        Diag *d = diag_start(DIAG_ERROR, "E0006", t.loc, "integer literal is too large");
+        diag_label(d, "doesn't fit in 64 bits");
+        diag_note(d, "the largest integer literal is 18446744073709551615 (2^64 - 1)");
+        diag_end(d);
         t.kind = TOK_ERROR;
     } else {
         t.v.int_val = val;
@@ -309,7 +354,10 @@ static int lex_escape(Lexer *l) {
         int lo = hi >= 0 ? digit_value(peek(l, 1), 16) : -1;
         if (lo < 0) {
             start.len = 2;
-            diag_error(start, "\\x needs exactly two hex digits");
+            Diag *d = diag_start(DIAG_ERROR, "E0008", start, "`\\x` escape needs exactly two hex digits");
+            diag_label(d, "incomplete escape");
+            diag_help(d, "for example, `\\x41` is the byte 0x41 (`A`)");
+            diag_end(d);
             return -1;
         }
         advance(l);
@@ -318,10 +366,23 @@ static int lex_escape(Lexer *l) {
     }
     default:
         start.len = 2;
-        if (c == '\n')
-            diag_error(start, "unknown escape sequence '\\' at end of line");
-        else
-            diag_error(start, "unknown escape sequence '\\%c'", c);
+        Diag *d;
+        if (c == '\n') {
+            start.len = 1;
+            d = diag_start(DIAG_ERROR, "E0007", start, "a backslash can't end a line inside a string");
+            diag_label(d, "stray backslash");
+            diag_help(d, "strings can span lines on their own; for a newline character write `\\n`");
+        } else {
+            d = diag_start(DIAG_ERROR, "E0007", start, "unknown escape sequence `\\%c`", c);
+            diag_label(d, "unknown escape");
+            if (c == '$') {
+                diag_fix(d, start, "$", "`$` has no special meaning in watrlang strings, so it needs no backslash");
+            } else {
+                diag_note(d, "the escapes are \\n \\t \\r \\0 \\\\ \\\" \\' \\{ \\} and \\xHH");
+                diag_help(d, "for a literal backslash, write `\\\\`");
+            }
+        }
+        diag_end(d);
         return -1;
     }
 }
@@ -334,6 +395,14 @@ typedef enum {
 } StrResult;
 
 static StrResult lex_string_body(Lexer *l, Loc open, uint32_t *flags, bool single_line);
+
+static void report_unclosed_interp(Loc open) {
+    Diag *d = diag_start(DIAG_ERROR, "E0010", open, "unterminated interpolation");
+    diag_label(d, "this `{` is never closed");
+    diag_note(d, "an interpolation has to close on the same line it starts");
+    diag_help(d, "add `}` after the expression, or write `\\{` for a literal brace");
+    diag_end(d);
+}
 
 typedef enum {
     INTERP_OK,
@@ -354,7 +423,10 @@ static InterpResult lex_interp(Lexer *l, uint32_t *flags) {
     if (peek(l, 0) == '}') {
         advance(l);
         open.len = 2;
-        diag_error(open, "empty interpolation (write \\{ for a literal brace)");
+        Diag *d = diag_start(DIAG_ERROR, "E0009", open, "empty interpolation");
+        diag_label(d, "nothing to interpolate");
+        diag_fix(d, open, "\\{}", "for literal braces, escape the opening one");
+        diag_end(d);
         return INTERP_RECOVERED;
     }
 
@@ -363,7 +435,7 @@ static InterpResult lex_interp(Lexer *l, uint32_t *flags) {
     for (;;) {
         char c = peek(l, 0);
         if (at_end(l) || c == '\n') {
-            diag_error(open, "unterminated interpolation: missing '}' (write \\{ for a literal brace)");
+            report_unclosed_interp(open);
             return INTERP_FATAL;
         }
         if (c == '{') {
@@ -379,7 +451,7 @@ static InterpResult lex_interp(Lexer *l, uint32_t *flags) {
             uint32_t ignored = 0;
             StrResult r = lex_string_body(l, inner, &ignored, true);
             if (r == STR_NEWLINE) {
-                diag_error(open, "unterminated interpolation: missing '}' (write \\{ for a literal brace)");
+                report_unclosed_interp(open);
                 return INTERP_FATAL;
             }
             if (r == STR_ERROR) {
@@ -409,7 +481,11 @@ static StrResult lex_string_body(Lexer *l, Loc open, uint32_t *flags, bool singl
     for (;;) {
         if (at_end(l)) {
             if (single_line) return STR_NEWLINE;
-            diag_error(open, "unterminated string literal");
+            Diag *d = diag_start(DIAG_ERROR, "E0011", open, "unterminated string literal");
+            diag_label(d, "this string is never closed");
+            diag_note(d, "strings can span lines, so it runs to the end of the file");
+            diag_help(d, "add a closing `\"`");
+            diag_end(d);
             return STR_ERROR;
         }
         char c = peek(l, 0);
@@ -454,14 +530,20 @@ static Token lex_char(Lexer *l) {
     char c = peek(l, 0);
     if (at_end(l) || c == '\n') {
         t.loc = span_from(l, start);
-        diag_error(t.loc, "unterminated char literal");
+        Diag *d = diag_start(DIAG_ERROR, "E0012", t.loc, "unterminated char literal");
+        diag_label(d, "this char literal is never closed");
+        diag_help(d, "add a closing `'`");
+        diag_end(d);
         t.kind = TOK_ERROR;
         return t;
     }
     if (c == '\'') {
         advance(l);
         t.loc = span_from(l, start);
-        diag_error(t.loc, "empty char literal");
+        Diag *d = diag_start(DIAG_ERROR, "E0012", t.loc, "empty char literal");
+        diag_label(d, "empty");
+        diag_help(d, "a char literal holds exactly one byte, like `'a'`; a quote is `'\\''`");
+        diag_end(d);
         t.kind = TOK_ERROR;
         return t;
     }
@@ -478,8 +560,21 @@ static Token lex_char(Lexer *l) {
         bool closed = peek(l, 0) == '\'';
         if (closed) advance(l);
         t.loc = span_from(l, start);
-        diag_error(t.loc, closed ? "char literal must be a single byte (use a string for more)"
-                                 : "unterminated char literal");
+        Diag *d;
+        if (closed) {
+            d = diag_start(DIAG_ERROR, "E0012", t.loc, "char literal holds more than one byte");
+            diag_label(d, "a char literal is a single byte (u8)");
+            if (t.loc.len < 70) {
+                char fixed[80];
+                snprintf(fixed, sizeof fixed, "\"%.*s\"", (int)t.loc.len - 2, t.start + 1);
+                diag_fix(d, t.loc, fixed, "if you meant a string, use double quotes");
+            }
+        } else {
+            d = diag_start(DIAG_ERROR, "E0012", t.loc, "unterminated char literal");
+            diag_label(d, "this char literal is never closed");
+            diag_help(d, "add a closing `'`");
+        }
+        diag_end(d);
         t.kind = TOK_ERROR;
         return t;
     }
@@ -508,7 +603,7 @@ Token lexer_next(Lexer *l) {
             while ((unsigned char)peek(l, 0) >= 0x80 || is_ident_char(peek(l, 0))) advance(l);
             t.kind = TOK_ERROR;
             t.loc = span_from(l, start);
-            diag_error(t.loc, "identifiers must be ASCII (non-ASCII is fine in strings and comments)");
+            report_non_ascii(t.loc);
             return t;
         }
         t.loc = span_from(l, start);
@@ -536,17 +631,27 @@ Token lexer_next(Lexer *l) {
         const char *name = l->src + l->pos;
         size_t n = 0;
         while (is_ident_char(name[n])) n++;
-        diag_error(t.loc, "watrlang variables have no '$' sigil: write '%.*s', not '$%.*s'",
-                   (int)n, name, (int)n, name);
+        Diag *d = diag_start(DIAG_ERROR, "E0013", t.loc, "watrlang variables don't start with `$`");
+        diag_label(d, "remove this `$`");
+        diag_note(d, "watrlang looks like PHP, but names have no sigil: write `%.*s`, not `$%.*s`",
+                  (int)n, name, (int)n, name);
+        diag_fix(d, t.loc, "", "remove the `$`");
+        diag_end(d);
     } else if ((unsigned char)c >= 0x20 && (unsigned char)c < 0x7f) {
-        diag_error(t.loc, "unexpected character '%c'", c);
+        Diag *d = diag_start(DIAG_ERROR, "E0014", t.loc, "unexpected character `%c`", c);
+        diag_label(d, "not valid here");
+        if (c == '#') diag_fix(d, t.loc, "//", "comments start with `//`");
+        else if (c == '`') diag_help(d, "strings use double quotes: \"text\"");
+        diag_end(d);
     } else if ((unsigned char)c >= 0x80) {
         /* One error for the whole word (e.g. `été`), not one per byte. */
         while ((unsigned char)peek(l, 0) >= 0x80 || is_ident_char(peek(l, 0))) advance(l);
         t.loc = span_from(l, start);
-        diag_error(t.loc, "identifiers must be ASCII (non-ASCII is fine in strings and comments)");
+        report_non_ascii(t.loc);
     } else {
-        diag_error(t.loc, "unexpected byte 0x%02X", (unsigned char)c);
+        Diag *d = diag_start(DIAG_ERROR, "E0014", t.loc, "unexpected control character 0x%02X", (unsigned char)c);
+        diag_label(d, "invisible character here");
+        diag_end(d);
     }
     return t;
 }

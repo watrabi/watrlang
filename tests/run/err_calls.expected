@@ -1,20 +1,46 @@
-tests/run/err_calls.watr:3:10: error: 'f' is defined twice
- 3 | function f(): int { return 2; }
-   |          ^
-tests/run/err_calls.watr:2:10: note: the first definition is here
- 2 | function f(): int { return 1; }
-   |          ^
-tests/run/err_calls.watr:5:12: error: this expression has no value (it calls a void function)
- 5 |     return v() + nope() + f + 18446744073709551615;
-   |            ^~~
-tests/run/err_calls.watr:5:18: error: there is no function named 'nope'
- 5 |     return v() + nope() + f + 18446744073709551615;
-   |                  ^~~~
-tests/run/err_calls.watr:5:27: error: 'f' is a function; call it with f(...)
- 5 |     return v() + nope() + f + 18446744073709551615;
-   |                           ^
-tests/run/err_calls.watr:5:31: error: 18446744073709551615 doesn't fit in int (the largest int is 9223372036854775807)
- 5 |     return v() + nope() + f + 18446744073709551615;
-   |                               ^~~~~~~~~~~~~~~~~~~~
-5 errors
+error[E0202]: the name `f` is defined more than once
+ --> tests/run/err_calls.watr:3:10
+  |
+2 | function f(): int { return 1; }
+  |          - first definition of `f` here
+3 | function f(): int { return 2; }
+  |          ^ `f` redefined here
+
+error[E0300]: expected a value, but this call returns nothing
+ --> tests/run/err_calls.watr:5:12
+  |
+1 | function v(): void {}
+  |               ---- `v` is declared to return `void`
+...
+5 |     return v() + nope() + f + 18446744073709551615;
+  |            ^^^ has no value
+
+error[E0201]: cannot find function `nope`
+ --> tests/run/err_calls.watr:5:18
+  |
+5 |     return v() + nope() + f + 18446744073709551615;
+  |                  ^^^^ not found
+
+error[E0205]: `f` is a function, not a value
+ --> tests/run/err_calls.watr:5:27
+  |
+5 |     return v() + nope() + f + 18446744073709551615;
+  |                           ^ function used without calling it
+  |
+help: call it
+  |
+5 |     return v() + nope() + f() + 18446744073709551615;
+  |                           ~~~
+
+error[E0301]: integer literal is too large for `int`
+ --> tests/run/err_calls.watr:5:31
+  |
+5 |     return v() + nope() + f + 18446744073709551615;
+  |                               ^^^^^^^^^^^^^^^^^^^^ doesn't fit in `int`
+  |
+  = note: `int` is 64-bit signed; the largest value is 9223372036854775807
+
+error: could not compile `tests/run/err_calls.watr` due to 5 previous errors
+Some errors have detailed explanations: E0202, E0300, E0201, E0205, E0301.
+For more information about an error, try `watrc --explain E0202`.
 compile failed: 1

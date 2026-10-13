@@ -1,9 +1,15 @@
 1:1 KW_STRING_T string
 1:8 IDENT s
 1:10 ASSIGN =
-tests/lexer/err_unterminated_interp.watr:1:16: error: unterminated interpolation: missing '}' (write \{ for a literal brace)
- 1 | string s = "Hi {name";
-   |                ^
+error[E0010]: unterminated interpolation
+ --> tests/lexer/err_unterminated_interp.watr:1:16
+  |
+1 | string s = "Hi {name";
+  |                ^ this `{` is never closed
+  |
+  = note: an interpolation has to close on the same line it starts
+  = help: add `}` after the expression, or write `\{` for a literal brace
+
 1:12 ERROR "Hi {name";
 2:1 KW_INT_T int
 2:5 IDENT ok
@@ -13,9 +19,15 @@ tests/lexer/err_unterminated_interp.watr:1:16: error: unterminated interpolation
 3:1 KW_STRING_T string
 3:8 IDENT t
 3:10 ASSIGN =
-tests/lexer/err_unterminated_interp.watr:3:30: error: unterminated interpolation: missing '}' (write \{ for a literal brace)
- 3 | string t = "x {f("a")} y {g("{h(
-   |                              ^
+error[E0010]: unterminated interpolation
+ --> tests/lexer/err_unterminated_interp.watr:3:30
+  |
+3 | string t = "x {f("a")} y {g("{h(
+  |                              ^ this `{` is never closed
+  |
+  = note: an interpolation has to close on the same line it starts
+  = help: add `}` after the expression, or write `\{` for a literal brace
+
 3:12 ERROR "x {f("a")} y {g("{h(
 4:1 KW_STRING_T string
 4:8 IDENT u
@@ -23,5 +35,7 @@ tests/lexer/err_unterminated_interp.watr:3:30: error: unterminated interpolation
 4:12 STRING "back to normal"
 4:28 SEMI ;
 5:1 EOF
-2 errors
+error: could not compile `tests/lexer/err_unterminated_interp.watr` due to 2 previous errors
+This error has a detailed explanation: E0010.
+For more information about an error, try `watrc --explain E0010`.
 exit: 1

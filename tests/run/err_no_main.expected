@@ -1,5 +1,10 @@
-tests/run/err_no_main.watr:1:1: error: there is no main function; a program starts at: function main(): int { ... }
- 1 | function helper(): int { return 1; }
-   | ^
-1 error
+error[E0305]: `main` function not found in `tests/run/err_no_main.watr`
+ --> tests/run/err_no_main.watr
+  |
+  = note: a program starts running at `main`
+  = help: add one: `function main(): int { return 0; }`
+
+error: could not compile `tests/run/err_no_main.watr` due to 1 previous error
+This error has a detailed explanation: E0305.
+For more information about an error, try `watrc --explain E0305`.
 compile failed: 1

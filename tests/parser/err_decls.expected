@@ -1,21 +1,60 @@
-tests/parser/err_decls.watr:1:15: error: expected a parameter name, found ')'
- 1 | function f(int) {}
-   |               ^
-tests/parser/err_decls.watr:3:18: error: struct fields can't have default values (use a class)
- 3 | struct S { int x = 5; int y; }
-   |                  ^
-tests/parser/err_decls.watr:4:10: error: keyword 'function' can't be used as a function name
- 4 | function function() {}
-   |          ^~~~~~~~
-tests/parser/err_decls.watr:5:21: error: extern function 'e' can't have a body; end it with ';'
- 5 | extern function e() { }
-   |                     ^
-tests/parser/err_decls.watr:6:18: error: function 'nobody' needs a body (only extern functions end with ';')
- 6 | function nobody();
-   |                  ^
-tests/parser/err_decls.watr:7:8: error: 'export' only applies to functions and variables
- 7 | export struct T {}
-   |        ^~~~~~
+error[E0100]: expected a parameter name, found `)`
+ --> tests/parser/err_decls.watr:1:15
+  |
+1 | function f(int) {}
+  |               ^ expected a parameter name
+
+error[E0113]: struct fields can't have default values
+ --> tests/parser/err_decls.watr:3:18
+  |
+3 | struct S { int x = 5; int y; }
+  |                - ^ default value not allowed
+  |                |
+  |                field `x`
+  |
+  = help: set fields with a struct literal, `Name { x: value }`, or use a class with a constructor
+
+error[E0102]: `function` is a reserved word and can't be used as a function name
+ --> tests/parser/err_decls.watr:4:10
+  |
+4 | function function() {}
+  |          ^^^^^^^^ this is a keyword
+  |
+help: pick a different name, for example
+  |
+4 | function function_() {}
+  |          ~~~~~~~~~
+
+error[E0111]: extern function `e` can't have a body
+ --> tests/parser/err_decls.watr:5:21
+  |
+5 | extern function e() { }
+  | ------              ^ unexpected body
+  | |
+  | `extern` means the function is defined elsewhere, e.g. in C
+  |
+  = help: end the declaration with `;`, or remove `extern` to define it here
+
+error[E0111]: function `nobody` has no body
+ --> tests/parser/err_decls.watr:6:18
+  |
+6 | function nobody();
+  |                  ^ expected `{` and a body
+  |
+  = note: only `extern` functions, defined outside watrlang, end with `;`
+help: add a body
+  |
+6 | function nobody() { }
+  |                  ~~~~
+
+error[E0112]: `export` only applies to functions and variables
+ --> tests/parser/err_decls.watr:7:1
+  |
+7 | export struct T {}
+  | ^^^^^^ ------ a struct can't be `export`
+  | |
+  | not allowed here
+
 function ok() -> int
   return 1
 struct S
@@ -23,5 +62,7 @@ struct S
 function function() -> void
   (empty)
 struct T
-6 errors
+error: could not compile `tests/parser/err_decls.watr` due to 6 previous errors
+Some errors have detailed explanations: E0100, E0113, E0102, E0111, E0112.
+For more information about an error, try `watrc --explain E0100`.
 exit: 1

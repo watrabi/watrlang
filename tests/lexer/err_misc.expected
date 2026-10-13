@@ -1,39 +1,70 @@
 1:1 IDENT char
 1:6 IDENT a
 1:8 ASSIGN =
-tests/lexer/err_misc.watr:1:10: error: empty char literal
- 1 | char a = '';
-   |          ^~
+error[E0012]: empty char literal
+ --> tests/lexer/err_misc.watr:1:10
+  |
+1 | char a = '';
+  |          ^^ empty
+  |
+  = help: a char literal holds exactly one byte, like `'a'`; a quote is `'\''`
+
 1:10 ERROR ''
 1:12 SEMI ;
 2:1 IDENT char
 2:6 IDENT b
 2:8 ASSIGN =
-tests/lexer/err_misc.watr:2:10: error: char literal must be a single byte (use a string for more)
- 2 | char b = 'ab';
-   |          ^~~~
+error[E0012]: char literal holds more than one byte
+ --> tests/lexer/err_misc.watr:2:10
+  |
+2 | char b = 'ab';
+  |          ^^^^ a char literal is a single byte (u8)
+  |
+help: if you meant a string, use double quotes
+  |
+2 | char b = "ab";
+  |          ~~~~
+
 2:10 ERROR 'ab'
 2:14 SEMI ;
 3:1 KW_STRING_T string
 3:8 IDENT s
 3:10 ASSIGN =
-tests/lexer/err_misc.watr:3:13: error: empty interpolation (write \{ for a literal brace)
- 3 | string s = "{}";
-   |             ^~
+error[E0009]: empty interpolation
+ --> tests/lexer/err_misc.watr:3:13
+  |
+3 | string s = "{}";
+  |             ^^ nothing to interpolate
+  |
+help: for literal braces, escape the opening one
+  |
+3 | string s = "\{}";
+  |             ~~~
+
 3:12 ERROR "{}"
 3:16 SEMI ;
 4:1 KW_INT_T int
-tests/lexer/err_misc.watr:4:5: error: identifiers must be ASCII (non-ASCII is fine in strings and comments)
- 4 | int été = 1;
-   |     ^~~~~
+error[E0015]: identifiers must be ASCII
+ --> tests/lexer/err_misc.watr:4:5
+  |
+4 | int été = 1;
+  |     ^^^ contains non-ASCII characters
+  |
+  = note: names may use ASCII letters, digits and `_`; any UTF-8 is fine in strings and comments
+
 4:5 ERROR été
 4:11 ASSIGN =
 4:13 INT 1 = 1
 4:14 SEMI ;
 5:1 KW_INT_T int
-tests/lexer/err_misc.watr:5:5: error: identifiers must be ASCII (non-ASCII is fine in strings and comments)
- 5 | int café = 2;
-   |     ^~~~~
+error[E0015]: identifiers must be ASCII
+ --> tests/lexer/err_misc.watr:5:5
+  |
+5 | int café = 2;
+  |     ^^^^ contains non-ASCII characters
+  |
+  = note: names may use ASCII letters, digits and `_`; any UTF-8 is fine in strings and comments
+
 5:5 ERROR café
 5:11 ASSIGN =
 5:13 INT 2 = 2
@@ -44,5 +75,7 @@ tests/lexer/err_misc.watr:5:5: error: identifiers must be ASCII (non-ASCII is fi
 6:13 STRING "café is fine here"
 6:33 SEMI ;
 7:1 EOF
-5 errors
+error: could not compile `tests/lexer/err_misc.watr` due to 5 previous errors
+Some errors have detailed explanations: E0012, E0009, E0015.
+For more information about an error, try `watrc --explain E0012`.
 exit: 1

@@ -1,5 +1,10 @@
-tests/run/err_self_init.watr:2:13: error: there is no variable named 'x'
- 2 |     int x = x + 1;
-   |             ^
-1 error
+error[E0200]: cannot find variable `x` in this scope
+ --> tests/run/err_self_init.watr:2:13
+  |
+2 |     int x = x + 1;
+  |             ^ not found in this scope
+
+error: could not compile `tests/run/err_self_init.watr` due to 1 previous error
+This error has a detailed explanation: E0200.
+For more information about an error, try `watrc --explain E0200`.
 compile failed: 1

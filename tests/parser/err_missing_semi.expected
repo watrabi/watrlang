@@ -1,15 +1,35 @@
-tests/parser/err_missing_semi.watr:2:14: error: expected ';' after variable declaration
- 2 |     int x = 5
-   |              ^
-tests/parser/err_missing_semi.watr:3:13: error: expected ';' after return
- 3 |     return x
-   |             ^
-tests/parser/err_missing_semi.watr:5:11: error: expected ';' after import
- 5 | import "a"
-   |           ^
-tests/parser/err_missing_semi.watr:6:10: error: expected ';' after variable declaration
- 6 | int g = 1
-   |          ^
+error[E0101]: expected `;` after variable declaration, found keyword `return`
+ --> tests/parser/err_missing_semi.watr:2:14
+  |
+2 |     int x = 5
+  |              ^ add `;` here
+3 |     return x
+  |     ------ unexpected keyword `return`
+
+error[E0101]: expected `;` after return, found `}`
+ --> tests/parser/err_missing_semi.watr:3:13
+  |
+3 |     return x
+  |             ^ add `;` here
+4 | }
+  | - unexpected `}`
+
+error[E0101]: expected `;` after import, found keyword `int`
+ --> tests/parser/err_missing_semi.watr:5:11
+  |
+5 | import "a"
+  |           ^ add `;` here
+6 | int g = 1
+  | --- unexpected keyword `int`
+
+error[E0101]: expected `;` after variable declaration, found keyword `function`
+ --> tests/parser/err_missing_semi.watr:6:10
+  |
+6 | int g = 1
+  |          ^ add `;` here
+7 | function after(): void {}
+  | -------- unexpected keyword `function`
+
 function main() -> int
   var int x = 5
   return x
@@ -17,5 +37,7 @@ import "a"
 var int g = 1
 function after() -> void
   (empty)
-4 errors
+error: could not compile `tests/parser/err_missing_semi.watr` due to 4 previous errors
+This error has a detailed explanation: E0101.
+For more information about an error, try `watrc --explain E0101`.
 exit: 1

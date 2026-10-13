@@ -1,11 +1,23 @@
-tests/parser/err_top_level.watr:2:1: error: expected a declaration (function, struct, class, enum, import or variable), found keyword 'return'
- 2 | return x;
-   | ^~~~~~
-tests/parser/err_top_level.watr:3:1: error: expected a declaration (function, struct, class, enum, import or variable), found keyword 'while'
- 3 | while (true) {}
-   | ^~~~~
+error[E0117]: expected a declaration, found keyword `return`
+ --> tests/parser/err_top_level.watr:2:1
+  |
+2 | return x;
+  | ^^^^^^ expected `function`, `struct`, `class`, `enum`, `import` or a variable
+  |
+  = note: statements have to be inside a function, such as `function main(): int { ... }`
+
+error[E0117]: expected a declaration, found keyword `while`
+ --> tests/parser/err_top_level.watr:3:1
+  |
+3 | while (true) {}
+  | ^^^^^ expected `function`, `struct`, `class`, `enum`, `import` or a variable
+  |
+  = note: statements have to be inside a function, such as `function main(): int { ... }`
+
 var int x = 5
 function after() -> void
   (empty)
-2 errors
+error: could not compile `tests/parser/err_top_level.watr` due to 2 previous errors
+This error has a detailed explanation: E0117.
+For more information about an error, try `watrc --explain E0117`.
 exit: 1

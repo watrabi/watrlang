@@ -1,7 +1,20 @@
-tests/parser/err_chained_cmp.watr:2:15: error: comparisons can't be chained; write (a < b && b < c) instead
- 2 |     if (a < b < c) { }
-   |               ^
+error[E0103]: comparison operators can't be chained
+ --> tests/parser/err_chained_cmp.watr:2:15
+  |
+2 |     if (a < b < c) { }
+  |         ----- ^ second comparison
+  |         |
+  |         this is already a comparison
+  |
+  = note: in C, `a < b < c` compares the true/false result of `a < b` with `c`
+help: split it into two comparisons
+  |
+2 |     if (a < b && b < c) { }
+  |         ~~~~~~~~~~~~~~
+
 function main() -> int
   return 0
-1 error
+error: could not compile `tests/parser/err_chained_cmp.watr` due to 1 previous error
+This error has a detailed explanation: E0103.
+For more information about an error, try `watrc --explain E0103`.
 exit: 1

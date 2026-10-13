@@ -1,43 +1,78 @@
 1:1 KW_INT_T int
 1:5 IDENT a
 1:7 ASSIGN =
-tests/lexer/err_numbers.watr:1:9: error: leading zeros are not allowed (use 0o for octal)
- 1 | int a = 0123;
-   |         ^~~~
+error[E0002]: integer literal `0123` has a leading zero
+ --> tests/lexer/err_numbers.watr:1:9
+  |
+1 | int a = 0123;
+  |         ^^^^ C would silently read this as octal
+  |
+help: if you meant a decimal number, remove the leading zero
+  |
+1 | int a = 123;
+  |         ~~~
+help: if you meant octal, use the `0o` prefix
+  |
+1 | int a = 0o123;
+  |         ~~~~~
+
 1:9 ERROR 0123
 1:13 SEMI ;
 2:1 KW_INT_T int
 2:5 IDENT b
 2:7 ASSIGN =
-tests/lexer/err_numbers.watr:2:9: error: expected digits after '0x'
- 2 | int b = 0xZZ;
-   |         ^~~~
+error[E0003]: missing hex digits after `0x`
+ --> tests/lexer/err_numbers.watr:2:9
+  |
+2 | int b = 0xZZ;
+  |         ^^^^ expected hex digits
+  |
+  = note: hex digits are 0-9 and a-f
+
 2:9 ERROR 0xZZ
 2:13 SEMI ;
 3:1 KW_INT_T int
 3:5 IDENT c
 3:7 ASSIGN =
-tests/lexer/err_numbers.watr:3:11: error: invalid character 'a' in number
- 3 | int c = 12abc;
-   |           ^~~
+error[E0004]: invalid suffix `abc` on number
+ --> tests/lexer/err_numbers.watr:3:11
+  |
+3 | int c = 12abc;
+  |           ^^^ invalid suffix
+  |
+  = help: watrlang numbers have no suffixes; to pick a type, cast: `10 as u64`
+  = help: if this is a separate name, put an operator or space before it
+
 3:9 ERROR 12abc
 3:14 SEMI ;
 4:1 KW_INT_T int
 4:5 IDENT d
 4:7 ASSIGN =
-tests/lexer/err_numbers.watr:4:9: error: '_' must sit between digits
- 4 | int d = 1__0;
-   |         ^~~~
+error[E0005]: `_` must be between two digits
+ --> tests/lexer/err_numbers.watr:4:9
+  |
+4 | int d = 1__0;
+  |         ^^^^ misplaced `_` in this number
+  |
+  = help: underscores only separate digits, as in `1_000_000`
+
 4:9 ERROR 1__0
 4:13 SEMI ;
 5:1 KW_INT_T int
 5:5 IDENT e
 5:7 ASSIGN =
-tests/lexer/err_numbers.watr:5:9: error: integer literal is too large (max is 2^64 - 1)
- 5 | int e = 99999999999999999999;
-   |         ^~~~~~~~~~~~~~~~~~~~
+error[E0006]: integer literal is too large
+ --> tests/lexer/err_numbers.watr:5:9
+  |
+5 | int e = 99999999999999999999;
+  |         ^^^^^^^^^^^^^^^^^^^^ doesn't fit in 64 bits
+  |
+  = note: the largest integer literal is 18446744073709551615 (2^64 - 1)
+
 5:9 ERROR 99999999999999999999
 5:29 SEMI ;
 6:1 EOF
-5 errors
+error: could not compile `tests/lexer/err_numbers.watr` due to 5 previous errors
+Some errors have detailed explanations: E0002, E0003, E0004, E0005, E0006.
+For more information about an error, try `watrc --explain E0002`.
 exit: 1

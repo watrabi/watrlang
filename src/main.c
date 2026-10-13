@@ -19,6 +19,7 @@ static void usage(FILE *out) {
           "  -o <path>    write the output here\n"
           "  -S           write assembly (.s) instead of an executable\n"
           "  -v           show the assembler and linker commands\n"
+          "  --explain <code>  explain an error code, e.g. --explain E0200\n"
           "  --tokens     print the token stream and exit\n"
           "  --ast        print the syntax tree and exit\n"
           "  --version    print the compiler version\n"
@@ -85,6 +86,19 @@ int main(int argc, char **argv) {
         } else if (strcmp(arg, "-h") == 0 || strcmp(arg, "--help") == 0) {
             usage(stdout);
             return 0;
+        } else if (strcmp(arg, "--explain") == 0) {
+            if (i + 1 >= argc) {
+                fprintf(stderr, "error: `--explain` needs an error code, like `--explain E0200`\n");
+                return 2;
+            }
+            const char *code = argv[++i];
+            const char *text = diag_explain(code);
+            if (!text) {
+                fprintf(stderr, "error: `%s` is not a watrlang error code\n", code);
+                return 2;
+            }
+            printf("%s\n", text);
+            return 0;
         } else if (strcmp(arg, "--tokens") == 0) {
             dump_tokens = 1;
         } else if (strcmp(arg, "--ast") == 0) {
@@ -95,16 +109,16 @@ int main(int argc, char **argv) {
             verbose = 1;
         } else if (strcmp(arg, "-o") == 0) {
             if (i + 1 >= argc) {
-                fprintf(stderr, "watrc: '-o' needs a path\n");
+                fprintf(stderr, "error: `-o` needs a path\n");
                 return 2;
             }
             out_path = argv[++i];
         } else if (arg[0] == '-' && arg[1] != '\0') {
-            fprintf(stderr, "watrc: unknown option '%s'\n", arg);
+            fprintf(stderr, "error: unknown option `%s`\n\n", arg);
             usage(stderr);
             return 2;
         } else if (path) {
-            fprintf(stderr, "watrc: only one input file is supported for now\n");
+            fprintf(stderr, "error: only one input file is supported for now\n");
             return 2;
         } else {
             path = arg;
@@ -161,7 +175,7 @@ int main(int argc, char **argv) {
     }
 
     int errors = diag_error_count();
-    if (errors) fprintf(stderr, "%d error%s\n", errors, errors == 1 ? "" : "s");
+    diag_print_summary(path);
     fflush(stdout);
     arena_free(&arena);
     return errors ? 1 : 0;

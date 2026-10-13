@@ -1,10 +1,26 @@
-tests/parser/err_ternary.watr:2:14: error: expected ':' in ?: expression, found ';' (for error propagation, write (expr?))
- 2 |     x = c ? a;
-   |              ^
-tests/parser/err_ternary.watr:3:16: error: expected ':' in ?: expression, found ';' (for error propagation, write (expr?))
- 3 |     y = f()?[0];
-   |                ^
+error[E0104]: expected `:` in `?:` expression, found `;`
+ --> tests/parser/err_ternary.watr:2:14
+  |
+2 |     x = c ? a;
+  |           -  ^ expected `:` and a value for when the condition is false
+  |           |
+  |           this `?` starts a `cond ? a : b` expression
+  |
+  = help: if you meant error propagation, wrap it in parentheses: `(expr?)`
+
+error[E0104]: expected `:` in `?:` expression, found `;`
+ --> tests/parser/err_ternary.watr:3:16
+  |
+3 |     y = f()?[0];
+  |            -   ^ expected `:` and a value for when the condition is false
+  |            |
+  |            this `?` starts a `cond ? a : b` expression
+  |
+  = help: if you meant error propagation, wrap it in parentheses: `(expr?)`
+
 function f() -> void
   (empty)
-2 errors
+error: could not compile `tests/parser/err_ternary.watr` due to 2 previous errors
+This error has a detailed explanation: E0104.
+For more information about an error, try `watrc --explain E0104`.
 exit: 1

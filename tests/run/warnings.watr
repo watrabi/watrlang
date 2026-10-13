@@ -1,0 +1,13 @@
+// Compiles and runs, but with warnings.
+function helper(int used, int unused, int _ignored): int {
+    return used;
+}
+
+function main(): int {
+    int never_read = 1;
+    int assigned_only = 0;
+    assigned_only = 5;
+    int _quiet = 3;
+    return helper(42, 0, 0);
+    never_read++;
+}

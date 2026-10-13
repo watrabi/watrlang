@@ -38,11 +38,15 @@ typedef enum {
 typedef struct {
     const char *name;
     Loc loc;
+    const TypeExpr *type;  /* as written, for pointing at `const` in errors */
     bool is_global;
+    bool is_param;
     bool is_const;
     int offset;          /* locals and params: rbp-relative */
     bool has_value;      /* const globals: value known at compile time */
     int64_t value;
+    int reads;           /* for the unused-variable warning */
+    int writes;          /* assignments after the declaration */
 } Var;
 
 typedef struct {
@@ -66,6 +70,7 @@ typedef struct {
     int ret_label;
     int depth;              /* 8-byte pushes since the frame was set up */
     int slots;              /* local slots used so far */
+    int fn_errors_before;   /* error count when this function started */
     PtrVec locals;          /* Var*, innermost last */
     size_t *scope_marks;    /* locals.len at each open scope */
     size_t nscopes, scopes_cap;
@@ -102,7 +107,27 @@ static void pop_reg(Gen *g, const char *reg) {
 }
 
 static void not_yet(Loc loc, const char *what, int milestone) {
-    diag_error(loc, "not supported yet: %s (planned for milestone %d)", what, milestone);
+    Diag *d = diag_start(DIAG_ERROR, "E0900", loc, "not supported yet: %s", what);
+    diag_label(d, "planned for milestone %d", milestone);
+    diag_note(d, "watrlang is still being built; docs/DESIGN.md has the roadmap");
+    diag_end(d);
+}
+
+/* Where a function's return type is written, or its name if there's none. */
+static Loc ret_type_loc(const Decl *fn) {
+    return fn->u.func.ret ? fn->u.func.ret->loc : fn->name_loc;
+}
+
+/* The `const ` at the start of a type, for "remove `const`" fixes. */
+static bool const_keyword_loc(const TypeExpr *t, Loc *out) {
+    if (!t || !t->is_const || !t->loc.file) return false;
+    const char *src = t->loc.file->text + t->loc.offset;
+    if (strncmp(src, "const", 5) != 0) return false;
+    uint32_t len = 5;
+    while (src[len] == ' ') len++;
+    *out = t->loc;
+    out->len = len;
+    return true;
 }
 
 /* ---- types (int and void only, until milestone 5) ------------------------- */
@@ -149,8 +174,15 @@ static void push_scope(Gen *g) {
     g->scope_marks[g->nscopes++] = g->locals.len;
 }
 
+static void warn_if_unused(const Var *v);
+
 static void pop_scope(Gen *g) {
-    g->locals.len = g->scope_marks[--g->nscopes];
+    size_t mark = g->scope_marks[--g->nscopes];
+    /* After an error, "unused" is often wrong: the broken code may be
+     * the use. Stay quiet until the function compiles. */
+    if (diag_error_count() == g->fn_errors_before)
+        for (size_t i = mark; i < g->locals.len; i++) warn_if_unused(g->locals.items[i]);
+    g->locals.len = mark;
 }
 
 static Var *find_local(Gen *g, const char *name) {
@@ -177,19 +209,95 @@ static Var *find_var(Gen *g, const char *name) {
 /* Declares a local in the current scope. Locals can't shadow other locals
  * or parameters of the same function (a classic source of bugs); they may
  * shadow globals. */
-static Var *declare_local(Gen *g, const char *name, Loc loc, bool is_const) {
+static Var *declare_local_at(Gen *g, const char *name, Loc loc, const TypeExpr *type, bool is_param, int offset) {
     Var *prev = find_local(g, name);
     if (prev) {
-        diag_error(loc, "'%s' is already declared in this function", name);
-        diag_note(prev->loc, "the earlier declaration is here");
+        Diag *d = diag_start(DIAG_ERROR, "E0203", loc, "`%s` is already declared in this function", name);
+        diag_label(d, "declared again here");
+        diag_span(d, prev->loc, "first declared here%s", prev->is_param ? ", as a parameter" : "");
+        diag_help(d, "give it a different name; watrlang doesn't allow shadowing inside a function");
+        diag_end(d);
+        prev->reads++;  /* don't also warn that the first one is unused */
     }
     Var *v = ARENA_NEW(&g->arena, Var);
     v->name = name;
     v->loc = loc;
-    v->is_const = is_const;
-    v->offset = -8 * (++g->slots);
+    v->type = type;
+    v->is_param = is_param;
+    v->is_const = type->is_const;
+    v->offset = offset;
     ptrvec_push(&g->locals, v);
     return v;
+}
+
+static Var *declare_local(Gen *g, const char *name, Loc loc, const TypeExpr *type, bool is_param) {
+    return declare_local_at(g, name, loc, type, is_param, -8 * (++g->slots));
+}
+
+/* W0001: called for each local as its scope closes. */
+static void warn_if_unused(const Var *v) {
+    if (v->reads > 0 || v->name[0] == '_') return;
+    Diag *d;
+    if (v->writes > 0) {
+        d = diag_start(DIAG_WARNING, "W0001", v->loc, "variable `%s` is assigned to, but never read", v->name);
+        diag_label(d, "its value is never used");
+    } else {
+        d = diag_start(DIAG_WARNING, "W0001", v->loc, "unused %s `%s`", v->is_param ? "parameter" : "variable",
+                       v->name);
+        diag_label(d, "never used");
+    }
+    char renamed[128];
+    snprintf(renamed, sizeof renamed, "_%s", v->name);
+    diag_fix(d, v->loc, renamed, "if this is intentional, prefix it with an underscore");
+    diag_end(d);
+}
+
+/* Best "did you mean" candidate among visible variables, or NULL. */
+static const char *similar_var(Gen *g, const char *name) {
+    const char *best = NULL;
+    size_t best_dist = (size_t)-1;
+    for (size_t pass = 0; pass < 2; pass++) {
+        PtrVec *vars = pass == 0 ? &g->locals : &g->globals;
+        for (size_t i = 0; i < vars->len; i++) {
+            const Var *v = vars->items[i];
+            if (!diag_similar(name, v->name)) continue;
+            size_t dist = diag_edit_distance(name, v->name);
+            if (dist < best_dist) {
+                best = v->name;
+                best_dist = dist;
+            }
+        }
+    }
+    return best;
+}
+
+static const char *similar_function(Gen *g, const char *name) {
+    const char *best = NULL;
+    size_t best_dist = (size_t)-1;
+    for (size_t i = 0; i < g->mod->n; i++) {
+        const Decl *d = g->mod->decls[i];
+        if (d->kind != DECL_FUNC || !diag_similar(name, d->name)) continue;
+        size_t dist = diag_edit_distance(name, d->name);
+        if (dist < best_dist) {
+            best = d->name;
+            best_dist = dist;
+        }
+    }
+    return best;
+}
+
+/* E0200 */
+static void report_unknown_var(Gen *g, const Expr *e) {
+    Diag *d = diag_start(DIAG_ERROR, "E0200", e->loc, "cannot find variable `%s` in this scope", e->u.name);
+    diag_label(d, "not found in this scope");
+    const char *guess = similar_var(g, e->u.name);
+    if (guess) {
+        Var *v = find_var(g, guess);
+        diag_span(d, v->loc, "a %s with a similar name is declared here",
+                  v->is_global ? "global" : v->is_param ? "parameter" : "variable");
+        diag_fix(d, e->loc, guess, "a %s with a similar name exists", v->is_global ? "global" : "variable");
+    }
+    diag_end(d);
 }
 
 static void load_var(Gen *g, const Var *v) {
@@ -211,7 +319,12 @@ static bool const_eval(Gen *g, const Expr *e, int64_t *out, bool report) {
     switch (e->kind) {
     case EXPR_INT:
         if (e->u.int_val > (uint64_t)INT64_MAX) {
-            if (report) diag_error(e->loc, "%llu doesn't fit in int", (unsigned long long)e->u.int_val);
+            if (report) {
+                Diag *d = diag_start(DIAG_ERROR, "E0301", e->loc, "integer literal is too large for `int`");
+                diag_label(d, "doesn't fit in `int`");
+                diag_note(d, "`int` is 64-bit signed; the largest value is 9223372036854775807");
+                diag_end(d);
+            }
             return false;
         }
         *out = (int64_t)e->u.int_val;
@@ -228,7 +341,18 @@ static bool const_eval(Gen *g, const Expr *e, int64_t *out, bool report) {
             *out = v->value;
             return true;
         }
-        if (report) diag_error(e->loc, "'%s' isn't a constant; global initializers must be constant", e->u.name);
+        if (report) {
+            Diag *d = diag_start(DIAG_ERROR, "E0307", e->loc, "`%s` isn't a constant", e->u.name);
+            diag_label(d, "not a compile-time constant");
+            Var *gv = find_global(g, e->u.name);
+            if (gv && !gv->is_const) {
+                diag_span(d, gv->loc, "`%s` is declared without `const`, so it can change", gv->name);
+                diag_help(d, "make `%s` const, or set this global at the start of `main` instead", gv->name);
+            } else if (!gv) {
+                diag_note(d, "global initializers can only use literals, operators and earlier `const` globals");
+            }
+            diag_end(d);
+        }
         return false;
     }
     case EXPR_UNARY: {
@@ -268,7 +392,13 @@ static bool const_eval(Gen *g, const Expr *e, int64_t *out, bool report) {
         case TOK_SLASH:
         case TOK_PERCENT:
             if (b == 0 || (a == INT64_MIN && b == -1)) {
-                if (report) diag_error(e->loc, b == 0 ? "division by zero" : "this division overflows int");
+                if (report) {
+                    Diag *d = diag_start(DIAG_ERROR, "E0308", e->loc, b == 0 ? "division by zero in a constant expression"
+                                                                       : "constant division overflows `int`");
+                    diag_label(d, b == 0 ? "dividing by zero" : "-9223372036854775808 / -1 doesn't fit in `int`");
+                    diag_span(d, e->u.binary.rhs->loc, "this is %lld", (long long)b);
+                    diag_end(d);
+                }
                 return false;
             }
             *out = op == TOK_SLASH ? a / b : a % b;
@@ -298,7 +428,13 @@ static bool const_eval(Gen *g, const Expr *e, int64_t *out, bool report) {
     default:
         break;
     }
-    if (report) diag_error(e->loc, "global initializers must be constant expressions");
+    if (report) {
+        Diag *d = diag_start(DIAG_ERROR, "E0307", e->loc, "global initializers must be constant expressions");
+        diag_label(d, "not a compile-time constant");
+        if (e->kind == EXPR_CALL) diag_note(d, "function calls aren't evaluated at compile time");
+        diag_help(d, "set this global at the start of `main` instead");
+        diag_end(d);
+    }
     return false;
 }
 
@@ -306,12 +442,21 @@ static bool const_eval(Gen *g, const Expr *e, int64_t *out, bool report) {
 
 static ValType gen_expr(Gen *g, const Expr *e);
 static void gen_effect(Gen *g, const Expr *e);
+static void report_assign_as_value(const Expr *e);
 
 /* Generates `e` and requires it to produce an int. */
 static bool gen_int(Gen *g, const Expr *e) {
     ValType t = gen_expr(g, e);
     if (t == VT_VOID) {
-        diag_error(e->loc, "this expression has no value (it calls a void function)");
+        Diag *d = diag_start(DIAG_ERROR, "E0300", e->loc, "expected a value, but this call returns nothing");
+        diag_label(d, "has no value");
+        if (e->kind == EXPR_CALL && e->u.call.callee->kind == EXPR_IDENT) {
+            const Decl *fn = find_function(g->mod, e->u.call.callee->u.name);
+            if (fn) diag_span(d, ret_type_loc(fn), fn->u.func.ret ? "`%s` is declared to return `void`"
+                                                                  : "`%s` has no return type, so it returns nothing",
+                              fn->name);
+        }
+        diag_end(d);
         return false;
     }
     return t == VT_INT;
@@ -376,7 +521,7 @@ static ValType gen_logical(Gen *g, const Expr *e) {
 static ValType gen_binary(Gen *g, const Expr *e) {
     TokenKind op = e->u.binary.op;
     if (op == TOK_DOT) {
-        not_yet(e->loc, "string concatenation with '.'", 7);
+        not_yet(e->loc, "string concatenation with `.`", 7);
         return VT_ERROR;
     }
     if (op == TOK_ANDAND || op == TOK_OROR) return gen_logical(g, e);
@@ -397,25 +542,40 @@ static ValType gen_binary(Gen *g, const Expr *e) {
 static Var *assign_target(Gen *g, const Expr *target, const char *action) {
     if (target->kind != EXPR_IDENT) {
         if (target->kind == EXPR_INDEX || target->kind == EXPR_MEMBER ||
-            (target->kind == EXPR_UNARY && target->u.unary.op == TOK_STAR))
+            (target->kind == EXPR_UNARY && target->u.unary.op == TOK_STAR)) {
             not_yet(target->loc, "assigning through pointers, fields or indexes", 5);
-        else
-            diag_error(target->loc, "can't %s this; only variables can be assigned", action);
+        } else {
+            Diag *d = diag_start(DIAG_ERROR, "E0209", target->loc, "invalid left-hand side: can't %s this", action);
+            diag_label(d, "not a variable");
+            diag_note(d, "only variables can be assigned to");
+            diag_end(d);
+        }
         return NULL;
     }
     Var *v = find_var(g, target->u.name);
     if (!v) {
-        if (find_function(g->mod, target->u.name))
-            diag_error(target->loc, "'%s' is a function, not a variable", target->u.name);
-        else
-            diag_error(target->loc, "there is no variable named '%s'", target->u.name);
+        const Decl *fn = find_function(g->mod, target->u.name);
+        if (fn) {
+            Diag *d = diag_start(DIAG_ERROR, "E0209", target->loc, "can't %s `%s` because it's a function", action,
+                                 target->u.name);
+            diag_label(d, "not a variable");
+            diag_span(d, fn->name_loc, "`%s` is defined here", fn->name);
+            diag_end(d);
+        } else {
+            report_unknown_var(g, target);
+        }
         return NULL;
     }
     if (v->is_const) {
-        diag_error(target->loc, "can't %s '%s' because it's a constant", action, v->name);
-        diag_note(v->loc, "'%s' is declared const here", v->name);
+        Diag *d = diag_start(DIAG_ERROR, "E0207", target->loc, "cannot %s `%s`, because it's a constant", action, v->name);
+        diag_label(d, "can't %s a constant", action);
+        diag_span(d, v->loc, "`%s` is declared `const` here", v->name);
+        Loc kw;
+        if (const_keyword_loc(v->type, &kw)) diag_fix(d, kw, "", "if `%s` needs to change, remove `const`", v->name);
+        diag_end(d);
         return NULL;
     }
+    v->writes++;
     return v;
 }
 
@@ -451,7 +611,7 @@ static ValType gen_unary(Gen *g, const Expr *e) {
     case TOK_PLUSPLUS: case TOK_MINUSMINUS:
         return gen_incdec(g, e, true);
     default:
-        not_yet(e->loc, op == TOK_AMP ? "taking addresses with '&'" : "dereferencing with '*'", 5);
+        not_yet(e->loc, op == TOK_AMP ? "taking addresses with `&`" : "dereferencing with `*`", 5);
         return VT_ERROR;
     }
 
@@ -495,19 +655,47 @@ static ValType gen_call(Gen *g, const Expr *e) {
     }
     const Decl *fn = find_function(g->mod, callee->u.name);
     if (!fn) {
-        if (find_var(g, callee->u.name))
-            diag_error(callee->loc, "'%s' is a variable, not a function", callee->u.name);
-        else
-            diag_error(callee->loc, "there is no function named '%s'", callee->u.name);
+        Var *v = find_var(g, callee->u.name);
+        Diag *d;
+        if (v) {
+            v->reads++;
+            d = diag_start(DIAG_ERROR, "E0204", callee->loc, "`%s` is a variable, not a function", callee->u.name);
+            diag_label(d, "called like a function");
+            diag_span(d, v->loc, "`%s` is declared here", v->name);
+            diag_help(d, "to read the variable, remove the parentheses");
+        } else {
+            d = diag_start(DIAG_ERROR, "E0201", callee->loc, "cannot find function `%s`", callee->u.name);
+            diag_label(d, "not found");
+            const char *guess = similar_function(g, callee->u.name);
+            if (guess) {
+                diag_span(d, find_function(g->mod, guess)->name_loc, "a function with a similar name is defined here");
+                diag_fix(d, callee->loc, guess, "a function with a similar name exists");
+            }
+        }
+        diag_end(d);
+        for (size_t i = 0; i < e->u.call.nargs; i++) gen_expr(g, e->u.call.args[i]);  /* still check them */
         return VT_ERROR;
     }
 
     size_t n = e->u.call.nargs;
+    size_t want = fn->u.func.nparams;
     bool ok = true;
-    if (n != fn->u.func.nparams) {
-        diag_error(e->loc, "'%s' takes %zu argument%s, but %zu %s given", fn->name, fn->u.func.nparams,
-                   fn->u.func.nparams == 1 ? "" : "s", n, n == 1 ? "was" : "were");
-        diag_note(fn->name_loc, "'%s' is defined here", fn->name);
+    if (n != want) {
+        Diag *d = diag_start(DIAG_ERROR, "E0206", callee->loc, "function `%s` takes %zu argument%s but %zu %s supplied",
+                             fn->name, want, want == 1 ? "" : "s", n, n == 1 ? "was" : "were");
+        diag_label(d, "expected %zu argument%s, found %zu", want, want == 1 ? "" : "s", n);
+        diag_span(d, fn->name_loc, "`%s` is defined here", fn->name);
+        for (size_t i = want; i < n && i < want + 3; i++)
+            diag_span(d, e->u.call.args[i]->loc, "unexpected argument");
+        if (n < want) {
+            char missing[256] = "";
+            size_t used = 0;
+            for (size_t i = n; i < want && used < sizeof missing - 40; i++)
+                used += (size_t)snprintf(missing + used, sizeof missing - used, "%s`%s`", i > n ? ", " : "",
+                                         fn->u.func.params[i]->name);
+            diag_note(d, "missing: %s", missing);
+        }
+        diag_end(d);
         ok = false;
     }
 
@@ -540,8 +728,10 @@ static ValType gen_expr(Gen *g, const Expr *e) {
     switch (e->kind) {
     case EXPR_INT:
         if (e->u.int_val > (uint64_t)INT64_MAX) {
-            diag_error(e->loc, "%llu doesn't fit in int (the largest int is 9223372036854775807)",
-                       (unsigned long long)e->u.int_val);
+            Diag *d = diag_start(DIAG_ERROR, "E0301", e->loc, "integer literal is too large for `int`");
+            diag_label(d, "doesn't fit in `int`");
+            diag_note(d, "`int` is 64-bit signed; the largest value is 9223372036854775807");
+            diag_end(d);
             return VT_ERROR;
         }
         emit_mov_imm(g, (int64_t)e->u.int_val);
@@ -552,13 +742,26 @@ static ValType gen_expr(Gen *g, const Expr *e) {
     case EXPR_IDENT: {
         Var *v = find_var(g, e->u.name);
         if (v) {
+            v->reads++;
             load_var(g, v);
             return VT_INT;
         }
-        if (find_function(g->mod, e->u.name))
-            diag_error(e->loc, "'%s' is a function; call it with %s(...)", e->u.name, e->u.name);
-        else
-            diag_error(e->loc, "there is no variable named '%s'", e->u.name);
+        const Decl *fn = find_function(g->mod, e->u.name);
+        if (fn) {
+            Diag *d = diag_start(DIAG_ERROR, "E0205", e->loc, "`%s` is a function, not a value", e->u.name);
+            diag_label(d, "function used without calling it");
+            if (fn->u.func.nparams == 0) {
+                char call[128];
+                snprintf(call, sizeof call, "%s()", e->u.name);
+                diag_fix(d, e->loc, call, "call it");
+            } else {
+                diag_help(d, "call it with %zu argument%s: `%s(...)`", fn->u.func.nparams,
+                          fn->u.func.nparams == 1 ? "" : "s", e->u.name);
+            }
+            diag_end(d);
+        } else {
+            report_unknown_var(g, e);
+        }
         return VT_ERROR;
     }
     case EXPR_UNARY:
@@ -572,8 +775,7 @@ static ValType gen_expr(Gen *g, const Expr *e) {
     case EXPR_CALL:
         return gen_call(g, e);
     case EXPR_ASSIGN:
-        diag_error(e->loc, "an assignment can't be used as a value%s",
-                   e->u.binary.op == TOK_ASSIGN ? " (did you mean '=='?)" : "");
+        report_assign_as_value(e);
         return VT_ERROR;
 
     case EXPR_FLOAT:      not_yet(e->loc, "floats", 5); break;
@@ -596,6 +798,28 @@ static ValType gen_expr(Gen *g, const Expr *e) {
     return VT_ERROR;
 }
 
+/* E0210. For `x = y` it suggests `x == y`. */
+static void report_assign_as_value(const Expr *e) {
+    Diag *d = diag_start(DIAG_ERROR, "E0210", e->loc, "an assignment can't be used as a value");
+    diag_label(d, "assignment used as a value");
+    diag_note(d, "in watrlang, assignment is a statement, not an expression");
+    if (e->u.binary.op == TOK_ASSIGN) {
+        /* Find the `=` between the two sides to suggest `==`. */
+        const SrcFile *f = e->loc.file;
+        uint32_t from = e->u.binary.lhs->loc.offset + e->u.binary.lhs->loc.len;
+        uint32_t to = e->u.binary.rhs->loc.offset;
+        for (uint32_t i = from; i < to && i < f->len; i++) {
+            if (f->text[i] == '=') {
+                diag_fix(d, loc_at(f, i, 1), "==", "if you meant to compare, use `==`");
+                break;
+            }
+        }
+    } else {
+        diag_help(d, "do the assignment on its own line, then use the variable");
+    }
+    diag_end(d);
+}
+
 static TokenKind compound_to_binary(TokenKind op) {
     switch (op) {
     case TOK_PLUS_ASSIGN:    return TOK_PLUS;
@@ -615,11 +839,15 @@ static TokenKind compound_to_binary(TokenKind op) {
 static void gen_assign(Gen *g, const Expr *e) {
     TokenKind op = e->u.binary.op;
     if (op == TOK_DOT_ASSIGN) {
-        not_yet(e->loc, "string concatenation with '.='", 7);
+        not_yet(e->loc, "string concatenation with `.=`", 7);
         return;
     }
     if (e->u.binary.rhs->kind == EXPR_ASSIGN) {
-        diag_error(e->u.binary.rhs->loc, "assignments can't be chained; assign each variable separately");
+        Diag *d = diag_start(DIAG_ERROR, "E0211", e->u.binary.rhs->loc, "assignments can't be chained");
+        diag_label(d, "second assignment");
+        diag_span(d, e->u.binary.lhs->loc, "first assignment target");
+        diag_help(d, "assign each variable in its own statement");
+        diag_end(d);
         return;
     }
     Var *v = assign_target(g, e->u.binary.lhs, "assign to");
@@ -649,14 +877,28 @@ static void gen_effect(Gen *g, const Expr *e) {
 /* ---- statements ---------------------------------------------------------- */
 
 static void gen_stmt(Gen *g, const Stmt *s);
+static bool falls_through(Gen *g, const Stmt *s);
+
+/* Generates a statement list, warning once if code follows a statement
+ * control can't get past (W0002). */
+static void gen_stmt_list(Gen *g, Stmt **stmts, size_t n) {
+    bool warned = false;
+    for (size_t i = 0; i < n; i++) {
+        if (!warned && i > 0 && diag_error_count() == g->fn_errors_before && !falls_through(g, stmts[i - 1])) {
+            Diag *d = diag_start(DIAG_WARNING, "W0002", stmts[i]->loc, "unreachable statement");
+            diag_label(d, "this can never run");
+            diag_span(d, stmts[i - 1]->loc, "any code after this is unreachable");
+            diag_end(d);
+            warned = true;
+        }
+        gen_stmt(g, stmts[i]);
+    }
+}
 
 static void gen_scoped(Gen *g, const Stmt *s) {
     push_scope(g);
-    if (s->kind == STMT_BLOCK) {
-        for (size_t i = 0; i < s->u.block.n; i++) gen_stmt(g, s->u.block.stmts[i]);
-    } else {
-        gen_stmt(g, s);
-    }
+    if (s->kind == STMT_BLOCK) gen_stmt_list(g, s->u.block.stmts, s->u.block.n);
+    else gen_stmt(g, s);
     pop_scope(g);
 }
 
@@ -678,16 +920,24 @@ static void gen_cond_jump_false(Gen *g, const Expr *cond, int label) {
     emit(g, "je .L%d", label);
 }
 
+/* E0208 */
+static void report_missing_const_value(const VarDecl *vd) {
+    Diag *d = diag_start(DIAG_ERROR, "E0208", vd->loc, "constant `%s` needs a value", vd->name);
+    diag_label(d, "declared without a value");
+    diag_note(d, "a constant can never be assigned later, so it must be given a value here");
+    diag_fix(d, loc_after(vd->loc), " = 0", "give it a value");
+    diag_end(d);
+}
+
 static void gen_var_decl(Gen *g, const VarDecl *vd) {
     bool type_ok = check_var_type(vd->type);
-    bool is_const = vd->type->is_const;
-    if (is_const && !vd->init) diag_error(vd->loc, "constant '%s' needs a value", vd->name);
+    if (vd->type->is_const && !vd->init) report_missing_const_value(vd);
 
     /* The initializer is generated before the name exists, so `int x = x;`
      * can't read the variable it's declaring. */
     if (vd->init) {
         if (vd->init->kind == EXPR_ASSIGN) {
-            diag_error(vd->init->loc, "an assignment can't be used as a value");
+            report_assign_as_value(vd->init);
             type_ok = false;
         } else if (!gen_int(g, vd->init)) {
             type_ok = false;
@@ -695,7 +945,7 @@ static void gen_var_decl(Gen *g, const VarDecl *vd) {
     } else {
         emit(g, "xor eax, eax");  /* locals start at zero */
     }
-    Var *v = declare_local(g, vd->name, vd->loc, is_const);
+    Var *v = declare_local(g, vd->name, vd->loc, vd->type, false);
     if (type_ok) store_var(g, v, "rax");
 }
 
@@ -715,9 +965,19 @@ static void gen_stmt(Gen *g, const Stmt *s) {
 
     case STMT_RETURN:
         if (g->fn_ret == VT_VOID && s->u.expr) {
-            diag_error(s->u.expr->loc, "function '%s' returns void, so 'return' can't have a value", g->fn->name);
+            Diag *d = diag_start(DIAG_ERROR, "E0302", s->u.expr->loc, "function `%s` doesn't return a value",
+                                 g->fn->name);
+            diag_label(d, "unexpected return value");
+            diag_span(d, ret_type_loc(g->fn), g->fn->u.func.ret ? "declared to return `void` here"
+                                                                : "no return type is declared, so it returns nothing");
+            diag_help(d, "remove the value, or declare a return type: `function %s(...): int`", g->fn->name);
+            diag_end(d);
+            gen_expr(g, s->u.expr);
         } else if (g->fn_ret == VT_INT && !s->u.expr) {
-            diag_error(s->loc, "function '%s' must return an int value", g->fn->name);
+            Diag *d = diag_start(DIAG_ERROR, "E0303", s->loc, "missing return value in function `%s`", g->fn->name);
+            diag_label(d, "expected an `int` value");
+            diag_span(d, ret_type_loc(g->fn), "`%s` is declared to return `int`", g->fn->name);
+            diag_end(d);
         } else if (s->u.expr) {
             gen_int(g, s->u.expr);
         }
@@ -784,7 +1044,10 @@ static void gen_stmt(Gen *g, const Stmt *s) {
     case STMT_CONTINUE: {
         bool is_break = s->kind == STMT_BREAK;
         if (g->nloops == 0) {
-            diag_error(s->loc, "'%s' can only be used inside a loop", is_break ? "break" : "continue");
+            Diag *d = diag_start(DIAG_ERROR, "E0212", s->loc, "`%s` outside of a loop", is_break ? "break" : "continue");
+            diag_label(d, "can only be used inside a loop");
+            if (is_break) diag_help(d, "to leave the function early, use `return`");
+            diag_end(d);
             break;
         }
         const Loop *loop = &g->loops[g->nloops - 1];
@@ -868,8 +1131,9 @@ static void gen_function(Gen *g, const Decl *d) {
     }
 
     g->fn = d;
+    g->fn_errors_before = diag_error_count();
     g->fn_ret = ret_type_of(d);
-    if (g->fn_ret == VT_ERROR) not_yet(d->u.func.ret->loc, "return types other than int and void", 5);
+    if (g->fn_ret == VT_ERROR) not_yet(d->u.func.ret->loc, "return types other than `int` and `void`", 5);
     g->ret_label = new_label(g);
     g->depth = 0;
     g->slots = 0;
@@ -890,30 +1154,28 @@ static void gen_function(Gen *g, const Decl *d) {
         const Param *p = d->u.func.params[i];
         check_var_type(p->type);
         if (i < 6) {
-            Var *v = declare_local(g, p->name, p->loc, p->type->is_const);
+            Var *v = declare_local(g, p->name, p->loc, p->type, true);
             store_var(g, v, arg_regs[i]);
         } else {
-            Var *prev = find_local(g, p->name);
-            if (prev) {
-                diag_error(p->loc, "'%s' is already declared in this function", p->name);
-                diag_note(prev->loc, "the earlier declaration is here");
-            }
-            Var *v = ARENA_NEW(&g->arena, Var);
-            v->name = p->name;
-            v->loc = p->loc;
-            v->is_const = p->type->is_const;
-            v->offset = 16 + 8 * (int)(i - 6);
-            ptrvec_push(&g->locals, v);
+            /* Stack arguments already live in the caller's frame. */
+            declare_local_at(g, p->name, p->loc, p->type, true, 16 + 8 * (int)(i - 6));
         }
     }
     /* Body statements share the parameters' scope, so a local can't
      * redeclare a parameter. */
     const Stmt *b = d->u.func.body;
-    for (size_t i = 0; i < b->u.block.n; i++) gen_stmt(g, b->u.block.stmts[i]);
+    gen_stmt_list(g, b->u.block.stmts, b->u.block.n);
     pop_scope(g);
 
-    if (g->fn_ret == VT_INT && falls_through(g, b))
-        diag_error(d->name_loc, "function '%s' can reach its end without returning a value", d->name);
+    if (g->fn_ret == VT_INT && falls_through(g, b)) {
+        Loc closing = loc_at(b->loc.file, b->loc.offset + b->loc.len - 1, 1);
+        Diag *e = diag_start(DIAG_ERROR, "E0304", closing, "function `%s` can reach its end without returning a value",
+                             d->name);
+        diag_label(e, "the function can end here without returning");
+        diag_span(e, ret_type_loc(d), "`%s` is declared to return `int`", d->name);
+        diag_help(e, "add a `return` before the closing brace, or make sure every path returns");
+        diag_end(e);
+    }
 
     fclose(g->out);
     g->out = real_out;
@@ -955,8 +1217,11 @@ static const Decl *check_top_level(Gen *g) {
         for (size_t j = 0; j < i; j++) {
             const Decl *prev = m->decls[j];
             if ((prev->kind == DECL_FUNC || prev->kind == DECL_VAR) && strcmp(prev->name, d->name) == 0) {
-                diag_error(d->name_loc, "'%s' is defined twice", d->name);
-                diag_note(prev->name_loc, "the first definition is here");
+                Diag *e = diag_start(DIAG_ERROR, "E0202", d->name_loc, "the name `%s` is defined more than once", d->name);
+                diag_label(e, "`%s` redefined here", d->name);
+                diag_span(e, prev->name_loc, "first definition of `%s` here", d->name);
+                if (prev->kind != d->kind) diag_note(e, "functions and global variables share one namespace");
+                diag_end(e);
                 break;
             }
         }
@@ -975,9 +1240,10 @@ static const Decl *check_top_level(Gen *g) {
         Var *v = ARENA_NEW(&g->arena, Var);
         v->name = vd->name;
         v->loc = vd->loc;
+        v->type = vd->type;
         v->is_global = true;
         v->is_const = vd->type->is_const;
-        if (v->is_const && !vd->init) diag_error(vd->loc, "constant '%s' needs a value", vd->name);
+        if (v->is_const && !vd->init) report_missing_const_value(vd);
         bool known = vd->init && const_eval(g, vd->init, &v->value, true);
         if (!known) v->value = 0;
         /* Only constants fold into later initializers; mutable globals may change. */
@@ -986,12 +1252,20 @@ static const Decl *check_top_level(Gen *g) {
     }
 
     if (!main_fn) {
-        Loc loc = {m->file, 0, 1, 1, 0};
-        diag_error(loc, "there is no main function; a program starts at: function main(): int { ... }");
+        Loc loc = {m->file, 0, 0, 0, 0};
+        Diag *d = diag_start(DIAG_ERROR, "E0305", loc, "`main` function not found in `%s`", m->file->path);
+        diag_note(d, "a program starts running at `main`");
+        diag_help(d, "add one: `function main(): int { return 0; }`");
+        diag_end(d);
         return NULL;
     }
-    if (!is_int_type(main_fn->u.func.ret) || main_fn->u.func.ret->is_const)
-        diag_error(main_fn->name_loc, "main must return int (its value is the program's exit code)");
+    if (!is_int_type(main_fn->u.func.ret) || main_fn->u.func.ret->is_const) {
+        Diag *d = diag_start(DIAG_ERROR, "E0306", ret_type_loc(main_fn), "`main` must return `int`");
+        diag_label(d, main_fn->u.func.ret ? "expected `int` here" : "no return type");
+        diag_note(d, "main's return value becomes the program's exit code");
+        if (main_fn->u.func.ret) diag_fix(d, main_fn->u.func.ret->loc, "int", "change the return type");
+        diag_end(d);
+    }
     if (main_fn->u.func.nparams > 0)
         not_yet(main_fn->u.func.params[0]->loc, "command-line arguments to main", 7);
     return main_fn;

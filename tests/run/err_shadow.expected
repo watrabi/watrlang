@@ -1,14 +1,25 @@
-tests/run/err_shadow.watr:2:9: error: 'a' is already declared in this function
- 2 |     int a = 2;
-   |         ^
-tests/run/err_shadow.watr:1:16: note: the earlier declaration is here
- 1 | function f(int a): int {
-   |                ^
-tests/run/err_shadow.watr:5:13: error: 'b' is already declared in this function
- 5 |         int b = 3;
-   |             ^
-tests/run/err_shadow.watr:3:9: note: the earlier declaration is here
- 3 |     int b = 1;
-   |         ^
-2 errors
+error[E0203]: `a` is already declared in this function
+ --> tests/run/err_shadow.watr:2:9
+  |
+1 | function f(int a): int {
+  |                - first declared here, as a parameter
+2 |     int a = 2;
+  |         ^ declared again here
+  |
+  = help: give it a different name; watrlang doesn't allow shadowing inside a function
+
+error[E0203]: `b` is already declared in this function
+ --> tests/run/err_shadow.watr:5:13
+  |
+3 |     int b = 1;
+  |         - first declared here
+4 |     if (b) {
+5 |         int b = 3;
+  |             ^ declared again here
+  |
+  = help: give it a different name; watrlang doesn't allow shadowing inside a function
+
+error: could not compile `tests/run/err_shadow.watr` due to 2 previous errors
+This error has a detailed explanation: E0203.
+For more information about an error, try `watrc --explain E0203`.
 compile failed: 1

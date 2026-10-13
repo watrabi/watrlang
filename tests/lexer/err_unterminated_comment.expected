@@ -1,7 +1,14 @@
 1:1 IDENT a
-tests/lexer/err_unterminated_comment.watr:2:1: error: unterminated /* comment
- 2 | /* never closed
-   | ^~
+error[E0001]: unterminated block comment
+ --> tests/lexer/err_unterminated_comment.watr:2:1
+  |
+2 | /* never closed
+  | ^^ this comment is never closed
+  |
+  = help: add `*/` where the comment should end
+
 4:1 EOF
-1 error
+error: could not compile `tests/lexer/err_unterminated_comment.watr` due to 1 previous error
+This error has a detailed explanation: E0001.
+For more information about an error, try `watrc --explain E0001`.
 exit: 1

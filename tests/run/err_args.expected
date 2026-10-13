@@ -1,17 +1,37 @@
-tests/run/err_args.watr:3:20: error: 'two' takes 2 arguments, but 1 was given
- 3 |     int two_args = two(1);
-   |                    ^~~~~~
-tests/run/err_args.watr:1:10: note: 'two' is defined here
- 1 | function two(int a, int b): int { return a + b; }
-   |          ^~~
-tests/run/err_args.watr:4:16: error: 'two' takes 2 arguments, but 3 were given
- 4 |     two_args = two(1, 2, 3);
-   |                ^~~~~~~~~~~~
-tests/run/err_args.watr:1:10: note: 'two' is defined here
- 1 | function two(int a, int b): int { return a + b; }
-   |          ^~~
-tests/run/err_args.watr:5:13: error: 'two_args' is a variable, not a function
- 5 |     int v = two_args();
-   |             ^~~~~~~~
-3 errors
+error[E0206]: function `two` takes 2 arguments but 1 was supplied
+ --> tests/run/err_args.watr:3:20
+  |
+1 | function two(int a, int b): int { return a + b; }
+  |          --- `two` is defined here
+2 | function main(): int {
+3 |     int two_args = two(1);
+  |                    ^^^ expected 2 arguments, found 1
+  |
+  = note: missing: `b`
+
+error[E0206]: function `two` takes 2 arguments but 3 were supplied
+ --> tests/run/err_args.watr:4:16
+  |
+1 | function two(int a, int b): int { return a + b; }
+  |          --- `two` is defined here
+...
+4 |     two_args = two(1, 2, 3);
+  |                ^^^       - unexpected argument
+  |                |
+  |                expected 2 arguments, found 3
+
+error[E0204]: `two_args` is a variable, not a function
+ --> tests/run/err_args.watr:5:13
+  |
+3 |     int two_args = two(1);
+  |         -------- `two_args` is declared here
+4 |     two_args = two(1, 2, 3);
+5 |     int v = two_args();
+  |             ^^^^^^^^ called like a function
+  |
+  = help: to read the variable, remove the parentheses
+
+error: could not compile `tests/run/err_args.watr` due to 3 previous errors
+Some errors have detailed explanations: E0206, E0204.
+For more information about an error, try `watrc --explain E0206`.
 compile failed: 1

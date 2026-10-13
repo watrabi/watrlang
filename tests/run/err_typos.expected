@@ -1,0 +1,44 @@
+error[E0201]: cannot find function `compute_totl`
+ --> tests/run/err_typos.watr:7:17
+  |
+1 | function compute_total(int count): int {
+  |          ------------- a function with a similar name is defined here
+...
+7 |     int total = compute_totl(countr);
+  |                 ^^^^^^^^^^^^ not found
+  |
+help: a function with a similar name exists
+  |
+7 |     int total = compute_total(countr);
+  |                 ~~~~~~~~~~~~~
+
+error[E0200]: cannot find variable `countr` in this scope
+ --> tests/run/err_typos.watr:7:30
+  |
+6 |     int counter = 5;
+  |         ------- a variable with a similar name is declared here
+7 |     int total = compute_totl(countr);
+  |                              ^^^^^^ not found in this scope
+  |
+help: a variable with a similar name exists
+  |
+7 |     int total = compute_totl(counter);
+  |                              ~~~~~~~
+
+error[E0200]: cannot find variable `totl` in this scope
+ --> tests/run/err_typos.watr:8:12
+  |
+7 |     int total = compute_totl(countr);
+  |         ----- a variable with a similar name is declared here
+8 |     return totl;
+  |            ^^^^ not found in this scope
+  |
+help: a variable with a similar name exists
+  |
+8 |     return total;
+  |            ~~~~~
+
+error: could not compile `tests/run/err_typos.watr` due to 3 previous errors
+Some errors have detailed explanations: E0201, E0200.
+For more information about an error, try `watrc --explain E0201`.
+compile failed: 1

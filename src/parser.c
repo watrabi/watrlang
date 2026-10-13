@@ -100,56 +100,99 @@ static const char *describe(const Parser *p, const Token *t) {
     case TOK_EOF:
         return p->in_interp ? "the end of the interpolation" : "end of file";
     case TOK_IDENT:
-        snprintf(buf, sizeof buf, "identifier '%.*s'", t->loc.len > 40 ? 40 : (int)t->loc.len, t->start);
+        snprintf(buf, sizeof buf, "identifier `%.*s`", t->loc.len > 40 ? 40 : (int)t->loc.len, t->start);
         return buf;
     case TOK_INT: case TOK_FLOAT: case TOK_CHAR: case TOK_STRING: case TOK_ERROR:
-        if (t->loc.len > 24) snprintf(buf, sizeof buf, "%.21s...", t->start);
-        else snprintf(buf, sizeof buf, "%.*s", (int)t->loc.len, t->start);
+        if (t->loc.len > 24) snprintf(buf, sizeof buf, "`%.21s...`", t->start);
+        else snprintf(buf, sizeof buf, "`%.*s`", (int)t->loc.len, t->start);
         /* Keep multi-line string literals on one line in the message. */
-        for (char *c = buf; *c; c++) if (*c == '\n') { strcpy(c, "..."); break; }
+        for (char *c = buf; *c; c++) if (*c == '\n') { strcpy(c, "...`"); break; }
         return buf;
     default:
-        if (t->kind >= TOK_KW_FUNCTION) snprintf(buf, sizeof buf, "keyword '%s'", token_kind_spelling(t->kind));
-        else snprintf(buf, sizeof buf, "'%s'", token_kind_spelling(t->kind));
+        if (t->kind >= TOK_KW_FUNCTION) snprintf(buf, sizeof buf, "keyword `%s`", token_kind_spelling(t->kind));
+        else snprintf(buf, sizeof buf, "`%s`", token_kind_spelling(t->kind));
         return buf;
     }
 }
 
-static void error_at_loc(Parser *p, Loc loc, const char *fmt, ...) WATR_PRINTF(3, 4);
-static void error_at_loc(Parser *p, Loc loc, const char *fmt, ...) {
-    if (p->panic) return;
+/* Starts an error at `loc` and enters panic mode. Returns NULL (and
+ * reports nothing) if the parser is already panicking, so only the first
+ * error of a broken statement is shown. The caller adds labels and calls
+ * diag_end; every diag_* function accepts NULL. */
+static Diag *perr(Parser *p, const char *code, Loc loc, const char *fmt, ...) WATR_PRINTF(4, 5);
+static Diag *perr(Parser *p, const char *code, Loc loc, const char *fmt, ...) {
+    if (p->panic) return NULL;
     p->panic = true;
     va_list ap;
     va_start(ap, fmt);
-    diag_verror(loc, fmt, ap);
+    Diag *d = diag_vstart(DIAG_ERROR, code, loc, fmt, ap);
     va_end(ap);
+    return d;
 }
 
-/* Reports at token `t`, unless it's an ERROR token the lexer already reported. */
-static void error_at(Parser *p, const Token *t, const char *fmt, ...) WATR_PRINTF(3, 4);
-static void error_at(Parser *p, const Token *t, const char *fmt, ...) {
-    if (p->panic) return;
+/* Like perr, at token `t`. Returns NULL for ERROR tokens: the lexer already
+ * explained those. */
+static Diag *perr_tok(Parser *p, const char *code, const Token *t, const char *fmt, ...) WATR_PRINTF(4, 5);
+static Diag *perr_tok(Parser *p, const char *code, const Token *t, const char *fmt, ...) {
+    if (p->panic) return NULL;
     p->panic = true;
-    if (t->kind == TOK_ERROR) return;
+    if (t->kind == TOK_ERROR) return NULL;
     va_list ap;
     va_start(ap, fmt);
-    diag_verror(t->loc, fmt, ap);
+    Diag *d = diag_vstart(DIAG_ERROR, code, t->loc, fmt, ap);
     va_end(ap);
+    return d;
+}
+
+static TokenKind opener_of(TokenKind close) {
+    switch (close) {
+    case TOK_RPAREN:   return TOK_LPAREN;
+    case TOK_RBRACKET: return TOK_LBRACKET;
+    case TOK_RBRACE:   return TOK_LBRACE;
+    default:           return TOK_EOF;
+    }
+}
+
+/* The unmatched `(`/`[`/`{` that a missing closer belongs to, found by
+ * walking back over the tokens already parsed. */
+static const Token *unmatched_opener(Parser *p, TokenKind close) {
+    TokenKind open = opener_of(close);
+    if (open == TOK_EOF) return NULL;
+    int depth = 0;
+    for (size_t i = p->pos; i-- > 0;) {
+        TokenKind k = p->toks[i].kind;
+        if (k == close) depth++;
+        else if (k == open && depth-- == 0) return &p->toks[i];
+    }
+    return NULL;
 }
 
 static Token *expect(Parser *p, TokenKind k, const char *context) {
     if (check(p, k)) return advance(p);
-    error_at(p, cur(p), "expected '%s' %s, found %s", token_kind_spelling(k), context, describe(p, cur(p)));
+    const Token *t = cur(p);
+    const Token *open = unmatched_opener(p, k);
+    Diag *d;
+    if (t->kind == TOK_EOF && open) {
+        d = perr(p, "E0109", open->loc, "unclosed delimiter `%s`", token_kind_spelling(open->kind));
+        diag_label(d, "this `%s` is never closed", token_kind_spelling(open->kind));
+        diag_note(d, "the file ended before the matching `%s`", token_kind_spelling(k));
+    } else {
+        d = perr_tok(p, "E0100", t, "expected `%s` %s, found %s", token_kind_spelling(k), context, describe(p, t));
+        diag_label(d, "expected `%s`", token_kind_spelling(k));
+        if (open) diag_span(d, open->loc, "unclosed `%s` starts here", token_kind_spelling(open->kind));
+    }
+    diag_end(d);
     return NULL;
 }
 
-/* Missing `;` is reported right after the previous token, not on the next
- * line where the parser happened to notice. */
+/* A missing `;` is reported right after the previous token, where it
+ * belongs, rather than at the next token (often on the next line). */
 static bool expect_semi(Parser *p, const char *context) {
     if (accept(p, TOK_SEMI)) return true;
     if (p->panic) return false;
-    if (cur_kind(p) == TOK_ERROR) {
-        error_at(p, cur(p), "expected ';' %s", context);
+    const Token *next = cur(p);
+    if (next->kind == TOK_ERROR) {
+        diag_end(perr_tok(p, "E0101", next, "expected `;` %s", context));
         return false;
     }
     const Token *prev = &p->toks[p->pos - 1];
@@ -159,21 +202,35 @@ static bool expect_semi(Parser *p, const char *context) {
         loc.col += loc.len;
     }
     loc.len = 0;
-    /* No panic: carry on as if the ';' were there. That's almost always
+    /* No panic: carry on as if the `;` were there. That's almost always
      * right, and it keeps the next statement from being skipped. */
-    diag_error(loc, "expected ';' %s", context);
+    Diag *d = diag_start(DIAG_ERROR, "E0101", loc, "expected `;` %s, found %s", context, describe(p, next));
+    diag_label(d, "add `;` here");
+    if (next->kind != TOK_EOF) diag_span(d, next->loc, "unexpected %s", describe(p, next));
+    diag_end(d);
     return false;
 }
 
 static Token *expect_ident(Parser *p, const char *what) {
     if (check(p, TOK_IDENT)) return advance(p);
-    if (cur_kind(p) >= TOK_KW_FUNCTION) {
+    Token *t = cur(p);
+    if (t->kind >= TOK_KW_FUNCTION) {
         /* Keep going with the keyword as the name; the error is clear enough
          * that resyncing would only cause follow-on errors. */
-        if (!p->panic) diag_error(cur(p)->loc, "%s can't be used as %s", describe(p, cur(p)), what);
+        if (!p->panic) {
+            const char *word = token_kind_spelling(t->kind);
+            Diag *d = diag_start(DIAG_ERROR, "E0102", t->loc, "`%s` is a reserved word and can't be used as %s", word, what);
+            diag_label(d, t->kind >= TOK_KW_VOID ? "this is a built-in type" : "this is a keyword");
+            char renamed[64];
+            snprintf(renamed, sizeof renamed, "%s_", word);
+            diag_fix(d, t->loc, renamed, "pick a different name, for example");
+            diag_end(d);
+        }
         return advance(p);
     }
-    error_at(p, cur(p), "expected %s, found %s", what, describe(p, cur(p)));
+    Diag *d = perr_tok(p, "E0100", t, "expected %s, found %s", what, describe(p, t));
+    diag_label(d, "expected %s", what);
+    diag_end(d);
     return NULL;
 }
 
@@ -318,8 +375,12 @@ static Expr *parse_interp_expr(Parser *p, size_t start, size_t end, uint32_t lin
 
     /* Errors stay inside the string: the outer parser is still in sync. */
     Expr *e = parse_expr(&sub);
-    if (e && !check(&sub, TOK_EOF))
-        error_at(&sub, cur(&sub), "unexpected %s in interpolation", describe(&sub, cur(&sub)));
+    if (e && !check(&sub, TOK_EOF)) {
+        Diag *d = perr_tok(&sub, "E0100", cur(&sub), "unexpected %s in interpolation", describe(&sub, cur(&sub)));
+        diag_label(d, "expected `}` to end the interpolation");
+        diag_span(d, e->loc, "this is a complete expression");
+        diag_end(d);
+    }
     free(sub.toks);
     return e;
 }
@@ -401,12 +462,17 @@ static Expr *parse_string_token(Parser *p, const Token *t) {
 static bool parse_plain_string(Parser *p, const char *what, StrBuf *out) {
     Token *t = cur(p);
     if (t->kind != TOK_STRING) {
-        error_at(p, t, "expected a string for %s, found %s", what, describe(p, t));
+        Diag *d = perr_tok(p, "E0100", t, "expected a string for %s, found %s", what, describe(p, t));
+        diag_label(d, "expected a string literal");
+        diag_end(d);
         return false;
     }
     advance(p);
     if (t->flags & TOKF_INTERP) {
-        error_at(p, t, "%s can't use {interpolation}", what);
+        Diag *d = perr_tok(p, "E0114", t, "%s can't use {interpolation}", what);
+        diag_label(d, "must be known at compile time");
+        diag_help(d, "for a literal brace, write `\\{`");
+        diag_end(d);
         return false;
     }
     *out = decode_string(p, t->start + 1, t->loc.len - 2);
@@ -454,7 +520,9 @@ static TypeExpr *parse_base_type(Parser *p) {
         ty = new_type(p, TYPEX_NAMED, t->loc);
         ty->u.name = tok_name(p, t);
     } else {
-        error_at(p, t, "expected a type, found %s", describe(p, t));
+        Diag *d = perr_tok(p, "E0100", t, "expected a type, found %s", describe(p, t));
+        diag_label(d, "expected a type");
+        diag_end(d);
         return NULL;
     }
     ty->is_const = is_const;
@@ -685,7 +753,7 @@ static Expr *parse_primary(Parser *p) {
         advance(p);
         e = parse_expr_nested(p);
         if (!e) return NULL;
-        if (!expect(p, TOK_RPAREN, "to close '('")) return NULL;
+        if (!expect(p, TOK_RPAREN, "to close `(`")) return NULL;
         e->parenthesized = true;
         return e;
     }
@@ -707,7 +775,7 @@ static Expr *parse_primary(Parser *p) {
 
     case TOK_KW_ALLOC: {
         advance(p);
-        if (!expect(p, TOK_LPAREN, "after 'alloc'")) return NULL;
+        if (!expect(p, TOK_LPAREN, "after `alloc`")) return NULL;
         TypeExpr *ty = parse_type(p, false);
         if (!ty) return NULL;
         e = new_expr(p, EXPR_ALLOC, t->loc);
@@ -716,26 +784,38 @@ static Expr *parse_primary(Parser *p) {
             e->u.alloc.count = parse_expr_nested(p);
             if (!e->u.alloc.count) return NULL;
         }
-        if (!expect(p, TOK_RPAREN, "to close 'alloc('")) return NULL;
+        if (!expect(p, TOK_RPAREN, "to close `alloc(`")) return NULL;
         e->loc = span_to_prev(p, t->loc);
         return e;
     }
 
     case TOK_KW_SIZEOF: {
         advance(p);
-        if (!expect(p, TOK_LPAREN, "after 'sizeof'")) return NULL;
+        if (!expect(p, TOK_LPAREN, "after `sizeof`")) return NULL;
         TypeExpr *ty = parse_type(p, false);
-        if (!ty || !expect(p, TOK_RPAREN, "to close 'sizeof('")) return NULL;
+        if (!ty || !expect(p, TOK_RPAREN, "to close `sizeof(`")) return NULL;
         e = new_expr(p, EXPR_SIZEOF, span_to_prev(p, t->loc));
         e->u.sizeof_type = ty;
         return e;
     }
 
     default:
-        if (is_builtin_type(t->kind))
-            error_at(p, t, "type '%s' can't be used as a value here", token_kind_spelling(t->kind));
-        else
-            error_at(p, t, "expected an expression, found %s", describe(p, t));
+        if (is_builtin_type(t->kind)) {
+            Diag *d = perr_tok(p, "E0105", t, "expected a value, found the type `%s`", token_kind_spelling(t->kind));
+            diag_label(d, "this is a type, not a value");
+            diag_help(d, "to convert a value to `%s`, use `as`: `value as %s`", token_kind_spelling(t->kind),
+                      token_kind_spelling(t->kind));
+            diag_end(d);
+        } else {
+            Diag *d = perr_tok(p, "E0118", t, "expected an expression, found %s", describe(p, t));
+            diag_label(d, "expected an expression");
+            if (p->pos > 0) {
+                const Token *prev = &p->toks[p->pos - 1];
+                if (prev->kind >= TOK_PLUS && prev->kind <= TOK_SHR_ASSIGN)
+                    diag_span(d, prev->loc, "`%s` needs a value after it", token_kind_spelling(prev->kind));
+            }
+            diag_end(d);
+        }
         return NULL;
     }
 }
@@ -853,7 +933,10 @@ static int infix_bp(Parser *p, TokenKind k) {
 
 static bool enter(Parser *p) {
     if (++p->depth <= MAX_NESTING) return true;
-    error_at(p, cur(p), "code is nested too deeply (more than %d levels)", MAX_NESTING);
+    Diag *d = perr_tok(p, "E0110", cur(p), "code is nested too deeply");
+    diag_label(d, "more than %d levels deep here", MAX_NESTING);
+    diag_help(d, "split the expression up using variables");
+    diag_end(d);
     return false;
 }
 
@@ -863,6 +946,44 @@ static Expr *parse_expr_bp(Parser *p, int min_bp) {
     Expr *e = enter(p) ? parse_expr_bp_inner(p, min_bp) : NULL;
     p->depth--;
     return e;
+}
+
+/* Source text of `loc`, or NULL if it spans lines. */
+static char *loc_text(Parser *p, Loc loc) {
+    const char *s = p->file->text + loc.offset;
+    if (memchr(s, '\n', loc.len)) return NULL;
+    return arena_strndup(p->arena, s, loc.len);
+}
+
+/* `a < b < c`: suggests `a < b && b < c`. */
+static void report_chained_comparison(Parser *p, const Expr *lhs, const Token *op) {
+    Diag *d = perr_tok(p, "E0103", op, "comparison operators can't be chained");
+    diag_label(d, "second comparison");
+    diag_span(d, lhs->loc, "this is already a comparison");
+    diag_note(d, "in C, `a < b < c` compares the true/false result of `a < b` with `c`");
+
+    /* Peek at the right operand to build the suggestion. */
+    size_t saved = p->pos;
+    bool saved_panic = p->panic;
+    p->panic = true;  /* any errors while peeking stay quiet */
+    Expr *rhs = parse_expr_bp(p, BP_CMP + 1);  /* the operator is already consumed */
+    p->pos = saved;
+    p->panic = saved_panic;
+
+    char *a = loc_text(p, lhs->loc);
+    char *b = loc_text(p, lhs->u.binary.rhs->loc);
+    char *c = rhs ? loc_text(p, rhs->loc) : NULL;
+    if (a && b && c) {
+        size_t n = strlen(a) + strlen(b) + strlen(c) + 16;
+        char *fixed = arena_alloc(p->arena, n);
+        snprintf(fixed, n, "%s && %s %s %s", a, b, token_kind_spelling(op->kind), c);
+        Loc whole = lhs->loc;
+        whole.len = rhs->loc.offset + rhs->loc.len - lhs->loc.offset;
+        diag_fix(d, whole, fixed, "split it into two comparisons");
+    } else {
+        diag_help(d, "split it into two comparisons joined by `&&`");
+    }
+    diag_end(d);
 }
 
 static Expr *parse_expr_bp_inner(Parser *p, int min_bp) {
@@ -887,8 +1008,11 @@ static Expr *parse_expr_bp_inner(Parser *p, int min_bp) {
             Expr *then_expr = parse_expr_nested(p);
             if (!then_expr) return NULL;
             if (!check(p, TOK_COLON)) {
-                error_at(p, cur(p), "expected ':' in ?: expression, found %s "
-                         "(for error propagation, write (expr?))", describe(p, cur(p)));
+                Diag *d = perr_tok(p, "E0104", cur(p), "expected `:` in `?:` expression, found %s", describe(p, cur(p)));
+                diag_label(d, "expected `:` and a value for when the condition is false");
+                diag_span(d, t->loc, "this `?` starts a `cond ? a : b` expression");
+                diag_help(d, "if you meant error propagation, wrap it in parentheses: `(expr?)`");
+                diag_end(d);
                 return NULL;
             }
             advance(p);
@@ -908,7 +1032,7 @@ static Expr *parse_expr_bp_inner(Parser *p, int min_bp) {
             lhs = e;
         } else {
             if (bp == BP_CMP && lhs->kind == EXPR_BINARY && is_cmp_op(lhs->u.binary.op) && !lhs->parenthesized) {
-                error_at(p, t, "comparisons can't be chained; write (a < b && b < c) instead");
+                report_chained_comparison(p, lhs, t);
                 return NULL;
             }
             Expr *rhs = parse_expr_bp(p, bp + 1);  /* left-assoc */
@@ -949,7 +1073,10 @@ static VarDecl *parse_var_decl(Parser *p) {
 /* A statement used as the body of if/while/for/defer. */
 static Stmt *parse_body(Parser *p, const char *what) {
     if (looks_like_decl(p) && !check(p, TOK_LBRACE)) {
-        error_at(p, cur(p), "a declaration can't be the whole body of %s; wrap it in { }", what);
+        Diag *d = perr_tok(p, "E0106", cur(p), "a variable declaration can't be the whole body of %s", what);
+        diag_label(d, "the variable would go out of scope immediately");
+        diag_help(d, "if this is intentional, wrap it in braces: `{ ... }`");
+        diag_end(d);
         return NULL;
     }
     return parse_stmt(p);
@@ -957,11 +1084,11 @@ static Stmt *parse_body(Parser *p, const char *what) {
 
 static Expr *parse_paren_cond(Parser *p, const char *what) {
     char context[48];
-    snprintf(context, sizeof context, "after '%s'", what);
+    snprintf(context, sizeof context, "after `%s`", what);
     if (!expect(p, TOK_LPAREN, context)) return NULL;
     Expr *cond = parse_expr_nested(p);
     if (!cond) return NULL;
-    snprintf(context, sizeof context, "to close '%s' condition", what);
+    snprintf(context, sizeof context, "to close `%s` condition", what);
     if (!expect(p, TOK_RPAREN, context)) return NULL;
     return cond;
 }
@@ -984,7 +1111,7 @@ static VarDecl *parse_foreach_binding(Parser *p) {
 static Stmt *parse_foreach(Parser *p) {
     Token *kw = advance(p);
     Stmt *s = new_stmt(p, STMT_FOREACH, kw->loc);
-    if (!expect(p, TOK_LPAREN, "after 'foreach'")) return NULL;
+    if (!expect(p, TOK_LPAREN, "after `foreach`")) return NULL;
 
     bool saved = p->no_as;
     p->no_as = true;
@@ -1002,7 +1129,7 @@ static Stmt *parse_foreach(Parser *p) {
     } else {
         s->u.foreach_.value = first;
     }
-    if (!expect(p, TOK_RPAREN, "to close 'foreach ('")) return NULL;
+    if (!expect(p, TOK_RPAREN, "to close `foreach (`")) return NULL;
     s->u.foreach_.body = parse_body(p, "a foreach loop");
     return s->u.foreach_.body ? s : NULL;
 }
@@ -1010,7 +1137,7 @@ static Stmt *parse_foreach(Parser *p) {
 static Stmt *parse_for(Parser *p) {
     Token *kw = advance(p);
     Stmt *s = new_stmt(p, STMT_FOR, kw->loc);
-    if (!expect(p, TOK_LPAREN, "after 'for'")) return NULL;
+    if (!expect(p, TOK_LPAREN, "after `for`")) return NULL;
 
     if (!check(p, TOK_SEMI)) {
         Loc start = cur(p)->loc;
@@ -1036,7 +1163,7 @@ static Stmt *parse_for(Parser *p) {
         s->u.for_.step = parse_expr_nested(p);
         if (!s->u.for_.step) return NULL;
     }
-    if (!expect(p, TOK_RPAREN, "to close 'for ('")) return NULL;
+    if (!expect(p, TOK_RPAREN, "to close `for (`")) return NULL;
     s->u.for_.body = parse_body(p, "a for loop");
     return s->u.for_.body ? s : NULL;
 }
@@ -1049,7 +1176,10 @@ static AsmOperand *parse_asm_operand(Parser *p) {
     else if (dir->kind == TOK_IDENT && dir->loc.len == 3 && memcmp(dir->start, "out", 3) == 0) op->dir = ASM_OUT;
     else if (dir->kind == TOK_IDENT && dir->loc.len == 5 && memcmp(dir->start, "inout", 5) == 0) op->dir = ASM_INOUT;
     else {
-        error_at(p, dir, "expected 'in', 'out' or 'inout' asm operand, found %s", describe(p, dir));
+        Diag *d = perr_tok(p, "E0115", dir, "expected `in`, `out` or `inout`, found %s", describe(p, dir));
+        diag_label(d, "not an asm operand direction");
+        diag_help(d, "operands look like `in(\"rax\") value` or `out(\"rax\") variable`");
+        diag_end(d);
         return NULL;
     }
     advance(p);
@@ -1081,7 +1211,7 @@ static Stmt *parse_asm(Parser *p) {
             ptrvec_push(&lines, line);
             accept(p, TOK_SEMI);
         }
-        expect(p, TOK_RBRACE, "to close 'asm {'");
+        expect(p, TOK_RBRACE, "to close `asm {`");
     } else if (accept(p, TOK_LPAREN)) {
         do {
             StrBuf *line = ARENA_NEW(p->arena, StrBuf);
@@ -1095,9 +1225,12 @@ static Stmt *parse_asm(Parser *p) {
                 ptrvec_push(&ops, op);
             } while (accept(p, TOK_COMMA));
         }
-        if (!p->panic && expect(p, TOK_RPAREN, "to close 'asm('")) expect_semi(p, "after asm statement");
+        if (!p->panic && expect(p, TOK_RPAREN, "to close `asm(`")) expect_semi(p, "after asm statement");
     } else {
-        error_at(p, cur(p), "expected '{' or '(' after 'asm', found %s", describe(p, cur(p)));
+        Diag *d = perr_tok(p, "E0100", cur(p), "expected `{` or `(` after `asm`, found %s", describe(p, cur(p)));
+        diag_label(d, "expected `{` or `(`");
+        diag_help(d, "write `asm { \"cli\"; \"hlt\"; }` or `asm(\"out dx, al\" : in(\"dx\") port, in(\"al\") v);`");
+        diag_end(d);
     }
 
     s->u.asm_.lines = ptrvec_finish(&lines, p->arena, &s->u.asm_.nlines);
@@ -1192,7 +1325,10 @@ static Stmt *parse_stmt_inner(Parser *p) {
         advance(p);
         s = new_stmt(p, STMT_DEFER, t->loc);
         if (check(p, TOK_KW_DEFER) || check(p, TOK_KW_RETURN)) {
-            error_at(p, cur(p), "'defer %s' is not allowed", token_kind_spelling(cur_kind(p)));
+            Diag *d = perr_tok(p, "E0108", cur(p), "`defer %s` is not allowed", token_kind_spelling(cur_kind(p)));
+            diag_label(d, "can't be deferred");
+            diag_span(d, t->loc, "`defer` runs its statement when the block exits");
+            diag_end(d);
             return NULL;
         }
         if (!(s->u.defer_body = parse_body(p, "a defer"))) return NULL;
@@ -1203,7 +1339,15 @@ static Stmt *parse_stmt_inner(Parser *p) {
 
     case TOK_KW_FUNCTION: case TOK_KW_STRUCT: case TOK_KW_CLASS: case TOK_KW_ENUM:
     case TOK_KW_IMPORT: case TOK_KW_EXPORT: case TOK_KW_EXTERN:
-        error_at(p, t, "'%s' is only allowed at the top level of a file", token_kind_spelling(t->kind));
+        {
+            Diag *d = perr_tok(p, "E0107", t, "`%s` is only allowed at the top level of a file",
+                               token_kind_spelling(t->kind));
+            diag_label(d, "not allowed inside a function");
+            if (t->kind == TOK_KW_FUNCTION)
+                diag_help(d, "watrlang has no nested functions; if this should be a separate function, "
+                             "check that the one before it ends with `}`");
+            diag_end(d);
+        }
         return NULL;
 
     default:
@@ -1242,9 +1386,10 @@ static Stmt *parse_block(Parser *p) {
     }
     block->u.block.stmts = ptrvec_finish(&stmts, p->arena, &block->u.block.n);
     if (!check(p, TOK_RBRACE)) {
-        Loc loc = open->loc;
-        loc.len = 1;
-        error_at_loc(p, loc, "unclosed '{': reached end of file");
+        Diag *d = perr(p, "E0109", open->loc, "unclosed delimiter `{`");
+        diag_label(d, "this `{` is never closed");
+        diag_note(d, "the file ended before the matching `}`");
+        diag_end(d);
         return block;
     }
     advance(p);
@@ -1279,7 +1424,11 @@ static Decl *parse_function(Parser *p, Loc start, bool is_export, bool is_extern
             if (check(p, TOK_ELLIPSIS)) {
                 advance(p);
                 d->u.func.variadic = true;
-                if (!check(p, TOK_RPAREN)) error_at(p, cur(p), "'...' must be the last parameter");
+                if (!check(p, TOK_RPAREN)) {
+                    Diag *e = perr_tok(p, "E0116", cur(p), "`...` must be the last parameter");
+                    diag_label(e, "nothing can come after `...`");
+                    diag_end(e);
+                }
                 break;
             }
             TypeExpr *ty = parse_type(p, false);
@@ -1303,16 +1452,27 @@ static Decl *parse_function(Parser *p, Loc start, bool is_export, bool is_extern
 
     if (check(p, TOK_SEMI)) {
         if (!is_extern) {
-            error_at(p, cur(p), "function '%s' needs a body (only extern functions end with ';')", d->name);
+            Diag *e = perr_tok(p, "E0111", cur(p), "function `%s` has no body", d->name);
+            diag_label(e, "expected `{` and a body");
+            diag_note(e, "only `extern` functions, defined outside watrlang, end with `;`");
+            diag_fix(e, cur(p)->loc, " { }", "add a body");
+            diag_end(e);
             return NULL;
         }
         advance(p);
     } else if (is_extern) {
-        error_at(p, cur(p), "extern function '%s' can't have a body; end it with ';'", d->name);
+        Diag *e = perr_tok(p, "E0111", cur(p), "extern function `%s` can't have a body", d->name);
+        diag_label(e, "unexpected body");
+        diag_span(e, start, "`extern` means the function is defined elsewhere, e.g. in C");
+        diag_help(e, "end the declaration with `;`, or remove `extern` to define it here");
+        diag_end(e);
         return NULL;
     } else {
         if (!check(p, TOK_LBRACE)) {
-            error_at(p, cur(p), "expected '{' to start the body of '%s', found %s", d->name, describe(p, cur(p)));
+            Diag *e = perr_tok(p, "E0100", cur(p), "expected `{` to start the body of `%s`, found %s", d->name,
+                               describe(p, cur(p)));
+            diag_label(e, "expected `{`");
+            diag_end(e);
             return NULL;
         }
         d->u.func.body = parse_block(p);
@@ -1342,7 +1502,14 @@ static Decl *parse_struct(Parser *p, Loc start) {
             f->name = tok_name(p, fname);
             f->loc = fname->loc;
             if (check(p, TOK_ASSIGN))
-                error_at(p, cur(p), "struct fields can't have default values (use a class)");
+            {
+                Diag *e = perr_tok(p, "E0113", cur(p), "struct fields can't have default values");
+                diag_label(e, "default value not allowed");
+                diag_span(e, fname->loc, "field `%s`", f->name);
+                diag_help(e, "set fields with a struct literal, `Name { %s: value }`, or use a class with a constructor",
+                          f->name);
+                diag_end(e);
+            }
             else
                 expect_semi(p, "after struct field");
         }
@@ -1430,7 +1597,10 @@ static Decl *parse_global_var(Parser *p, Loc start, bool is_export, bool is_exte
     VarDecl *v = parse_var_decl(p);
     if (!v) return NULL;
     if (is_extern && v->init) {
-        error_at_loc(p, v->init->loc, "extern variable '%s' can't have an initializer", v->name);
+        Diag *e = perr(p, "E0112", v->init->loc, "extern variable `%s` can't have an initializer", v->name);
+        diag_label(e, "unexpected initializer");
+        diag_note(e, "`extern` means the variable is defined elsewhere, which also gives it its value");
+        diag_end(e);
         return NULL;
     }
     expect_semi(p, "after variable declaration");
@@ -1460,7 +1630,11 @@ static Decl *parse_decl(Parser *p) {
     if (accept(p, TOK_KW_EXPORT)) is_export = true;
     else if (accept(p, TOK_KW_EXTERN)) is_extern = true;
     if ((is_export || is_extern) && (check(p, TOK_KW_EXPORT) || check(p, TOK_KW_EXTERN))) {
-        error_at(p, cur(p), "a declaration can't be both 'export' and 'extern'");
+        Diag *e = perr_tok(p, "E0112", cur(p), "a declaration can't be both `export` and `extern`");
+        diag_label(e, "second modifier");
+        diag_span(e, start, "first modifier");
+        diag_note(e, "`export` defines a symbol for others to use; `extern` uses one defined elsewhere");
+        diag_end(e);
         return NULL;
     }
 
@@ -1471,8 +1645,12 @@ static Decl *parse_decl(Parser *p) {
     case TOK_KW_CLASS:
     case TOK_KW_ENUM:
         if (is_export || is_extern) {
-            error_at(p, cur(p), "'%s' only applies to functions and variables",
-                     is_export ? "export" : "extern");
+            Diag *e = perr(p, "E0112", start, "`%s` only applies to functions and variables",
+                           is_export ? "export" : "extern");
+            diag_label(e, "not allowed here");
+            diag_span(e, cur(p)->loc, "a %s can't be `%s`", token_kind_spelling(cur_kind(p)),
+                      is_export ? "export" : "extern");
+            diag_end(e);
             return NULL;
         }
         if (check(p, TOK_KW_STRUCT)) return parse_struct(p, start);
@@ -1484,8 +1662,23 @@ static Decl *parse_decl(Parser *p) {
 
     if (looks_like_decl(p) || is_export || is_extern) return parse_global_var(p, start, is_export, is_extern);
 
-    error_at(p, cur(p), "expected a declaration (function, struct, class, enum, import or variable), found %s",
-             describe(p, cur(p)));
+    {
+        const Token *t2 = cur(p);
+        Diag *e = perr_tok(p, "E0117", t2, "expected a declaration, found %s", describe(p, t2));
+        diag_label(e, "expected `function`, `struct`, `class`, `enum`, `import` or a variable");
+        switch (t2->kind) {
+        case TOK_KW_RETURN: case TOK_KW_IF: case TOK_KW_WHILE: case TOK_KW_FOR: case TOK_KW_FOREACH:
+        case TOK_KW_DO: case TOK_KW_ECHO: case TOK_KW_BREAK: case TOK_KW_CONTINUE: case TOK_KW_DEFER:
+            diag_note(e, "statements have to be inside a function, such as `function main(): int { ... }`");
+            break;
+        case TOK_RBRACE:
+            diag_note(e, "this `}` doesn't close anything; is there an extra one?");
+            break;
+        default:
+            break;
+        }
+        diag_end(e);
+    }
     return NULL;
 }
 

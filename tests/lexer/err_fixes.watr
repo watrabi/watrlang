@@ -1,0 +1,4 @@
+# not a comment
+string s = "price: \$5";
+int h = 0x1G;
+int b = 0b102;

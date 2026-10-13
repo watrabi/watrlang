@@ -1,7 +1,14 @@
-tests/parser/err_unclosed_block.watr:1:14: error: unclosed '{': reached end of file
- 1 | function f() {
-   |              ^
+error[E0109]: unclosed delimiter `{`
+ --> tests/parser/err_unclosed_block.watr:1:14
+  |
+1 | function f() {
+  |              ^ this `{` is never closed
+  |
+  = note: the file ended before the matching `}`
+
 function f() -> void
   var int x = 1
-1 error
+error: could not compile `tests/parser/err_unclosed_block.watr` due to 1 previous error
+This error has a detailed explanation: E0109.
+For more information about an error, try `watrc --explain E0109`.
 exit: 1

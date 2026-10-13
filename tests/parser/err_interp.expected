@@ -1,12 +1,24 @@
-tests/parser/err_interp.watr:2:23: error: expected an expression, found the end of the interpolation
- 2 |     string s = "a {1 +} b";
-   |                       ^
-tests/parser/err_interp.watr:3:20: error: unexpected identifier 'y' in interpolation
- 3 |     string t = "{x y}";
-   |                    ^
+error[E0118]: expected an expression, found the end of the interpolation
+ --> tests/parser/err_interp.watr:2:23
+  |
+2 |     string s = "a {1 +} b";
+  |                      -^ expected an expression
+  |                      |
+  |                      `+` needs a value after it
+
+error[E0100]: unexpected identifier `y` in interpolation
+ --> tests/parser/err_interp.watr:3:20
+  |
+3 |     string t = "{x y}";
+  |                  - ^ expected `}` to end the interpolation
+  |                  |
+  |                  this is a complete expression
+
 function f() -> void
   var string s = (interp "a " " b")
   var string t = (interp x)
   var int ok = 1
-2 errors
+error: could not compile `tests/parser/err_interp.watr` due to 2 previous errors
+Some errors have detailed explanations: E0118, E0100.
+For more information about an error, try `watrc --explain E0118`.
 exit: 1

@@ -2,20 +2,31 @@
 1:5 IDENT x
 1:7 ASSIGN =
 1:9 INT 5 = 5
-tests/lexer/err_chars.watr:1:11: error: unexpected character '@'
- 1 | int x = 5 @ 3;
-   |           ^
+error[E0014]: unexpected character `@`
+ --> tests/lexer/err_chars.watr:1:11
+  |
+1 | int x = 5 @ 3;
+  |           ^ not valid here
+
 1:11 ERROR @
 1:13 INT 3 = 3
 1:14 SEMI ;
 2:1 KW_STRING_T string
 2:8 IDENT s
 2:10 ASSIGN =
-tests/lexer/err_chars.watr:2:17: error: unknown escape sequence '\q'
- 2 | string s = "bad \q escape";
-   |                 ^~
+error[E0007]: unknown escape sequence `\q`
+ --> tests/lexer/err_chars.watr:2:17
+  |
+2 | string s = "bad \q escape";
+  |                 ^^ unknown escape
+  |
+  = note: the escapes are \n \t \r \0 \\ \" \' \{ \} and \xHH
+  = help: for a literal backslash, write `\\`
+
 2:12 ERROR "bad \q escape"
 2:27 SEMI ;
 3:1 EOF
-2 errors
+error: could not compile `tests/lexer/err_chars.watr` due to 2 previous errors
+Some errors have detailed explanations: E0014, E0007.
+For more information about an error, try `watrc --explain E0014`.
 exit: 1

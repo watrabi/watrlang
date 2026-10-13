@@ -6,10 +6,18 @@
 2:1 KW_STRING_T string
 2:8 IDENT s
 2:10 ASSIGN =
-tests/lexer/err_unterminated_string.watr:2:12: error: unterminated string literal
- 2 | string s = "never closed;
-   |            ^
+error[E0011]: unterminated string literal
+ --> tests/lexer/err_unterminated_string.watr:2:12
+  |
+2 | string s = "never closed;
+  |            ^ this string is never closed
+  |
+  = note: strings can span lines, so it runs to the end of the file
+  = help: add a closing `"`
+
 2:12 ERROR "never closed;\n
 3:1 EOF
-1 error
+error: could not compile `tests/lexer/err_unterminated_string.watr` due to 1 previous error
+This error has a detailed explanation: E0011.
+For more information about an error, try `watrc --explain E0011`.
 exit: 1

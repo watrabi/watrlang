@@ -24,7 +24,13 @@ for src in tests/lexer/*.watr tests/parser/*.watr tests/run/*.watr; do
             bin="build/tests/$(basename "${src%.watr}")"
             rm -f "$bin"
             if compile_out=$("$WATRC" -o "$bin" "$src" 2>&1); then
-                actual=$("$bin" 2>&1; echo "exit: $?")
+                run_out=$("$bin" 2>&1; echo "exit: $?")
+                # Keep warnings from a successful compile in the expected output.
+                if [ -n "$compile_out" ]; then
+                    actual=$(printf '%s\n%s' "$compile_out" "$run_out")
+                else
+                    actual=$run_out
+                fi
             else
                 actual=$(printf '%s\ncompile failed: %s' "$compile_out" "$?")
             fi
@@ -49,6 +55,14 @@ for src in tests/lexer/*.watr tests/parser/*.watr tests/run/*.watr; do
     fi
 done
 rm -f /tmp/watr_diff.$$
+
+# Every error code the compiler can emit must have an --explain entry.
+for code in $(grep -ohE '"[EW][0-9]{4}"' src/*.c | tr -d '"' | sort -u); do
+    if ! "$WATRC" --explain "$code" > /dev/null 2>&1; then
+        echo "FAIL: $code has no --explain text (add it to src/explain.c)"
+        fail=$((fail + 1))
+    fi
+done
 
 [ "${UPDATE:-0}" = 1 ] && exit 0
 echo "$pass passed, $fail failed"

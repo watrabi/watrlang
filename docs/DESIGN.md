@@ -279,6 +279,16 @@ watrlang names apart from C names once we link against libc. `export` and
 them. A hosted program starts at our own `_start`, which calls `w.main`
 and passes its return value to the `exit` syscall.
 
+**Diagnostics** (`src/diag.c`) are modeled on Rust's: every error has a
+code (`E0xxx` lexing, `E01xx` syntax, `E02xx` names, `E03xx` types and
+flow, `E09xx` not yet implemented, `W0xxx` warnings), a primary span with
+a label, optional secondary spans, `= note:`/`= help:` lines, and
+suggested fixes rendered as the corrected source line. `watrc --explain
+CODE` prints the long form from `src/explain.c`; the test suite fails if
+a code is used without an explanation. Unused-variable and unreachable
+warnings are suppressed in functions that already have errors, where
+they'd mostly be noise.
+
 **The runtime is written in C** at first and linked in through our own FFI.
 Later it can be rewritten in watrlang itself.
 

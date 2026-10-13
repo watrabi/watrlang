@@ -1,0 +1,9 @@
+function compute_total(int count): int {
+    return count * 2;
+}
+
+function main(): int {
+    int counter = 5;
+    int total = compute_totl(countr);
+    return totl;
+}

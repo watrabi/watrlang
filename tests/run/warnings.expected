@@ -1,0 +1,45 @@
+warning[W0001]: unused parameter `unused`
+ --> tests/run/warnings.watr:2:31
+  |
+2 | function helper(int used, int unused, int _ignored): int {
+  |                               ^^^^^^ never used
+  |
+help: if this is intentional, prefix it with an underscore
+  |
+2 | function helper(int used, int _unused, int _ignored): int {
+  |                               ~~~~~~~
+
+warning[W0002]: unreachable statement
+  --> tests/run/warnings.watr:12:5
+   |
+11 |     return helper(42, 0, 0);
+   |     ------------------------ any code after this is unreachable
+12 |     never_read++;
+   |     ^^^^^^^^^^^^ this can never run
+
+warning[W0001]: variable `never_read` is assigned to, but never read
+ --> tests/run/warnings.watr:7:9
+  |
+7 |     int never_read = 1;
+  |         ^^^^^^^^^^ its value is never used
+  |
+help: if this is intentional, prefix it with an underscore
+  |
+7 |     int _never_read = 1;
+  |         ~~~~~~~~~~~
+
+warning[W0001]: variable `assigned_only` is assigned to, but never read
+ --> tests/run/warnings.watr:8:9
+  |
+8 |     int assigned_only = 0;
+  |         ^^^^^^^^^^^^^ its value is never used
+  |
+help: if this is intentional, prefix it with an underscore
+  |
+8 |     int _assigned_only = 0;
+  |         ~~~~~~~~~~~~~~
+
+warning: `tests/run/warnings.watr` generated 4 warnings
+Some warnings have detailed explanations: W0001, W0002.
+For more information about a warning, try `watrc --explain W0001`.
+exit: 42

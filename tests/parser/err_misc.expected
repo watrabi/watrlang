@@ -1,19 +1,42 @@
-tests/parser/err_misc.watr:1:8: error: an import path can't use {interpolation}
- 1 | import "std/{x}";
-   |        ^~~~~~~~~
-tests/parser/err_misc.watr:2:8: error: expected a string for an import path, found identifier 'foo'
- 2 | import foo;
-   |        ^~~
-tests/parser/err_misc.watr:4:11: error: expected a string for an asm instruction, found 42
- 4 |     asm { 42 }
-   |           ^~
-tests/parser/err_misc.watr:5:17: error: expected 'in', 'out' or 'inout' asm operand, found identifier 'sideways'
- 5 |     asm("nop" : sideways("ax") x);
-   |                 ^~~~~~~~
-tests/parser/err_misc.watr:6:15: error: expected ';' after asm statement
- 6 |     asm("nop")
-   |               ^
+error[E0114]: an import path can't use {interpolation}
+ --> tests/parser/err_misc.watr:1:8
+  |
+1 | import "std/{x}";
+  |        ^^^^^^^^^ must be known at compile time
+  |
+  = help: for a literal brace, write `\{`
+
+error[E0100]: expected a string for an import path, found identifier `foo`
+ --> tests/parser/err_misc.watr:2:8
+  |
+2 | import foo;
+  |        ^^^ expected a string literal
+
+error[E0100]: expected a string for an asm instruction, found `42`
+ --> tests/parser/err_misc.watr:4:11
+  |
+4 |     asm { 42 }
+  |           ^^ expected a string literal
+
+error[E0115]: expected `in`, `out` or `inout`, found identifier `sideways`
+ --> tests/parser/err_misc.watr:5:17
+  |
+5 |     asm("nop" : sideways("ax") x);
+  |                 ^^^^^^^^ not an asm operand direction
+  |
+  = help: operands look like `in("rax") value` or `out("rax") variable`
+
+error[E0101]: expected `;` after asm statement, found `}`
+ --> tests/parser/err_misc.watr:6:15
+  |
+6 |     asm("nop")
+  |               ^ add `;` here
+7 | }
+  | - unexpected `}`
+
 function f() -> void
   asm "nop"
-5 errors
+error: could not compile `tests/parser/err_misc.watr` due to 5 previous errors
+Some errors have detailed explanations: E0114, E0100, E0115, E0101.
+For more information about an error, try `watrc --explain E0114`.
 exit: 1

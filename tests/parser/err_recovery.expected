@@ -1,16 +1,33 @@
-tests/parser/err_recovery.watr:2:16: error: expected an expression, found ';'
- 2 |     int x = 1 +;
-   |                ^
-tests/parser/err_recovery.watr:4:9: error: expected an expression, found ';'
- 4 |     y = ;
-   |         ^
-tests/parser/err_recovery.watr:5:13: error: expected ')' to close argument list, found ';'
- 5 |     foo(1, 2;
-   |             ^
+error[E0118]: expected an expression, found `;`
+ --> tests/parser/err_recovery.watr:2:16
+  |
+2 |     int x = 1 +;
+  |               -^ expected an expression
+  |               |
+  |               `+` needs a value after it
+
+error[E0118]: expected an expression, found `;`
+ --> tests/parser/err_recovery.watr:4:9
+  |
+4 |     y = ;
+  |       - ^ expected an expression
+  |       |
+  |       `=` needs a value after it
+
+error[E0100]: expected `)` to close argument list, found `;`
+ --> tests/parser/err_recovery.watr:5:13
+  |
+5 |     foo(1, 2;
+  |        -    ^ expected `)`
+  |        |
+  |        unclosed `(` starts here
+
 function f() -> void
   var int y = 2
   var int z = 3
 function g() -> void
   return 1
-3 errors
+error: could not compile `tests/parser/err_recovery.watr` due to 3 previous errors
+Some errors have detailed explanations: E0118, E0100.
+For more information about an error, try `watrc --explain E0118`.
 exit: 1
