@@ -42,7 +42,8 @@ The full plan is in [docs/DESIGN.md](docs/DESIGN.md).
 | 12. `foreach`, PHP-style `array`, `mixed`, `std/arrays` | done |
 | 13. `--freestanding`, inline asm with operands, `#[packed]`, `#[align]` | done |
 | 14. A kernel in watrlang that boots in QEMU ([examples/kernel](examples/kernel)) | done |
-| 15. Optimizer | next |
+| 15. Optimizer: an IR, linear-scan register allocation (`-O1`, the default) | done |
+| ∞. Self-hosting | someday |
 
 ## It runs on bare metal
 

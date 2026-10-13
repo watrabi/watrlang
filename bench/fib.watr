@@ -1,0 +1,8 @@
+function fib(int n): int {
+    return n < 2 ? n : fib(n - 1) + fib(n - 2);
+}
+
+function main(): int {
+    echo fib(36), "\n";
+    return 0;
+}

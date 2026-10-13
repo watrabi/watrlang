@@ -61,6 +61,10 @@ typedef struct Symbol {
     int param_index;
     int offset;                 /* rbp-relative; assigned by codegen */
 
+    bool addr_taken;            /* locals and parameters: `&x` appears, so x must live in memory */
+    int vreg;                   /* -O1 codegen: the virtual register of a local in a register, or -1 */
+    int slot;                   /* -O1 codegen: the frame slot of a local in memory */
+
     int reads;                  /* for the unused-variable warning */
     int writes;
 } Symbol;
@@ -74,6 +78,7 @@ typedef struct {
     size_t nenum_fns;
     bool needs_libc;            /* uses extern C symbols or prints floats: link with the C runtime */
     bool freestanding;          /* input: --freestanding (no libc, no heap, no entry point) */
+    int opt;                    /* input: optimization level (-O0, -O1) */
 } Program;
 
 /* An inline asm operand register: 0-15 for rax..r15 (any width), 16-31

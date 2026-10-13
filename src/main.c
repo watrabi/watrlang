@@ -25,6 +25,8 @@ static void usage(FILE *out) {
           "  -o <path>    write the output here\n"
           "  -S           write assembly (.s) instead of an executable\n"
           "  -c           write an object file (.o) instead of an executable\n"
+          "  -O0, -O1     optimization: -O1 (the default) allocates registers;\n"
+          "               -O0 is a simple stack machine, for comparison\n"
           "  --freestanding  no C library, no runtime heap, no entry point: for\n"
           "               kernels and other bare-metal code (see docs/DESIGN.md)\n"
           "  -T <script>  link with this linker script (with --freestanding)\n"
@@ -94,6 +96,9 @@ int main(int argc, char **argv) {
     int emit_obj = 0;
     int verbose = 0;
     bool freestanding = false;
+    int opt = 1;
+    const char *opt_env = getenv("WATR_OPT");   /* default level, for testing both backends */
+    if (opt_env && (opt_env[0] == '0' || opt_env[0] == '1') && !opt_env[1]) opt = opt_env[0] - '0';
     const char *linker_script = NULL, *entry = NULL;
     const char *out_path = NULL;
     const char *link_inputs[argc > 0 ? argc : 1];   /* extra .c/.o/.a files to link */
@@ -130,6 +135,8 @@ int main(int argc, char **argv) {
             verbose = 1;
         } else if (strcmp(arg, "-c") == 0) {
             emit_obj = 1;
+        } else if (strcmp(arg, "-O0") == 0 || strcmp(arg, "-O1") == 0 || strcmp(arg, "-O") == 0) {
+            opt = arg[2] == '0' ? 0 : 1;
         } else if (strcmp(arg, "--freestanding") == 0) {
             freestanding = true;
         } else if (strcmp(arg, "-T") == 0 || strcmp(arg, "-e") == 0) {
@@ -189,6 +196,7 @@ int main(int argc, char **argv) {
     } else {
         Program prog = {0};
         prog.freestanding = freestanding;
+        prog.opt = opt;
         bool ok;
         if (dump_ast) {
             /* The tree is printed even after errors, to show how the parser recovered. */

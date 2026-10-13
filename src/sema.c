@@ -1471,6 +1471,8 @@ static Type *check_unary(Sema *S, Expr *e, Type *hint) {
             return set_type(e, ty_error);
         }
         Type *base = operand->type;
+        Symbol *root = root_var(operand);
+        if (root) root->addr_taken = true;   /* it can't live in a register */
         bool is_const = k == LV_CONST_VAR || k == LV_CONST_PTR || k == LV_STRING;
         return set_type(e, type_ptr(base, is_const, false));
     }

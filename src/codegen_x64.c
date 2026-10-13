@@ -1,4 +1,4 @@
-#include "codegen.h"
+#include "codegen_internal.h"
 
 #include <stdarg.h>
 #include <string.h>
@@ -42,48 +42,7 @@ static const Reg R_R8 = {"r8", "r8d", "r8w", "r8b"};
 static const Reg R_R9 = {"r9", "r9d", "r9w", "r9b"};
 static const Reg *const arg_regs[6] = {&R_RDI, &R_RSI, &R_RDX, &R_RCX, &R_R8, &R_R9};
 
-typedef struct {
-    int break_label;
-    int continue_label;
-    size_t scopes;          /* defer scopes open outside the loop */
-} Loop;
-
-typedef struct {
-    int label;
-    char *msg;
-} PanicSite;
-
-typedef struct {
-    int label;
-    StrBuf bytes;
-} StringLit;
-
-typedef struct {
-    FILE *out;
-    int labels;
-
-    /* per function */
-    int ret_label;
-    int depth;              /* 8-byte pushes since the frame was set up */
-    int frame;              /* bytes of locals/temporaries */
-    Loop *loops;
-    size_t nloops, loops_cap;
-    const Symbol *fn;
-    int hidden_slot;        /* where the caller's return buffer pointer is kept (struct returns) */
-    int ret_slot;           /* where `return` leaves the value for the epilogue */
-    PtrVec defers;          /* Stmt*: deferred statements of the open blocks, innermost last */
-    size_t *scopes;         /* per open block: where its defers start in `defers` */
-    size_t nscopes, scopes_cap;
-
-    bool libc;              /* linked with the C runtime */
-    bool freestanding;      /* no OS: the program supplies watr_write (and maybe watr_panic) */
-    bool need_panic;        /* emit w.panic even without check sites */
-    PtrVec panics;          /* PanicSite*: runtime check failure messages */
-    PtrVec strings;         /* StringLit*: literals for .rodata */
-} Gen;
-
-static void emit(Gen *g, const char *fmt, ...) WATR_PRINTF(2, 3);
-static void emit(Gen *g, const char *fmt, ...) {
+void emit(Gen *g, const char *fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
     fputs("    ", g->out);
@@ -92,19 +51,17 @@ static void emit(Gen *g, const char *fmt, ...) {
     va_end(ap);
 }
 
-static int new_label(Gen *g) {
+int new_label(Gen *g) {
     return g->labels++;
 }
 
-static void emit_label(Gen *g, int label) {
+void emit_label(Gen *g, int label) {
     fprintf(g->out, ".L%d:\n", label);
 }
 
 /* ---- value classes ----------------------------------------------------------- */
 
-typedef enum { CLS_GPR, CLS_SSE, CLS_MEM, CLS_NONE } ValClass;
-
-static ValClass cls(const Type *t) {
+ValClass cls(const Type *t) {
     switch (t->kind) {
     case TY_FLOAT: return CLS_SSE;
     case TY_ARRAY:
@@ -116,16 +73,6 @@ static ValClass cls(const Type *t) {
     default: return CLS_GPR;
     }
 }
-
-/* System V classification of a value passed in registers: up to two
- * eightbytes, each INTEGER or SSE; larger structs go in MEMORY. */
-typedef enum { EB_NONE, EB_INT, EB_SSE } Eightbyte;
-
-typedef struct {
-    bool memory;
-    int n;              /* eightbytes */
-    Eightbyte eb[2];
-} Classification;
 
 static void classify_into(const Type *t, uint32_t off, Eightbyte eb[2]) {
     switch (t->kind) {
@@ -150,20 +97,30 @@ static void classify_into(const Type *t, uint32_t off, Eightbyte eb[2]) {
     }
 }
 
-/* Does a packed struct have a field off its natural alignment? Those go
- * in memory, as in C. */
-static bool has_unaligned_field(const Type *t) {
-    if (t->kind == TY_ARRAY) return has_unaligned_field(t->base);
-    if (t->kind != TY_STRUCT) return false;
-    for (size_t i = 0; i < t->nfields; i++) {
-        const Field *f = &t->fields[i];
-        uint32_t a = f->type->align ? f->type->align : 1;
-        if (f->offset % a != 0 || has_unaligned_field(f->type)) return true;
+/* Is a scalar inside `t` (placed at offset `off` of the value being
+ * passed) off its natural alignment? Such values go in memory, as gcc
+ * does. Offsets count from the outermost struct: a packed struct nested
+ * at an odd offset can end up with all its fields aligned. */
+static bool unaligned_at(const Type *t, uint32_t off) {
+    if (t->kind == TY_ARRAY) {
+        for (uint64_t i = 0; i < t->len; i++)
+            if (unaligned_at(t->base, off + (uint32_t)(i * t->base->size))) return true;
+        return false;
     }
-    return false;
+    if (t->kind == TY_STRUCT) {
+        for (size_t i = 0; i < t->nfields; i++)
+            if (unaligned_at(t->fields[i].type, off + t->fields[i].offset)) return true;
+        return false;
+    }
+    uint32_t a = t->align ? t->align : 1;
+    return off % a != 0;
 }
 
-static Classification classify(const Type *t) {
+static bool has_unaligned_field(const Type *t) {
+    return unaligned_at(t, 0);
+}
+
+Classification classify(const Type *t) {
     Classification c = {false, 0, {EB_NONE, EB_NONE}};
     if (t->kind == TY_VOID) return c;
     if (type_in_memory(t)) {
@@ -182,7 +139,7 @@ static Classification classify(const Type *t) {
     return c;
 }
 
-static const char *size_ptr(uint32_t size) {
+const char *size_ptr(uint32_t size) {
     switch (size) {
     case 1: return "byte";
     case 2: return "word";
@@ -327,11 +284,19 @@ static void emit_int_const(Gen *g, uint64_t bits) {
     else emit(g, "movabs rax, %lld", (long long)v);
 }
 
-static int string_label(Gen *g, StrBuf bytes) {
+int string_label(Gen *g, StrBuf bytes) {
     StringLit *lit = xmalloc(sizeof *lit);
     lit->label = new_label(g);
     lit->bytes = bytes;
     ptrvec_push(&g->strings, lit);
+    return lit->label;
+}
+
+int string_obj_label(Gen *g, StrBuf bytes) {
+    StringLit *lit = xmalloc(sizeof *lit);
+    lit->label = new_label(g);
+    lit->bytes = bytes;
+    ptrvec_push(&g->strobjs, lit);
     return lit->label;
 }
 
@@ -344,7 +309,7 @@ static void emit_c_call(Gen *g, const char *name) {
     if (pad) emit(g, "add rsp, 8");
 }
 
-static int add_panic(Gen *g, const Expr *at, const char *what) {
+int add_panic(Gen *g, const Expr *at, const char *what) {
     PanicSite *site = xmalloc(sizeof *site);
     site->label = new_label(g);
     char msg[512];
@@ -355,7 +320,7 @@ static int add_panic(Gen *g, const Expr *at, const char *what) {
     return site->label;
 }
 
-static void emit_panic_call(Gen *g, int label) {
+void emit_panic_call(Gen *g, int label) {
     PanicSite *site = NULL;
     for (size_t i = 0; i < g->panics.len; i++)
         if (((PanicSite *)g->panics.items[i])->label == label) site = g->panics.items[i];
@@ -370,7 +335,7 @@ static void gen_value(Gen *g, const Expr *e);
 static void gen_body(Gen *g, const Stmt *s);
 
 /* A field of an error union type ("is_err", "err", "value"). */
-static const Field *eu_field(const Type *t, const char *name) {
+const Field *eu_field(const Type *t, const char *name) {
     for (size_t i = 0; i < t->nfields; i++)
         if (strcmp(t->fields[i].name, name) == 0) return &t->fields[i];
     fatal("codegen: error union without field %s", name);
@@ -1786,6 +1751,7 @@ void codegen_x64(const Module *m, const Program *prog, FILE *out) {
 
     g.libc = prog->needs_libc;
     g.freestanding = prog->freestanding;
+    g.opt = prog->opt;
     fprintf(out, "# generated by watrc from %s\n", m->file->path);
     fputs("    .intel_syntax noprefix\n    .text\n", out);
     if (g.freestanding) {
@@ -1819,7 +1785,10 @@ void codegen_x64(const Module *m, const Program *prog, FILE *out) {
     for (size_t i = 0; i < prog->nfuncs; i++) {
         const Symbol *fn = prog->funcs[i];
         if (!fn->reachable) continue;
-        if (fn->decl->u.func.body) gen_function(&g, fn);
+        if (fn->decl->u.func.body) {
+            if (g.opt) gen_function_opt(&g, fn);
+            else gen_function(&g, fn);
+        }
         else if (fn->is_runtime) emit_runtime_primitive(&g, fn->name);
     }
 
@@ -1879,6 +1848,22 @@ void codegen_x64(const Module *m, const Program *prog, FILE *out) {
     emit_globals(&g, prog);
     emit_gc_roots(&g, prog);
 
+    if (g.strobjs.len) {   /* string values: {ptr, len} */
+        fputs("\n    .section .data.rel.ro\n    .p2align 3\n", out);
+        for (size_t i = 0; i < g.strobjs.len; i++) {
+            StringLit *lit = g.strobjs.items[i];
+            fprintf(out, ".Lstr%d:\n    .quad .Lsb%d, %zu\n", lit->label, lit->label, lit->bytes.len);
+        }
+        fputs("\n    .section .rodata\n", out);
+        for (size_t i = 0; i < g.strobjs.len; i++) {
+            StringLit *lit = g.strobjs.items[i];
+            fprintf(out, ".Lsb%d:\n", lit->label);
+            emit_bytes(&g, (const unsigned char *)lit->bytes.data, (uint32_t)lit->bytes.len);
+            fputs("    .byte 0\n", out);
+            free(lit);
+        }
+    }
+
     if (g.strings.len) {
         fputs("\n    .section .rodata\n", out);
         for (size_t i = 0; i < g.strings.len; i++) {
@@ -1896,6 +1881,7 @@ void codegen_x64(const Module *m, const Program *prog, FILE *out) {
 
     free(g.panics.items);
     free(g.strings.items);
+    free(g.strobjs.items);
     free(g.loops);
     free(g.defers.items);
     free(g.scopes);

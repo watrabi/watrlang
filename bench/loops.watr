@@ -1,0 +1,24 @@
+// Nested integer loops: sieve of Eratosthenes and a checksum.
+u8[2000000] composite;
+
+function main(): int {
+    usize n = 2000000;
+    usize count = 0;
+    for (usize i = 2; i < n; i++) {
+        if (composite[i] == 0) {
+            count++;
+            for (usize j = i * i; j < n; j += i) {
+                composite[j] = 1;
+            }
+        }
+    }
+    u64 h = 0;
+    for (int round = 0; round < 400; round++) {
+        for (u64 k = 0; k < 100000; k++) {
+            h = h * 6364136223846793005 + k;
+            h ^= h >> 13;
+        }
+    }
+    echo count, " ", h, "\n";
+    return 0;
+}

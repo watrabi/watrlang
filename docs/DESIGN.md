@@ -459,11 +459,31 @@ docs/
   DESIGN.md
 ```
 
-**Codegen strategy:** start with a simple **stack-machine style** emitter.
-Every expression leaves its result in `rax`, and temporaries are pushed and
-popped. The output is slow but correct, and it's the fastest way to get
-working binaries. Once the language works, add a linear IR and a simple
-register allocator (linear scan) as an optimization phase.
+**Codegen strategy:** two backends share the module-level code (data,
+strings, runtime primitives, panics):
+
+- `-O0` (codegen_x64.c): a **stack-machine** emitter. Every expression
+  leaves its result in `rax`; temporaries are pushed and popped.
+- `-O1`, the default (milestone 15; opt_lower.c, opt_ra.c, opt_emit.c):
+  - the AST is lowered to a three-address IR over virtual registers, with
+    labels and branches. Conditions compile to compare-and-branch, loops
+    test at the bottom, and array indexing uses x86 scaled addressing.
+  - Scalar locals and parameters whose address is never taken live in
+    registers; the rest, and all aggregates, live in frame slots.
+  - Passes: unreachable code removal, 32-bit constants as immediate
+    operands, forwarding (`t = a + b; x = t` becomes `x = a + b`), copy
+    propagation within basic blocks, dead code removal.
+  - Liveness over basic blocks, then linear-scan register allocation with
+    move hints. Values live across a call (or inline asm) get callee-saved
+    registers (rbx, r12-r15) or a spill slot; others prefer r10/r11; floats
+    use xmm8-xmm15. The argument registers, rax and xmm0-xmm7 are never
+    allocated, so setting up a call is plain moves, and no pointer is ever
+    left in a caller-saved register across a call, which keeps the
+    conservative GC correct.
+  - `WATR_DUMP_IR=1` prints each function's IR before and after.
+  - `make test` runs the test suite and the expression fuzzer at both
+    levels, and `bench/run.sh [-O0]` times a few benchmarks. At the time of
+    writing -O1 runs them 1.4x (calls) to 3x (float loops) faster than -O0.
 
 **GC (milestone 11):** mark-and-sweep, written in watrlang in the runtime
 prelude, with **conservative** root scanning: any word that looks like a
@@ -533,7 +553,7 @@ Each milestone ends with tests passing and something you can run.
 | 12 | foreach, arrays        | `foreach (x as k => v)`, PHP-style `array`, `mixed`       |
 | 13 | Freestanding           | `--freestanding`, inline asm operands, `#[packed]`, `#[align(N)]`, `-c`, `-T` |
 | 14 | **Boot a kernel**      | multiboot kernel in QEMU prints to VGA, written in watrlang (`examples/kernel`) |
-| 15 | Optimizer              | IR + register allocation                                  |
+| 15 | Optimizer              | IR + register allocation (`-O1`, the default)             |
 | ∞  | Self-hosting           | watrc rewritten in watrlang                               |
 
 ## 6. Settled after the first pass

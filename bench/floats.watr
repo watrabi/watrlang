@@ -1,0 +1,25 @@
+// Mandelbrot set area estimate.
+function main(): int {
+    int inside = 0;
+    int size = 1200;
+    for (int py = 0; py < size; py++) {
+        for (int px = 0; px < size; px++) {
+            f64 x0 = (px as f64) / (size as f64) * 3.0 - 2.0;
+            f64 y0 = (py as f64) / (size as f64) * 3.0 - 1.5;
+            f64 x = 0.0;
+            f64 y = 0.0;
+            int it = 0;
+            while (it < 200 && x * x + y * y < 4.0) {
+                f64 t = x * x - y * y + x0;
+                y = 2.0 * x * y + y0;
+                x = t;
+                it++;
+            }
+            if (it == 200) {
+                inside++;
+            }
+        }
+    }
+    echo inside, "\n";
+    return 0;
+}
