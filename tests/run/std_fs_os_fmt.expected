@@ -1,0 +1,24 @@
+line one
+line two
+18 true [line one, line two]
+false true
+false no such file or directory
+already exists no such file or directory
+true true
+1 0 true
+true [] true
+007 ab...|**hi**
+ff 00ff 00001010 10 0
+3.14 -3 0.00 0.00 10.000
+1,234,567 -1,000 999 0
+512 B 1.5 KiB 3.0 MiB
+1 + 2.5 = three, 100% true
+[a, b, , c] 4 a|b||c [a, b, c]
+[the, quick, brown, fox]
+a+=b+=c ba 2
+3 -1 olleh
+[x ][  x]
+42 -31 1000 -1 -2
+3.25 -1500 0.02 -9
+exiting
+exit: 3

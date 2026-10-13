@@ -1,5 +1,7 @@
 // String utilities. Strings are immutable: these return new strings.
 
+import "std/vec";
+
 // Bytes from s[start] for n bytes (clamped to the string).
 function substr(string s, usize start, usize n): string {
     if (start > len(s)) {
@@ -61,7 +63,7 @@ function to_lower(string s): string {
     return string { ptr: p, len: len(s) };
 }
 
-private function is_space(u8 c): bool {
+function is_space(u8 c): bool {
     return c == ' ' || c == '\t' || c == '\n' || c == '\r';
 }
 
@@ -110,4 +112,283 @@ function from_cstr(const u8* p): string {
         n++;
     }
     return __rt_new_string(p, n);
+}
+
+function is_digit(u8 c): bool { return c >= '0' && c <= '9'; }
+function is_alpha(u8 c): bool { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'); }
+function is_alnum(u8 c): bool { return is_digit(c) || is_alpha(c); }
+
+// Without leading whitespace.
+function trim_left(string s): string {
+    usize start = 0;
+    while (start < len(s) && is_space(s[start])) {
+        start++;
+    }
+    return substr(s, start, len(s) - start);
+}
+
+// Without trailing whitespace.
+function trim_right(string s): string {
+    usize end = len(s);
+    while (end > 0 && is_space(s[end - 1])) {
+        end--;
+    }
+    return substr(s, 0, end);
+}
+
+private function matches_at(string s, usize i, string needle): bool {
+    if (i + len(needle) > len(s)) {
+        return false;
+    }
+    for (usize j = 0; j < len(needle); j++) {
+        if (s[i + j] != needle[j]) {
+            return false;
+        }
+    }
+    return true;
+}
+
+// Where `needle` last appears in `s`, or -1.
+function last_index_of(string s, string needle): int {
+    if (len(needle) > len(s)) {
+        return -1;
+    }
+    usize i = len(s) - len(needle) + 1;
+    while (i > 0) {
+        i--;
+        if (matches_at(s, i, needle)) {
+            return i as int;
+        }
+    }
+    return -1;
+}
+
+// How many times `needle` appears, not overlapping.
+function count(string s, string needle): int {
+    if (len(needle) == 0) {
+        return 0;
+    }
+    int n = 0;
+    usize i = 0;
+    while (i + len(needle) <= len(s)) {
+        if (matches_at(s, i, needle)) {
+            n++;
+            i += len(needle);
+        } else {
+            i++;
+        }
+    }
+    return n;
+}
+
+// s with every `from` replaced by `to`.
+function replace(string s, string from, string to): string {
+    if (len(from) == 0) {
+        return s;
+    }
+    string out = "";
+    usize start = 0;
+    usize i = 0;
+    while (i + len(from) <= len(s)) {
+        if (matches_at(s, i, from)) {
+            out .= substr(s, start, i - start) . to;
+            i += len(from);
+            start = i;
+        } else {
+            i++;
+        }
+    }
+    return out . substr(s, start, len(s) - start);
+}
+
+// The pieces of s between occurrences of `sep`: split("a,b,,c", ",") is
+// ["a", "b", "", "c"]. An empty `sep` splits into single bytes.
+function split(string s, string sep): vec::Vec<string> {
+    vec::Vec<string> out = new vec::Vec<string>();
+    if (len(sep) == 0) {
+        for (usize i = 0; i < len(s); i++) {
+            out->push(substr(s, i, 1));
+        }
+        return out;
+    }
+    usize start = 0;
+    usize i = 0;
+    while (i + len(sep) <= len(s)) {
+        if (matches_at(s, i, sep)) {
+            out->push(substr(s, start, i - start));
+            i += len(sep);
+            start = i;
+        } else {
+            i++;
+        }
+    }
+    out->push(substr(s, start, len(s) - start));
+    return out;
+}
+
+// The words of s: runs of non-whitespace.
+function words(string s): vec::Vec<string> {
+    vec::Vec<string> out = new vec::Vec<string>();
+    usize i = 0;
+    while (i < len(s)) {
+        while (i < len(s) && is_space(s[i])) {
+            i++;
+        }
+        usize start = i;
+        while (i < len(s) && !is_space(s[i])) {
+            i++;
+        }
+        if (i > start) {
+            out->push(substr(s, start, i - start));
+        }
+    }
+    return out;
+}
+
+// The lines of s, without their "\n" (or "\r\n"); no empty last line for
+// a trailing newline.
+function lines(string s): vec::Vec<string> {
+    vec::Vec<string> out = new vec::Vec<string>();
+    usize start = 0;
+    for (usize i = 0; i < len(s); i++) {
+        if (s[i] == '\n') {
+            usize end = i > start && s[i - 1] == '\r' ? i - 1 : i;
+            out->push(substr(s, start, end - start));
+            start = i + 1;
+        }
+    }
+    if (start < len(s)) {
+        out->push(substr(s, start, len(s) - start));
+    }
+    return out;
+}
+
+// The parts joined with `sep` between them.
+function join(vec::Vec<string> parts, string sep): string {
+    usize total = 0;
+    for (int i = 0; i < parts->len(); i++) {
+        total += len(parts->get(i)) + (i > 0 ? len(sep) : 0);
+    }
+    u8* p = __rt_alloc_bytes(total + 1);
+    usize at = 0;
+    for (int i = 0; i < parts->len(); i++) {
+        if (i > 0) {
+            __rt_copy(p + at, sep->ptr, len(sep));
+            at += len(sep);
+        }
+        string part = parts->get(i);
+        __rt_copy(p + at, part->ptr, len(part));
+        at += len(part);
+    }
+    return string { ptr: p, len: total };
+}
+
+// The bytes of s in reverse order.
+function reverse(string s): string {
+    u8* p = __rt_alloc_bytes(len(s) + 1);
+    for (usize i = 0; i < len(s); i++) {
+        p[i] = s[len(s) - 1 - i];
+    }
+    return string { ptr: p, len: len(s) };
+}
+
+enum ParseError { Empty, Invalid }
+
+// A whole string as an integer: optional sign, then decimal digits, or
+// "0x" and hex digits. Unlike parse_int, anything else is an error.
+function to_int(string s): int!ParseError {
+    s = trim(s);
+    if (len(s) == 0) {
+        return ParseError::Empty;
+    }
+    usize i = 0;
+    bool negative = s[0] == '-';
+    if (s[0] == '-' || s[0] == '+') {
+        i = 1;
+    }
+    u64 base = 10;
+    if (i + 2 < len(s) + 1 && i + 1 < len(s) && s[i] == '0' && (s[i + 1] == 'x' || s[i + 1] == 'X')) {
+        base = 16;
+        i += 2;
+    }
+    if (i == len(s)) {
+        return ParseError::Invalid;
+    }
+    u64 value = 0;
+    for (; i < len(s); i++) {
+        u8 c = s[i];
+        u64 d;
+        if (is_digit(c)) {
+            d = (c - '0') as u64;
+        } else if (base == 16 && c >= 'a' && c <= 'f') {
+            d = (c - 'a') as u64 + 10;
+        } else if (base == 16 && c >= 'A' && c <= 'F') {
+            d = (c - 'A') as u64 + 10;
+        } else if (c == '_') {
+            continue;
+        } else {
+            return ParseError::Invalid;
+        }
+        if (d >= base) {
+            return ParseError::Invalid;
+        }
+        value = value * base + d;
+    }
+    return negative ? -(value as int) : value as int;
+}
+
+// A whole string as a float: [sign] digits [. digits] [e [sign] digits].
+function to_float(string s): f64!ParseError {
+    s = trim(s);
+    if (len(s) == 0) {
+        return ParseError::Empty;
+    }
+    usize i = 0;
+    bool negative = s[0] == '-';
+    if (s[0] == '-' || s[0] == '+') {
+        i = 1;
+    }
+    f64 value = 0.0;
+    bool any = false;
+    while (i < len(s) && is_digit(s[i])) {
+        value = value * 10.0 + (s[i] - '0') as f64;
+        i++;
+        any = true;
+    }
+    if (i < len(s) && s[i] == '.') {
+        i++;
+        f64 place = 0.1;
+        while (i < len(s) && is_digit(s[i])) {
+            value += (s[i] - '0') as f64 * place;
+            place = place / 10.0;
+            i++;
+            any = true;
+        }
+    }
+    if (!any) {
+        return ParseError::Invalid;
+    }
+    if (i < len(s) && (s[i] == 'e' || s[i] == 'E')) {
+        i++;
+        bool eneg = false;
+        if (i < len(s) && (s[i] == '-' || s[i] == '+')) {
+            eneg = s[i] == '-';
+            i++;
+        }
+        if (i == len(s)) {
+            return ParseError::Invalid;
+        }
+        int e = 0;
+        while (i < len(s) && is_digit(s[i])) {
+            e = e * 10 + (s[i] - '0') as int;
+            i++;
+        }
+        for (int k = 0; k < e; k++) {
+            value = eneg ? value / 10.0 : value * 10.0;
+        }
+    }
+    if (i != len(s)) {
+        return ParseError::Invalid;
+    }
+    return negative ? -value : value;
 }

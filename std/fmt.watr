@@ -1,0 +1,151 @@
+// Formatting numbers and text.
+//
+//     fmt::format("% + % = %", [1, 2, 3])      // "1 + 2 = 3"
+//     fmt::fixed(3.14159, 2)                   // "3.14"
+//     fmt::pad_left("7", 3, '0')               // "007"
+
+// s padded on the left with `fill` up to `width` bytes.
+function pad_left(string s, usize width, u8 fill): string {
+    if (len(s) >= width) {
+        return s;
+    }
+    u8* p = __rt_alloc_bytes(width + 1);
+    usize pad = width - len(s);
+    for (usize i = 0; i < pad; i++) {
+        p[i] = fill;
+    }
+    __rt_copy(p + pad, s->ptr, len(s));
+    return string { ptr: p, len: width };
+}
+
+// s padded on the right with `fill` up to `width` bytes.
+function pad_right(string s, usize width, u8 fill): string {
+    if (len(s) >= width) {
+        return s;
+    }
+    u8* p = __rt_alloc_bytes(width + 1);
+    __rt_copy(p, s->ptr, len(s));
+    for (usize i = len(s); i < width; i++) {
+        p[i] = fill;
+    }
+    return string { ptr: p, len: width };
+}
+
+// s centered in `width` bytes.
+function center(string s, usize width, u8 fill): string {
+    if (len(s) >= width) {
+        return s;
+    }
+    usize left = (width - len(s)) / 2;
+    return pad_right(pad_left(s, len(s) + left, fill), width, fill);
+}
+
+function digits(u64 v, u64 base, usize min_width): string {
+    u8[64] buf;
+    usize i = 64;
+    while (v != 0 || i == 64) {
+        i--;
+        u64 d = v % base;
+        buf[i] = d < 10 ? '0' + d as u8 : 'a' + (d - 10) as u8;
+        v = v / base;
+    }
+    while (64 - i < min_width && i > 0) {
+        i--;
+        buf[i] = '0';
+    }
+    return __rt_new_string(&buf[i], 64 - i);
+}
+
+// "ff" for 255; at least `width` digits.
+function hex(u64 v, usize width): string { return digits(v, 16, width); }
+// "1010" for 10; at least `width` digits.
+function bin(u64 v, usize width): string { return digits(v, 2, width); }
+function oct(u64 v, usize width): string { return digits(v, 8, width); }
+
+// x with exactly `decimals` digits after the point, rounded half away
+// from zero: fixed(2.345, 2) is "2.35" (as far as floats allow).
+function fixed(f64 x, int decimals): string {
+    if (x != x) {
+        return "NaN";
+    }
+    bool neg = x < 0.0;
+    if (neg) {
+        x = -x;
+    }
+    if (x > 1.0e18 || decimals > 18) {
+        return "{neg ? -x : x}";   // too big for exact digits; fall back
+    }
+    u64 scale = 1;
+    for (int i = 0; i < decimals; i++) {
+        scale *= 10;
+    }
+    u64 total = (x * scale as f64 + 0.5) as u64;
+    u64 whole = total / scale;
+    string out = neg && total != 0 ? "-{whole}" : "{whole}";
+    if (decimals > 0) {
+        out .= "." . digits(total % scale, 10, decimals as usize);
+    }
+    return out;
+}
+
+// 1234567 -> "1,234,567"
+function grouped(i64 v): string {
+    bool neg = v < 0;
+    u64 u = neg ? (0 - v) as u64 : v as u64;
+    string d = digits(u, 10, 1);
+    string out = "";
+    usize first = len(d) % 3;
+    if (first == 0) {
+        first = 3;
+    }
+    for (usize i = 0; i < len(d); i++) {
+        if (i > 0 && (i - first) % 3 == 0 && i >= first) {
+            out .= ",";
+        }
+        out .= __rt_new_string(d->ptr + i, 1);
+    }
+    return neg ? "-" . out : out;
+}
+
+// A byte count for people: "1.5 KiB", "3.0 MiB".
+function bytes(u64 n): string {
+    if (n < 1024) {
+        return "{n} B";
+    }
+    f64 v = n as f64;
+    string[6] units = ["KiB", "MiB", "GiB", "TiB", "PiB", "EiB"];
+    int u = -1;
+    while (v >= 1024.0 && u < 5) {
+        v = v / 1024.0;
+        u++;
+    }
+    return fixed(v, 1) . " " . units[u];
+}
+
+// Replaces each `%` in `pattern` with the next value from `args`, as text
+// (`{}` would be interpolation). `%%` stands for a literal `%`.
+function format(string pattern, array args): string {
+    string out = "";
+    usize next = 0;
+    usize start = 0;
+    usize i = 0;
+    while (i < len(pattern)) {
+        if (pattern[i] != '%') {
+            i++;
+            continue;
+        }
+        out .= __rt_new_string(pattern->ptr + start, i - start);
+        if (i + 1 < len(pattern) && pattern[i + 1] == '%') {
+            out .= "%";
+            i += 2;
+        } else {
+            if (next < len(args)) {
+                out .= "{args[next]}";
+            }
+            next++;
+            i++;
+        }
+        start = i;
+    }
+    return out . __rt_new_string(pattern->ptr + start, len(pattern) - start);
+}

@@ -289,11 +289,11 @@ function outb(u16 port, u8 val): void {
   - `private` keeps a declaration inside its module.
   - Each module's functions get their own symbol prefix (`w.std.str.trim`),
     so modules can reuse names freely; exported names must stay unique.
-  - Standard library so far: `std/io` (print, println), `std/math` (int
-    helpers, PI/E, and libm functions), `std/str` (substr, index_of,
-    contains, starts_with, ends_with, to_upper, to_lower, trim, repeat,
-    parse_int, from_cstr), `std/mem` (copy, set, equal), `std/gc`
-    (collect, live_bytes, heap_bytes, collections), `std/arrays` (see below).
+  - Standard library: `std/io` (print, println), `std/math` (int
+    helpers, PI/E, and libm functions), `std/str`, `std/mem` (copy, set,
+    equal), `std/gc` (collect, live_bytes, heap_bytes, collections),
+    `std/arrays` (see below), and the milestone 18 modules listed under
+    "Standard library" below.
 - **Enums (milestone 9):** `enum Color { Red, Green = 5, Blue }` declares
   named integer constants with their own type. The underlying type is
   `i32` (like C) unless given: `enum Http: u16 { ... }`. Variants without
@@ -383,6 +383,42 @@ function outb(u16 port, u8 val): void {
     (E0122), extern functions can't be generic (E0381), and a type that
     needs ever bigger copies of itself (`Grow<Grow<T>>` inside `Grow<T>`)
     is stopped (E0380).
+- **Standard library (milestone 18):** written in watrlang, on top of
+  generics. Linux services go through system calls made with inline asm
+  (`std/sys`), so none of it needs the C library.
+  - `std/vec`: `Vec<T>`, a growable array in GC memory: push, pop, get,
+    set (bounds-checked), insert, remove, swap, slice, extend, index_of,
+    contains, reverse, join, reserve, data.
+  - `std/map`: `Map<K, V>`, a hash map that keeps insertion order: set,
+    get (`V!MapError`), get_or, has, remove, keys, values, clear. Keys
+    hash with the `hash_of(x)` builtin (numbers, bools, enums, strings by
+    content, pointers and objects by identity, `mixed`; E0383 otherwise)
+    and compare with `==`.
+  - `std/sort`: a stable merge sort for Vecs and pointer ranges, by `<` or
+    by a `Less<T>` object (`interface Less<T> { function less(T a, T b):
+    bool; }`), plus is_sorted, binary search, min, max.
+  - `std/str` adds split, join, words, lines, replace, count,
+    last_index_of, trim_left/right, reverse, is_digit/alpha/alnum/space,
+    and strict parsing: `to_int` (decimal, `0x` hex, `_` separators) and
+    `to_float`, returning `T!ParseError`.
+  - `std/fmt`: pad_left/right, center, hex/bin/oct, `fixed(x, decimals)`,
+    `grouped(1234567)` ("1,234,567"), `bytes(n)` ("1.5 KiB"), and
+    `format("% of %", [a, b])` (`%%` for a literal %; `{}` would be
+    interpolation).
+  - `std/fs`: read, write, append, exists, size, remove, rename, mkdir,
+    rmdir, returning `T!IoError`; `describe(e)` for messages.
+  - `std/os`: `args()` (a `Vec<string>`; the entry code saves argc/argv),
+    argc, getenv/has_env, `exit(code)` (flushes output first), pid.
+  - `std/time`: now_ns, elapsed_ms, unix, unix_ms, sleep_ms/ns, and `utc(t)`
+    to a DateTime with `format`.
+  - `std/rand`: `Rng`, xoshiro256** from a seed (next, range, unit,
+    chance); module functions use one seeded by getrandom; shuffle and pick.
+  - `std/sys`: syscall0..6 and the syscall numbers.
+  - `foreach` loops over any object whose class has `len()` and `get(i)`,
+    so `foreach (v as i => x)` works on a Vec.
+  - Methods of generic classes are only checked (and compiled) when
+    something can call them, as in C++: a `Vec<Key>` is fine even though
+    `join` can't print a `Key`.
 - **Arrays and `mixed` (milestone 12):**
   - `mixed` (PHP's name for "any type") holds null, a bool, an int, a
     float, a string, an array or an object, with a tag saying which. It's
@@ -601,6 +637,7 @@ Each milestone ends with tests passing and something you can run.
 | 15 | Optimizer              | IR + register allocation (`-O1`, the default)             |
 | 16 | Inheritance            | `extends`, interfaces, `abstract`, `protected`, `parent::`, `instanceof` |
 | 17 | Generics               | `max<T>`, `Box<T>`, `Pair<A, B>`, generic interfaces; type inference for calls |
+| 18 | Standard library       | Vec, Map, sort, str, fmt, fs, os, time, rand, sys (syscalls in watrlang) |
 | ∞  | Self-hosting           | watrc rewritten in watrlang                               |
 
 ## 6. Settled after the first pass

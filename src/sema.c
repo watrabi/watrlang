@@ -276,7 +276,7 @@ static void report_unknown_module(Sema *S, Loc loc, const char *alias) {
         }
     }
     if (guess) diag_fix(d, loc, guess, "a module with a similar name is imported");
-    else if (n == 0) diag_help(d, "import it first, like `import \"std/%s\";`", alias);
+    else diag_help(d, "import it first, like `import \"std/%s\";`", alias);
     diag_end(d);
 }
 
@@ -468,7 +468,11 @@ static void report_unknown_type(Sema *S, Loc loc, const char *name) {
         char alias[128];
         snprintf(alias, sizeof alias, "%.*s", (int)(sep - name), name);
         int mod = module_by_alias(S, alias);
-        for (size_t i = 0; mod >= 0 && i < S->structs.len; i++) {
+        if (mod < 0) {
+            report_unknown_module(S, loc, alias);
+            return;
+        }
+        for (size_t i = 0; i < S->structs.len; i++) {
             Type *t = S->structs.items[i];
             if (module_of(S, t->decl->loc.file) != mod || strcmp(t->name, sep + 2) != 0) continue;
             Diag *d = diag_start(DIAG_ERROR, "E0345", loc, "`%s` is private", name);
@@ -2605,6 +2609,47 @@ static Type *check_call(Sema *S, Expr *e) {
         return set_type(e, ty_usize);
     }
 
+    /* hash_of(x): a 64-bit hash of a number, bool, string, pointer, object
+     * (its identity) or mixed value; std/map's Map<K, V> uses it. */
+    if (!fn && strcmp(callee->u.name, "hash_of") == 0 && !find_var(S, "hash_of")) {
+        if (e->u.call.nargs != 1) {
+            Diag *d = diag_start(DIAG_ERROR, "E0206", callee->loc, "`hash_of` takes 1 argument but %zu were supplied",
+                                 e->u.call.nargs);
+            diag_label(d, "expected 1 argument");
+            diag_end(d);
+            check_args_only(S, e);
+            return set_type(e, ty_error);
+        }
+        Type *t = check(S, &e->u.call.args[0], NULL);
+        Expr *arg = e->u.call.args[0];
+        if (is_err(t) || !require_value(S, arg)) return set_type(e, ty_error);
+        const char *rt;
+        if (t->kind == TY_STRING) {
+            rt = "__rt_str_hash";
+        } else if (t->kind == TY_MIXED) {
+            rt = "__rt_key_hash";
+        } else if (t->kind == TY_FLOAT) {
+            rt = "__rt_f64_hash";
+            if (t->size == 4) arg = wrap_cast(S, arg, ty_f64);
+        } else if (type_in_gpr(t)) {
+            rt = "__rt_int_hash";
+            arg = wrap_cast(S, arg, ty_u64);
+        } else {
+            Diag *d = diag_start(DIAG_ERROR, "E0383", arg->loc, "`hash_of` can't hash a value of type `%s`", type_name(t));
+            diag_label(d, "not hashable");
+            diag_note(d, "it hashes numbers, bools, enums, strings, pointers, objects (by identity) and `mixed`");
+            if (t->kind == TY_STRUCT && t->nfields >= 2) {
+                char *text = loc_text(S, arg->loc);
+                diag_help(d, "combine the hashes of the fields, for example `hash_of(%s->%s) ^ hash_of(%s->%s) * 31`", text,
+                          t->fields[0].name, text, t->fields[1].name);
+            }
+            diag_end(d);
+            return set_type(e, ty_error);
+        }
+        *e = *rt_call1(S, rt, arg);
+        return set_type(e, ty_u64);
+    }
+
     /* free(p) releases memory from alloc. */
     if (!fn && strcmp(callee->u.name, "free") == 0 && !find_var(S, "free")) {
         e->builtin = BUILTIN_FREE;
@@ -3929,6 +3974,20 @@ static Expr *mk_call(Sema *S, const char *fname, Loc loc, Expr *a, Expr *b) {
     return e;
 }
 
+/* obj->name() or obj->name(arg) */
+static Expr *mk_method_call(Sema *S, Expr *obj, const char *name, Expr *arg, Loc loc) {
+    Expr *m = new_node(S, EXPR_MEMBER, loc, NULL);
+    m->u.member.object = obj;
+    m->u.member.name = name;
+    m->u.member.name_loc = loc;
+    Expr *c = new_node(S, EXPR_CALL, loc, NULL);
+    c->u.call.callee = m;
+    c->u.call.nargs = arg ? 1 : 0;
+    c->u.call.args = arena_alloc(S->arena, sizeof(Expr *));
+    c->u.call.args[0] = arg;
+    return c;
+}
+
 static Expr *mk_binary(Sema *S, ExprKind kind, TokenKind op, Expr *a, Expr *b, Loc loc) {
     Expr *e = new_node(S, kind, loc, NULL);
     e->u.binary.op = op;
@@ -3991,7 +4050,27 @@ static void check_foreach(Sema *S, Stmt *s) {
     Expr *it = *itp;
     VarDecl *kb = s->u.foreach_.key, *vb = s->u.foreach_.value;
     if (!is_err(t) && !require_value(S, it)) t = ty_error;
-    if (!is_err(t) && t->kind != TY_PHPARRAY && t->kind != TY_ARRAY && t->kind != TY_STRING) {
+    /* Objects with `len()` and `get(i)` methods, like std/vec's Vec<T>. */
+    Symbol *len_m = NULL, *get_m = NULL;
+    if (!is_err(t) && t->kind == TY_CLASS) {
+        len_m = find_method(t, "len");
+        get_m = find_method(t, "get");
+        bool ok = len_m && get_m && !len_m->is_static && !get_m->is_static && len_m->nparams == 1 &&
+                  get_m->nparams == 2 && type_is_int(len_m->type) && type_assignable(len_m->type, get_m->param_types[1]) &&
+                  get_m->type->kind != TY_VOID;
+        if (!ok) {
+            Diag *d = diag_start(DIAG_ERROR, "E0367", it->loc, "can't loop over `%s`", type_name(t));
+            diag_label(d, "this class isn't iterable");
+            diag_note(d, "foreach works on objects whose class has `len(): int` and `get(int i): T` methods");
+            if (len_m && len_m->nparams != 1) diag_span(d, len_m->loc, "`len` here takes arguments");
+            else if (get_m && get_m->nparams != 2) diag_span(d, get_m->loc, "`get` here doesn't take exactly one index");
+            diag_end(d);
+            t = ty_error;
+        } else if (!method_visible(S, len_m, it->loc) || !method_visible(S, get_m, it->loc)) {
+            t = ty_error;
+        }
+    }
+    if (!is_err(t) && t->kind != TY_PHPARRAY && t->kind != TY_ARRAY && t->kind != TY_STRING && t->kind != TY_CLASS) {
         Diag *d = diag_start(DIAG_ERROR, "E0367", it->loc, "can't loop over a value of type `%s`", type_name(t));
         diag_label(d, "not iterable");
         char *text = t->kind == TY_MIXED ? loc_text(S, it->loc) : NULL;
@@ -4001,7 +4080,8 @@ static void check_foreach(Sema *S, Stmt *s) {
             snprintf(fixed, len, "(%s as array)", text);
             diag_fix(d, it->loc, fixed, "if it holds an array, convert it");
         }
-        if (t->kind != TY_MIXED) diag_note(d, "foreach works on `array`, fixed arrays (`T[N]`) and strings");
+        if (t->kind != TY_MIXED)
+            diag_note(d, "foreach works on `array`, fixed arrays (`T[N]`), strings, and objects with `len()` and `get(i)`");
         diag_end(d);
         t = ty_error;
     }
@@ -4027,8 +4107,15 @@ static void check_foreach(Sema *S, Stmt *s) {
 
     Stmt *setup, *skip = NULL;
     Expr *count, *key, *value;
-    Type *key_type, *value_type;
-    if (t->kind == TY_PHPARRAY) {
+    Type *key_type, *value_type, *index_type = ty_usize;
+    if (t->kind == TY_CLASS) {   /* for (i = 0; i < obj->len(); i++) { v = obj->get(i); ... } */
+        setup = mk_var(S, mk_vardecl(S, t, fe, loc), it);
+        count = mk_method_call(S, mk_ident(S, fe, loc), "len", NULL, loc);
+        index_type = key_type = len_m->type;
+        key = mk_ident(S, fi, loc);
+        value = mk_method_call(S, mk_ident(S, fe, loc), "get", mk_ident(S, fi, loc), loc);
+        value_type = get_m->type;
+    } else if (t->kind == TY_PHPARRAY) {
         setup = mk_var(S, mk_vardecl(S, ty_phparray, fe, loc), it);
         count = mk_call(S, "__rt_array_slots", loc, mk_ident(S, fe, loc), NULL);
         Expr *live = mk_call(S, "__rt_array_live", loc, mk_ident(S, fe, loc), mk_ident(S, fi, loc));
@@ -4075,7 +4162,7 @@ static void check_foreach(Sema *S, Stmt *s) {
 
     Stmt *loop = mk_stmt(S, STMT_FOR, loc);
     Expr *zero = new_node(S, EXPR_INT, loc, NULL);
-    loop->u.for_.init = mk_var(S, mk_vardecl(S, ty_usize, fi, loc), zero);
+    loop->u.for_.init = mk_var(S, mk_vardecl(S, index_type, fi, loc), zero);
     loop->u.for_.cond = mk_binary(S, EXPR_BINARY, TOK_LT, mk_ident(S, fi, loc), count, loc);
     Expr *step = new_node(S, EXPR_POSTFIX, loc, NULL);
     step->u.unary.op = TOK_PLUSPLUS;
@@ -5223,42 +5310,53 @@ bool sema_check(Arena *arena, Module **mods, size_t nmods, Program *prog) {
         if (md->u.func.nparams > 0) not_yet(md->u.func.params[0]->loc, "command-line arguments to main", 7);
     }
 
-    for (size_t i = 0; i < S.funcs.len; i++) {
-        Symbol *fn = S.funcs.items[i];
-        if (fn->decl->u.func.body) check_function_body(&S, fn);
-    }
-
-    /* A virtual call can reach the method in any subclass of the receiver's type. */
-    for (size_t i = 0; i < S.vsites.len; i++) {
-        VSite *v = S.vsites.items[i];
-        for (size_t k = 0; k < S.structs.len; k++) {
-            Type *c = S.structs.items[k];
-            if (c->kind != TY_CLASS || c->is_interface || c->is_abstract || !class_subtype(c, v->t)) continue;
-            Symbol *impl = find_method(c, v->name);
-            if (!impl || impl->is_abstract) continue;
-            S.fn = v->fn;
-            add_callee(&S, impl);
-            S.fn = NULL;
-        }
-    }
-
-    /* Only functions reachable from main (or exported) are compiled. */
+    /* Bodies, then what they can reach. Methods of generic classes are
+     * checked only once something can call them (as C++ does), so a
+     * Vec<Key> is fine even though Vec's join() can't print a Key. Those
+     * methods can reach more code, so this repeats until nothing changes. */
     PtrVec work = {0};
-    for (size_t i = 0; i < S.funcs.len; i++) {
-        Symbol *fn = S.funcs.items[i];
-        if (fn == main_fn || fn->is_export) {
-            fn->reachable = true;
-            ptrvec_push(&work, fn);
+    for (;;) {
+        bool progress = false;
+        for (size_t i = 0; i < S.funcs.len; i++) {
+            Symbol *fn = S.funcs.items[i];
+            bool lazy = fn->owner && fn->owner->tmpl;
+            if (!fn->decl->u.func.body || fn->body_checked || (lazy && !fn->reachable)) continue;
+            fn->body_checked = true;
+            check_function_body(&S, fn);
+            progress = true;
         }
-    }
-    while (work.len) {
-        Symbol *fn = work.items[--work.len];
-        for (size_t i = 0; i < fn->ncallees; i++) {
-            if (!fn->callees[i]->reachable) {
-                fn->callees[i]->reachable = true;
-                ptrvec_push(&work, fn->callees[i]);
+
+        /* A virtual call can reach the method in any subclass of the receiver's type. */
+        for (size_t i = 0; i < S.vsites.len; i++) {
+            VSite *v = S.vsites.items[i];
+            for (size_t k = 0; k < S.structs.len; k++) {
+                Type *c = S.structs.items[k];
+                if (c->kind != TY_CLASS || c->is_interface || c->is_abstract || !class_subtype(c, v->t)) continue;
+                Symbol *impl = find_method(c, v->name);
+                if (!impl || impl->is_abstract) continue;
+                S.fn = v->fn;
+                add_callee(&S, impl);
+                S.fn = NULL;
             }
         }
+
+        /* Only functions reachable from main (or exported) are compiled. */
+        work.len = 0;
+        for (size_t i = 0; i < S.funcs.len; i++) {
+            Symbol *fn = S.funcs.items[i];
+            if (fn == main_fn || fn->is_export) fn->reachable = true;
+            if (fn->reachable) ptrvec_push(&work, fn);
+        }
+        while (work.len) {
+            Symbol *fn = work.items[--work.len];
+            for (size_t i = 0; i < fn->ncallees; i++) {
+                if (!fn->callees[i]->reachable) {
+                    fn->callees[i]->reachable = true;
+                    ptrvec_push(&work, fn->callees[i]);
+                }
+            }
+        }
+        if (!progress) break;
     }
     free(work.items);
     for (size_t i = 0; i < S.funcs.len; i++) {

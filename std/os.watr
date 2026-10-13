@@ -1,0 +1,72 @@
+// The process: command-line arguments, environment variables, exiting.
+
+import "std/sys";
+import "std/vec";
+
+function cstr_len(const u8* p): usize {
+    usize n = 0;
+    while (p[n] != 0) {
+        n++;
+    }
+    return n;
+}
+
+// The command line: args()[0] is the program, then its arguments.
+function args(): vec::Vec<string> {
+    vec::Vec<string> out = new vec::Vec<string>();
+    for (u64 i = 0; i < __rt_argc; i++) {
+        u8* a = __rt_argv[i];
+        out->push(string { ptr: a, len: cstr_len(a) });
+    }
+    return out;
+}
+
+// How many arguments there are, not counting the program.
+function argc(): int { return __rt_argc as int - 1; }
+
+// The environment variable `name`, or "" if it isn't set.
+function getenv(string name): string {
+    if (__rt_argv == null) {
+        return "";
+    }
+    u8** env = __rt_argv + __rt_argc + 1;   // after argv's NULL
+    for (usize i = 0; env[i] != null; i++) {
+        u8* e = env[i];
+        usize n = cstr_len(e);
+        if (n > len(name) && e[len(name)] == '=') {
+            bool same = true;
+            for (usize j = 0; j < len(name); j++) {
+                if (e[j] != name[j]) {
+                    same = false;
+                    break;
+                }
+            }
+            if (same) {
+                return string { ptr: e + len(name) + 1, len: n - len(name) - 1 };
+            }
+        }
+    }
+    return "";
+}
+
+function has_env(string name): bool {
+    if (__rt_argv == null) {
+        return false;
+    }
+    u8** env = __rt_argv + __rt_argc + 1;
+    for (usize i = 0; env[i] != null; i++) {
+        u8* e = env[i];
+        usize n = cstr_len(e);
+        if (n >= len(name) + 1 && e[len(name)] == '=' && string { ptr: e, len: len(name) } == name) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// Ends the program now, with exit code `code`. (Deferred code doesn't run.)
+function exit(int code): void {
+    __rt_exit(code);
+}
+
+function pid(): int { return sys::syscall0(sys::GETPID) as int; }

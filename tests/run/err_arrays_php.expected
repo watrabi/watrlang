@@ -51,7 +51,7 @@ error[E0367]: can't loop over a value of type `int`
 12 |     foreach (5 as y) { }
    |              ^ not iterable
    |
-   = note: foreach works on `array`, fixed arrays (`T[N]`) and strings
+   = note: foreach works on `array`, fixed arrays (`T[N]`), strings, and objects with `len()` and `get(i)`
 
 error[E0365]: `mixed` values can't be built from parts
   --> tests/run/err_arrays_php.watr:13:17

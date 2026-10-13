@@ -1,0 +1,61 @@
+// Linux system calls, made directly with the `syscall` instruction (no C
+// library needed). Each returns the kernel's result: a value >= 0, or
+// -errno on failure. std/fs, std/os and std/time are built on these.
+
+function syscall0(i64 n): i64 {
+    i64 r = n;
+    asm("syscall" : inout("rax") r);
+    return r;
+}
+
+function syscall1(i64 n, i64 a): i64 {
+    i64 r = n;
+    asm("syscall" : inout("rax") r, in("rdi") a);
+    return r;
+}
+
+function syscall2(i64 n, i64 a, i64 b): i64 {
+    i64 r = n;
+    asm("syscall" : inout("rax") r, in("rdi") a, in("rsi") b);
+    return r;
+}
+
+function syscall3(i64 n, i64 a, i64 b, i64 c): i64 {
+    i64 r = n;
+    asm("syscall" : inout("rax") r, in("rdi") a, in("rsi") b, in("rdx") c);
+    return r;
+}
+
+function syscall4(i64 n, i64 a, i64 b, i64 c, i64 d): i64 {
+    i64 r = n;
+    asm("syscall" : inout("rax") r, in("rdi") a, in("rsi") b, in("rdx") c, in("r10") d);
+    return r;
+}
+
+function syscall6(i64 n, i64 a, i64 b, i64 c, i64 d, i64 e, i64 f): i64 {
+    i64 r = n;
+    asm("syscall" : inout("rax") r, in("rdi") a, in("rsi") b, in("rdx") c, in("r10") d, in("r8") e, in("r9") f);
+    return r;
+}
+
+// Syscall numbers (x86-64).
+const i64 READ = 0;
+const i64 WRITE = 1;
+const i64 OPEN = 2;
+const i64 CLOSE = 3;
+const i64 LSEEK = 8;
+const i64 NANOSLEEP = 35;
+const i64 GETPID = 39;
+const i64 EXIT_GROUP = 231;
+const i64 RENAME = 82;
+const i64 MKDIR = 83;
+const i64 RMDIR = 84;
+const i64 UNLINK = 87;
+const i64 ACCESS = 21;
+const i64 CLOCK_GETTIME = 228;
+const i64 GETRANDOM = 318;
+
+// A NUL-terminated copy of s, for passing to the kernel.
+function cstr(string s): const u8* {
+    return __rt_new_string(s->ptr, len(s))->ptr;
+}

@@ -1,0 +1,126 @@
+// Files, through Linux system calls. Failures come back as IoError values:
+//
+//     string text = fs::read("notes.txt")?;
+//     fs::write("out.txt", "hello\n") ?? false;
+
+import "std/sys";
+
+enum IoError { NotFound, Denied, Exists, IsDir, NotDir, NotEmpty, Other }
+
+// The IoError for a negative syscall result (-errno).
+function error_of(i64 r): IoError {
+    if (r == -2) { return IoError::NotFound; }
+    if (r == -13 || r == -1) { return IoError::Denied; }
+    if (r == -17) { return IoError::Exists; }
+    if (r == -21) { return IoError::IsDir; }
+    if (r == -20) { return IoError::NotDir; }
+    if (r == -39) { return IoError::NotEmpty; }
+    return IoError::Other;
+}
+
+// A sentence describing e, for messages.
+function describe(IoError e): string {
+    if (e == IoError::NotFound) { return "no such file or directory"; }
+    if (e == IoError::Denied) { return "permission denied"; }
+    if (e == IoError::Exists) { return "already exists"; }
+    if (e == IoError::IsDir) { return "is a directory"; }
+    if (e == IoError::NotDir) { return "not a directory"; }
+    if (e == IoError::NotEmpty) { return "directory not empty"; }
+    return "input/output error";
+}
+
+const i64 O_RDONLY = 0;
+const i64 O_WRONLY = 1;
+const i64 O_CREAT = 64;
+const i64 O_TRUNC = 512;
+const i64 O_APPEND = 1024;
+const i64 O_CLOEXEC = 524288;
+
+function open(string path, i64 flags): i64!IoError {
+    i64 fd = sys::syscall3(sys::OPEN, sys::cstr(path) as i64, flags | O_CLOEXEC, 420);   // mode 0644
+    if (fd < 0) {
+        return error_of(fd);
+    }
+    return fd;
+}
+
+// The whole file as a string.
+function read(string path): string!IoError {
+    i64 fd = open(path, O_RDONLY)?;
+    defer sys::syscall1(sys::CLOSE, fd);
+    usize cap = 4096;
+    usize n = 0;
+    u8* buf = __rt_alloc_bytes(cap + 1);
+    while (true) {
+        if (n == cap) {
+            u8* bigger = __rt_alloc_bytes(cap * 2 + 1);
+            __rt_copy(bigger, buf, n);
+            buf = bigger;
+            cap = cap * 2;
+        }
+        i64 got = sys::syscall3(sys::READ, fd, (buf + n) as i64, (cap - n) as i64);
+        if (got < 0) {
+            return error_of(got);
+        }
+        if (got == 0) {
+            break;
+        }
+        n += got as usize;
+    }
+    return string { ptr: buf, len: n };
+}
+
+function write_all(i64 fd, string data): bool!IoError {
+    usize done = 0;
+    while (done < len(data)) {
+        i64 put = sys::syscall3(sys::WRITE, fd, (data->ptr + done) as i64, (len(data) - done) as i64);
+        if (put < 0) {
+            return error_of(put);
+        }
+        done += put as usize;
+    }
+    return true;
+}
+
+// Replaces the file's contents (creating it if needed).
+function write(string path, string data): bool!IoError {
+    i64 fd = open(path, O_WRONLY | O_CREAT | O_TRUNC)?;
+    defer sys::syscall1(sys::CLOSE, fd);
+    return write_all(fd, data);
+}
+
+// Adds to the end of the file (creating it if needed).
+function append(string path, string data): bool!IoError {
+    i64 fd = open(path, O_WRONLY | O_CREAT | O_APPEND)?;
+    defer sys::syscall1(sys::CLOSE, fd);
+    return write_all(fd, data);
+}
+
+function exists(string path): bool {
+    return sys::syscall2(sys::ACCESS, sys::cstr(path) as i64, 0) == 0;
+}
+
+function check(i64 r): bool!IoError {
+    if (r < 0) {
+        return error_of(r);
+    }
+    return true;
+}
+
+function remove(string path): bool!IoError { return check(sys::syscall1(sys::UNLINK, sys::cstr(path) as i64)); }
+function rename(string from, string to): bool!IoError {
+    return check(sys::syscall2(sys::RENAME, sys::cstr(from) as i64, sys::cstr(to) as i64));
+}
+function mkdir(string path): bool!IoError { return check(sys::syscall2(sys::MKDIR, sys::cstr(path) as i64, 493)); }   // 0755
+function rmdir(string path): bool!IoError { return check(sys::syscall1(sys::RMDIR, sys::cstr(path) as i64)); }
+
+// The file's size in bytes.
+function size(string path): i64!IoError {
+    i64 fd = open(path, O_RDONLY)?;
+    defer sys::syscall1(sys::CLOSE, fd);
+    i64 end = sys::syscall3(sys::LSEEK, fd, 0, 2);   // SEEK_END
+    if (end < 0) {
+        return error_of(end);
+    }
+    return end;
+}

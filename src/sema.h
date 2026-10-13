@@ -41,6 +41,7 @@ typedef struct Symbol {
     Loc *callee_locs;           /* where each callee is first called */
     size_t ncallees, callees_cap;
     bool reachable;
+    bool body_checked;
     bool is_runtime;            /* from the runtime prelude */
     int module;                 /* index of the defining module */
     bool is_private;            /* `private`: invisible to importing modules */

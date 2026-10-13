@@ -1,0 +1,204 @@
+// Map<K, V>: a hash map. Keys can be anything `hash_of` and `==` accept:
+// numbers, bools, enums, strings, pointers, objects (by identity). Entries
+// are kept in insertion order, like PHP arrays, and a table of entry
+// numbers (open addressing, linear probing) finds keys.
+//
+//     Map<string, int> ages = new Map<string, int>();
+//     ages->set("ada", 36);
+//     int a = ages->get("ada") ?? 0;
+//     foreach (ages->keys() as k) { ... }
+
+import "std/vec";
+
+enum MapError { Missing }
+
+class Map<K, V> {
+    private K* keys_;
+    private V* vals;
+    private u64* hashes;
+    private bool* live;
+    private int nentries;       // used entry slots, including removed ones
+    private int count;
+    private int* table;         // entry number + 1, or 0 for empty
+    private int table_cap;      // a power of two
+    private int entry_cap;
+
+    public function __construct() { }
+
+    public function len(): int { return this->count; }
+    public function is_empty(): bool { return this->count == 0; }
+
+    // The entry number holding `key`, or -1.
+    private function find(K key, u64 h): int {
+        if (this->table_cap == 0) {
+            return -1;
+        }
+        int mask = this->table_cap - 1;
+        int i = (h as int) & mask;
+        while (true) {
+            int slot = this->table[i];
+            if (slot == 0) {
+                return -1;
+            }
+            int e = slot - 1;
+            if (this->hashes[e] == h && this->live[e] && this->keys_[e] == key) {
+                return e;
+            }
+            i = (i + 1) & mask;
+        }
+    }
+
+    private function rebuild(int table_cap, int entry_cap): void {
+        // Squeeze out removed entries while copying.
+        K* nk = __rt_alloc(entry_cap as usize * sizeof(K)) as K*;
+        V* nv = __rt_alloc(entry_cap as usize * sizeof(V)) as V*;
+        u64* nh = __rt_alloc_bytes(entry_cap as usize * 8) as u64*;
+        bool* nl = __rt_alloc_bytes(entry_cap as usize) as bool*;
+        int* nt = __rt_alloc_bytes(table_cap as usize * 8) as int*;
+        int n = 0;
+        int mask = table_cap - 1;
+        for (int e = 0; e < this->nentries; e++) {
+            if (!this->live[e]) {
+                continue;
+            }
+            nk[n] = this->keys_[e];
+            nv[n] = this->vals[e];
+            nh[n] = this->hashes[e];
+            nl[n] = true;
+            int i = (nh[n] as int) & mask;
+            while (nt[i] != 0) {
+                i = (i + 1) & mask;
+            }
+            nt[i] = n + 1;
+            n++;
+        }
+        this->keys_ = nk;
+        this->vals = nv;
+        this->hashes = nh;
+        this->live = nl;
+        this->table = nt;
+        this->nentries = n;
+        this->table_cap = table_cap;
+        this->entry_cap = entry_cap;
+    }
+
+    // Adds key => value, or replaces the value if the key is there.
+    public function set(K key, V value): void {
+        u64 h = hash_of(key);
+        int e = this->find(key, h);
+        if (e >= 0) {
+            this->vals[e] = value;
+            return;
+        }
+        if (this->nentries == this->entry_cap) {
+            // Grow when mostly full of live entries, else just squeeze.
+            int cap = this->entry_cap == 0 ? 8 : this->entry_cap;
+            if (this->count * 2 >= cap) {
+                cap = cap * 2;
+            }
+            this->rebuild(cap * 2, cap);
+        }
+        e = this->nentries;
+        this->nentries++;
+        this->keys_[e] = key;
+        this->vals[e] = value;
+        this->hashes[e] = h;
+        this->live[e] = true;
+        int mask = this->table_cap - 1;
+        int i = (h as int) & mask;
+        while (this->table[i] != 0) {
+            i = (i + 1) & mask;
+        }
+        this->table[i] = e + 1;
+        this->count++;
+    }
+
+    public function has(K key): bool { return this->find(key, hash_of(key)) >= 0; }
+
+    // The value for `key`, or MapError::Missing.
+    public function get(K key): V!MapError {
+        int e = this->find(key, hash_of(key));
+        if (e < 0) {
+            return MapError::Missing;
+        }
+        return this->vals[e];
+    }
+
+    // The value for `key`, or `fallback`.
+    public function get_or(K key, V fallback): V {
+        int e = this->find(key, hash_of(key));
+        if (e < 0) {
+            return fallback;
+        }
+        return this->vals[e];
+    }
+
+    // Removes `key`; false if it wasn't there.
+    public function remove(K key): bool {
+        int e = this->find(key, hash_of(key));
+        if (e < 0) {
+            return false;
+        }
+        this->live[e] = false;
+        K zk;
+        V zv;
+        this->keys_[e] = zk;
+        this->vals[e] = zv;
+        this->count--;
+        // The table still points at the dead entry, which keeps probe chains
+        // intact; the next rebuild drops it.
+        return true;
+    }
+
+    public function clear(): void {
+        this->keys_ = null;
+        this->vals = null;
+        this->hashes = null;
+        this->live = null;
+        this->table = null;
+        this->nentries = 0;
+        this->count = 0;
+        this->table_cap = 0;
+        this->entry_cap = 0;
+    }
+
+    // The keys, in insertion order.
+    public function keys(): vec::Vec<K> {
+        vec::Vec<K> out = new vec::Vec<K>();
+        out->reserve(this->count);
+        for (int e = 0; e < this->nentries; e++) {
+            if (this->live[e]) {
+                out->push(this->keys_[e]);
+            }
+        }
+        return out;
+    }
+
+    // The values, in insertion order.
+    public function values(): vec::Vec<V> {
+        vec::Vec<V> out = new vec::Vec<V>();
+        out->reserve(this->count);
+        for (int e = 0; e < this->nentries; e++) {
+            if (this->live[e]) {
+                out->push(this->vals[e]);
+            }
+        }
+        return out;
+    }
+
+    public function __toString(): string {
+        string out = "\{";
+        bool first = true;
+        for (int e = 0; e < this->nentries; e++) {
+            if (!this->live[e]) {
+                continue;
+            }
+            if (!first) {
+                out .= ", ";
+            }
+            first = false;
+            out .= "{this->keys_[e]}: {this->vals[e]}";
+        }
+        return out . "\}";
+    }
+}

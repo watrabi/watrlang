@@ -7,7 +7,7 @@ function main(): int {
     int s = geometry::secret();
     int t = geomtry::uses_secret();
     int u = geometry::missing();
-    string v = str::is_space('x') ? "y" : "n";
+    string v = str::matches_at("x", 0, "x") ? "y" : "n";
     geometry::Hidden h = geometry::Hidden::Secret;
     int w = geometry::Shape::Hexagon as int;
     return 0;

@@ -1,0 +1,98 @@
+// Pseudo-random numbers: xoshiro256** seeded through splitmix64. Not for
+// cryptography. Rng objects give repeatable sequences from a seed; the
+// module-level functions use one seeded from the kernel's randomness.
+
+import "std/sys";
+import "std/vec";
+
+class Rng {
+    private u64 s0;
+    private u64 s1;
+    private u64 s2;
+    private u64 s3;
+
+    public function __construct(u64 seed) { this->reseed(seed); }
+
+    public function reseed(u64 seed): void {
+        this->s0 = splitmix(seed);
+        this->s1 = splitmix(seed + 1);
+        this->s2 = splitmix(seed + 2);
+        this->s3 = splitmix(seed + 3);
+    }
+
+    // Any 64-bit value.
+    public function next(): u64 {
+        u64 result = rotl(this->s1 * 5, 7) * 9;
+        u64 t = this->s1 << 17;
+        this->s2 = this->s2 ^ this->s0;
+        this->s3 = this->s3 ^ this->s1;
+        this->s1 = this->s1 ^ this->s2;
+        this->s0 = this->s0 ^ this->s3;
+        this->s2 = this->s2 ^ t;
+        this->s3 = rotl(this->s3, 45);
+        return result;
+    }
+
+    // A whole number in [lo, hi], inclusive.
+    public function range(int lo, int hi): int {
+        if (hi <= lo) {
+            return lo;
+        }
+        u64 span = (hi - lo) as u64 + 1;
+        if (span == 0) {   // the whole range
+            return this->next() as int;
+        }
+        // Rejection sampling, so every value is equally likely.
+        u64 limit = 18446744073709551615 - 18446744073709551615 % span;
+        u64 x = this->next();
+        while (x >= limit) {
+            x = this->next();
+        }
+        return lo + (x % span) as int;
+    }
+
+    // A float in [0, 1).
+    public function unit(): f64 {
+        return (this->next() >> 11) as f64 / 9007199254740992.0;
+    }
+
+    public function chance(f64 p): bool { return this->unit() < p; }
+}
+
+function splitmix(u64 x): u64 {
+    u64 z = x + 11400714819323198485;
+    z = (z ^ (z >> 30)) * 13787848793156543929;
+    z = (z ^ (z >> 27)) * 10723151780598845931;
+    return z ^ (z >> 31);
+}
+
+function rotl(u64 x, u64 k): u64 {
+    return (x << k) | (x >> (64 - k));
+}
+
+Rng shared = null;
+
+// The module's generator, seeded from getrandom() the first time.
+function default_rng(): Rng {
+    if (shared == null) {
+        u64 seed = 0;
+        sys::syscall3(sys::GETRANDOM, (&seed) as i64, 8, 0);
+        shared = new Rng(seed);
+    }
+    return shared;
+}
+
+function seed(u64 s): void { default_rng()->reseed(s); }
+function range(int lo, int hi): int { return default_rng()->range(lo, hi); }
+function unit(): f64 { return default_rng()->unit(); }
+function chance(f64 p): bool { return default_rng()->chance(p); }
+
+// Shuffles a Vec in place (Fisher-Yates).
+function shuffle<T>(vec::Vec<T> v, Rng r): void {
+    for (int i = v->len() - 1; i > 0; i--) {
+        v->swap(i, r->range(0, i));
+    }
+}
+
+// A random element.
+function pick<T>(vec::Vec<T> v, Rng r): T { return v->get(r->range(0, v->len() - 1)); }

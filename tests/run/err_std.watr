@@ -1,0 +1,15 @@
+import "std/map";
+struct Point { int x; int y; }
+class NoLen { public function get(int i): int { return i; } }
+class BadLen { public function len(int extra): int { return extra; } public function get(int i): int { return i; } }
+function main(): int {
+    Point p = Point { x: 1, y: 2 };
+    u64 h = hash_of(p);
+    u64 h2 = hash_of(1, 2);
+    map::Map<Point, int> m = new map::Map<Point, int>();
+    m->set(p, 1);
+    foreach (new NoLen() as x) { echo x; }
+    foreach (new BadLen() as x) { echo x; }
+    vec::Vec<int> v;
+    return 0;
+}

@@ -1,0 +1,182 @@
+// Sorting and searching. Elements are compared with `<` (numbers, strings,
+// enums...), or by a Less<T> object for anything else. Sorting is stable:
+// equal elements keep their order (a merge sort, with insertion sort for
+// short runs).
+//
+//     sort::vec(scores);
+//     sort::vec_by(people, new ByAge());
+
+import "std/vec";
+
+// An ordering for sort::by and friends.
+interface Less<T> {
+    function less(T a, T b): bool;
+}
+
+// Short runs: insertion sort.
+function insertion<T>(T* xs, int lo, int hi): void {
+    for (int i = lo + 1; i < hi; i++) {
+        T x = xs[i];
+        int j = i;
+        while (j > lo && x < xs[j - 1]) {
+            xs[j] = xs[j - 1];
+            j--;
+        }
+        xs[j] = x;
+    }
+}
+
+function merge_rec<T>(T* xs, T* tmp, int lo, int hi): void {
+    if (hi - lo <= 16) {
+        insertion(xs, lo, hi);
+        return;
+    }
+    int mid = lo + (hi - lo) / 2;
+    merge_rec(xs, tmp, lo, mid);
+    merge_rec(xs, tmp, mid, hi);
+    if (!(xs[mid] < xs[mid - 1])) {
+        return;   // already in order
+    }
+    for (int i = lo; i < mid; i++) {
+        tmp[i] = xs[i];
+    }
+    int a = lo;
+    int b = mid;
+    int out = lo;
+    while (a < mid && b < hi) {
+        if (xs[b] < tmp[a]) {
+            xs[out] = xs[b];
+            b++;
+        } else {
+            xs[out] = tmp[a];
+            a++;
+        }
+        out++;
+    }
+    while (a < mid) {
+        xs[out] = tmp[a];
+        a++;
+        out++;
+    }
+}
+
+// Sorts xs[0..n) in place, smallest first.
+function slice<T>(T* xs, int n): void {
+    if (n < 2) {
+        return;
+    }
+    T* tmp = __rt_alloc(n as usize * sizeof(T)) as T*;
+    merge_rec(xs, tmp, 0, n);
+}
+
+// Sorts a Vec in place, smallest first.
+function vec<T>(vec::Vec<T> v): void {
+    slice(v->data(), v->len());
+}
+
+function insertion_by<T>(T* xs, int lo, int hi, Less<T> cmp): void {
+    for (int i = lo + 1; i < hi; i++) {
+        T x = xs[i];
+        int j = i;
+        while (j > lo && cmp->less(x, xs[j - 1])) {
+            xs[j] = xs[j - 1];
+            j--;
+        }
+        xs[j] = x;
+    }
+}
+
+function merge_rec_by<T>(T* xs, T* tmp, int lo, int hi, Less<T> cmp): void {
+    if (hi - lo <= 16) {
+        insertion_by(xs, lo, hi, cmp);
+        return;
+    }
+    int mid = lo + (hi - lo) / 2;
+    merge_rec_by(xs, tmp, lo, mid, cmp);
+    merge_rec_by(xs, tmp, mid, hi, cmp);
+    if (!cmp->less(xs[mid], xs[mid - 1])) {
+        return;
+    }
+    for (int i = lo; i < mid; i++) {
+        tmp[i] = xs[i];
+    }
+    int a = lo;
+    int b = mid;
+    int out = lo;
+    while (a < mid && b < hi) {
+        if (cmp->less(xs[b], tmp[a])) {
+            xs[out] = xs[b];
+            b++;
+        } else {
+            xs[out] = tmp[a];
+            a++;
+        }
+        out++;
+    }
+    while (a < mid) {
+        xs[out] = tmp[a];
+        a++;
+        out++;
+    }
+}
+
+// Sorts xs[0..n) in place by `cmp`.
+function slice_by<T>(T* xs, int n, Less<T> cmp): void {
+    if (n < 2) {
+        return;
+    }
+    T* tmp = __rt_alloc(n as usize * sizeof(T)) as T*;
+    merge_rec_by(xs, tmp, 0, n, cmp);
+}
+
+// Sorts a Vec in place by `cmp`.
+function vec_by<T>(vec::Vec<T> v, Less<T> cmp): void {
+    slice_by(v->data(), v->len(), cmp);
+}
+
+function is_sorted<T>(vec::Vec<T> v): bool {
+    for (int i = 1; i < v->len(); i++) {
+        if (v->get(i) < v->get(i - 1)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+// In a sorted Vec: an index holding x, or -1.
+function search<T>(vec::Vec<T> v, T x): int {
+    int lo = 0;
+    int hi = v->len();
+    while (lo < hi) {
+        int mid = lo + (hi - lo) / 2;
+        T m = v->get(mid);
+        if (m < x) {
+            lo = mid + 1;
+        } else if (x < m) {
+            hi = mid;
+        } else {
+            return mid;
+        }
+    }
+    return -1;
+}
+
+function min<T>(vec::Vec<T> v): T {
+    T best = v->get(0);
+    for (int i = 1; i < v->len(); i++) {
+        if (v->get(i) < best) {
+            best = v->get(i);
+        }
+    }
+    return best;
+}
+
+function max<T>(vec::Vec<T> v): T {
+    T best = v->get(0);
+    for (int i = 1; i < v->len(); i++) {
+        if (best < v->get(i)) {
+            best = v->get(i);
+        }
+    }
+    return best;
+}

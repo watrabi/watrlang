@@ -41,15 +41,15 @@ error[E0345]: module `geometry` has no function named `missing`
 9 |     int u = geometry::missing();
   |             ^^^^^^^^^^^^^^^^^ not found in `tests/run/mods/geometry.watr`
 
-error[E0345]: `str::is_space` is private
-  --> tests/run/err_modules.watr:10:16
-   |
-10 |     string v = str::is_space('x') ? "y" : "n";
-   |                ^^^^^^^^^^^^^ not visible outside `std/str.watr`
-  ::: std/str.watr:64:18
-   |
-64 | private function is_space(u8 c): bool {
-   |                  -------- declared `private` here
+error[E0345]: `str::matches_at` is private
+   --> tests/run/err_modules.watr:10:16
+    |
+ 10 |     string v = str::matches_at("x", 0, "x") ? "y" : "n";
+    |                ^^^^^^^^^^^^^^^ not visible outside `std/str.watr`
+   ::: std/str.watr:139:18
+    |
+139 | private function matches_at(string s, usize i, string needle): bool {
+    |                  ---------- declared `private` here
 
 error[E0345]: `geometry::Hidden` is private
   --> tests/run/err_modules.watr:11:5

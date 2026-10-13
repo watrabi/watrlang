@@ -1,0 +1,46 @@
+// std/fs, std/os, std/fmt, std/str extras.
+import "std/fs";
+import "std/os";
+import "std/fmt";
+import "std/str";
+import "std/vec";
+
+function main(): int {
+    string path = "build/tests/std_fs_test.txt";
+    fs::write(path, "line one\n") ?? false;
+    fs::append(path, "line two\n") ?? false;
+    string text = fs::read(path) ?? "?";
+    echo text, fs::size(path) ?? -1, " ", fs::exists(path), " ", str::lines(text), "\n";
+    fs::rename(path, path . ".2") ?? false;
+    echo fs::exists(path), " ", fs::exists(path . ".2"), "\n";
+    fs::remove(path . ".2") ?? false;
+    string!fs::IoError r = fs::read(path);
+    echo r->ok, " ", fs::describe(r->error), "\n";
+    echo fs::describe(fs::mkdir("/")->error), " ", fs::describe(fs::rmdir("/nonexistent/x")->error), "\n";
+    fs::mkdir("build/tests/std_fs_dir") ?? false;
+    echo fs::exists("build/tests/std_fs_dir"), " ", fs::rmdir("build/tests/std_fs_dir") ?? false, "\n";
+
+    vec::Vec<string> a = os::args();
+    echo a->len(), " ", os::argc(), " ", str::ends_with(a->get(0), "std_fs_os_fmt"), "\n";
+    echo os::has_env("PATH"), " [", os::getenv("WATR_SURELY_NOT_SET"), "] ", os::pid() > 0, "\n";
+
+    echo fmt::pad_left("7", 3, '0'), " ", fmt::pad_right("ab", 5, '.'), "|", fmt::center("hi", 6, '*'), "\n";
+    echo fmt::hex(255, 0), " ", fmt::hex(255, 4), " ", fmt::bin(10, 8), " ", fmt::oct(8, 0), " ", fmt::hex(0, 0), "\n";
+    echo fmt::fixed(3.14159, 2), " ", fmt::fixed(-2.5, 0), " ", fmt::fixed(0.001, 2), " ", fmt::fixed(-0.001, 2), " ", fmt::fixed(10.0, 3), "\n";
+    echo fmt::grouped(1234567), " ", fmt::grouped(-1000), " ", fmt::grouped(999), " ", fmt::grouped(0), "\n";
+    echo fmt::bytes(512), " ", fmt::bytes(1536), " ", fmt::bytes(3 * 1024 * 1024), "\n";
+    echo fmt::format("% + % = %, 100%% %", [1, 2.5, "three", true]), "\n";
+
+    vec::Vec<string> parts = str::split("a,b,,c", ",");
+    echo parts, " ", parts->len(), " ", str::join(parts, "|"), " ", str::split("abc", ""), "\n";
+    echo str::words("  the quick\tbrown \n fox "), "\n";
+    echo str::replace("a-b-c", "-", "+="), " ", str::replace("aaa", "aa", "b"), " ", str::count("banana", "an"), "\n";
+    echo str::last_index_of("banana", "an"), " ", str::last_index_of("banana", "x"), " ", str::reverse("hello"), "\n";
+    echo "[", str::trim_left("  x "), "][", str::trim_right("  x "), "]\n";
+    echo str::to_int("42") ?? -1, " ", str::to_int("-0x1F") ?? -1, " ", str::to_int("1_000") ?? -1, " ", str::to_int("12a") ?? -1, " ", str::to_int("") ?? -2, "\n";
+    echo str::to_float("3.25") ?? -1.0, " ", str::to_float("-1.5e3") ?? 0.0, " ", str::to_float("2E-2") ?? 0.0, " ", str::to_float(".") ?? -9.0, "\n";
+    echo "exiting\n";
+    os::exit(3);
+    echo "not reached\n";
+    return 0;
+}

@@ -1,0 +1,39 @@
+// std/map: Map<K, V>, keyed through hash_of.
+import "std/map";
+import "std/vec";
+class Key { public int id; public function __construct(int i) { this->id = i; } }
+function main(): int {
+    map::Map<string, int> ages = new map::Map<string, int>();
+    ages->set("ada", 36);
+    ages->set("alan", 41);
+    ages->set("grace", 85);
+    ages->set("ada", 37);
+    echo ages, " ", ages->len(), "\n";
+    echo ages->get("ada") ?? -1, " ", ages->get("nobody") ?? -1, " ", ages->has("alan"), "\n";
+    ages->remove("alan");
+    echo ages, " ", ages->has("alan"), " ", ages->get_or("alan", 0), "\n";
+    map::Map<int, int> sq = new map::Map<int, int>();
+    for (int i = 0; i < 10000; i++) { sq->set(i, i * i); }
+    for (int i = 0; i < 10000; i += 2) { sq->remove(i); }
+    int sum = 0;
+    foreach (sq->values() as v) { sum += v; }
+    echo sq->len(), " ", sum, " ", sq->get(9999) ?? 0, " ", sq->get(9998) ?? -1, "\n";
+    for (int i = 0; i < 100; i++) { sq->set(i, -i); }
+    echo sq->len(), " ", sq->keys()->slice(0, 3), "\n";
+    map::Map<Key, string> objs = new map::Map<Key, string>();
+    Key k1 = new Key(1);
+    objs->set(k1, "one");
+    objs->set(new Key(1), "other one");
+    echo objs->len(), " ", objs->get(k1) ?? "?", "\n";
+    map::Map<f64, bool> fl = new map::Map<f64, bool>();
+    fl->set(0.0, true);
+    echo fl->get(-0.0) ?? false, "\n";
+    hashes();
+    return 0;
+}
+
+enum Color { Red, Green }
+function hashes(): void {
+    echo hash_of(1) == hash_of(1), " ", hash_of(1) != hash_of(2), " ", hash_of("ab") == hash_of("a" . "b"), " ";
+    echo hash_of(Color::Red) != hash_of(Color::Green), " ", hash_of(1.5 as f32) == hash_of(1.5), " ", hash_of(true), "\n";
+}

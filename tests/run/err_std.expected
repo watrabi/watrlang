@@ -1,0 +1,67 @@
+error[E0383]: `hash_of` can't hash a value of type `Point`
+ --> tests/run/err_std.watr:7:21
+  |
+7 |     u64 h = hash_of(p);
+  |                     ^ not hashable
+  |
+  = note: it hashes numbers, bools, enums, strings, pointers, objects (by identity) and `mixed`
+  = help: combine the hashes of the fields, for example `hash_of(p->x) ^ hash_of(p->y) * 31`
+
+error[E0206]: `hash_of` takes 1 argument but 2 were supplied
+ --> tests/run/err_std.watr:8:14
+  |
+8 |     u64 h2 = hash_of(1, 2);
+  |              ^^^^^^^ expected 1 argument
+
+error[E0367]: can't loop over `NoLen`
+  --> tests/run/err_std.watr:11:14
+   |
+11 |     foreach (new NoLen() as x) { echo x; }
+   |              ^^^^^^^^^^^ this class isn't iterable
+   |
+   = note: foreach works on objects whose class has `len(): int` and `get(int i): T` methods
+
+error[E0367]: can't loop over `BadLen`
+  --> tests/run/err_std.watr:12:14
+   |
+ 4 | class BadLen { public function len(int extra): int { return extra; } public function get(int i): int { return i; } }
+   |                                --- `len` here takes arguments
+...
+12 |     foreach (new BadLen() as x) { echo x; }
+   |              ^^^^^^^^^^^^ this class isn't iterable
+   |
+   = note: foreach works on objects whose class has `len(): int` and `get(int i): T` methods
+
+error[E0344]: `vec` isn't a module imported here
+  --> tests/run/err_std.watr:13:5
+   |
+13 |     vec::Vec<int> v;
+   |     ^^^ unknown module
+   |
+   = help: import it first, like `import "std/vec";`
+
+error[E0383]: `hash_of` can't hash a value of type `Point`
+  --> std/map.watr:87:25
+   |
+87 |         u64 h = hash_of(key);
+   |                         ^^^ not hashable
+   |
+   = note: it hashes numbers, bools, enums, strings, pointers, objects (by identity) and `mixed`
+   = help: combine the hashes of the fields, for example `hash_of(key->x) ^ hash_of(key->y) * 31`
+   = note: in `Map<Point, int>`, used at tests/run/err_std.watr:9:5
+
+error[E0310]: can't compare `Point` with `Point`
+  --> std/map.watr:44:58
+   |
+44 |             if (this->hashes[e] == h && this->live[e] && this->keys_[e] == key) {
+   |                                                          ^^^^^^^^^^^^^^^^^^^^^
+   |                                                          -------------- `Point`
+   |                                                                            --- `Point`
+   |
+   = note: structs and arrays can't be compared with operators
+   = note: in `Map<Point, int>`, used at tests/run/err_std.watr:9:5
+
+error: could not compile `tests/run/err_std.watr` due to 7 previous errors
+Some errors have detailed explanations: E0383, E0206, E0367, E0344, E0310.
+For more information about an error, try `watrc --explain E0383`.
+compile failed: 1

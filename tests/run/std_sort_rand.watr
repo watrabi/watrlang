@@ -1,0 +1,53 @@
+// std/sort, std/rand, std/time.
+import "std/sort";
+import "std/vec";
+import "std/rand";
+import "std/time";
+
+class Person {
+    public string name;
+    public int age;
+    public function __construct(string n, int a) { this->name = n; this->age = a; }
+    public function __toString(): string { return "{this->name}({this->age})"; }
+}
+
+class ByAge implements sort::Less<Person> {
+    public function less(Person a, Person b): bool { return a->age < b->age; }
+}
+
+function main(): int {
+    rand::Rng r = new rand::Rng(42);
+    echo r->next(), " ", r->range(1, 6), " ", r->range(-10, 10), " ", r->unit(), "\n";
+    vec::Vec<int> v = new vec::Vec<int>();
+    for (int i = 0; i < 1000; i++) { v->push(r->range(-500, 500)); }
+    sort::vec(v);
+    echo sort::is_sorted(v), " ", v->len(), " ", sort::min(v), " ", sort::max(v), "\n";
+    echo sort::search(v, v->get(123)) >= 0, " ", sort::search(v, 1000), "\n";
+    vec::Vec<string> w = new vec::Vec<string>();
+    w->push("pear");
+    w->push("apple");
+    w->push("fig");
+    w->push("banana");
+    sort::vec(w);
+    echo w, "\n";
+    vec::Vec<Person> ps = new vec::Vec<Person>();
+    ps->push(new Person("ann", 30));
+    ps->push(new Person("bob", 25));
+    ps->push(new Person("cy", 30));
+    ps->push(new Person("di", 20));
+    sort::vec_by(ps, new ByAge());
+    echo ps, "\n";
+    rand::shuffle(w, r);
+    echo w, " ", rand::pick(w, r), "\n";
+    int a = rand::range(1, 6);
+    echo a >= 1 && a <= 6, "\n";
+    i64 t0 = time::now_ns();
+    time::sleep_ms(20);
+    f64 el = time::elapsed_ms(t0);
+    echo el >= 19.0 && el < 5000.0, " ", time::unix() > 1700000000, "\n";
+    echo time::format(time::utc(0)), " | ", time::format(time::utc(1760364309)), " | ", time::format(time::utc(951782400)), " | ", time::format(time::utc(-1)), "\n";
+    rand::Rng r2 = new rand::Rng(7);
+    rand::Rng r3 = new rand::Rng(7);
+    echo r2->next() == r3->next(), "\n";
+    return 0;
+}

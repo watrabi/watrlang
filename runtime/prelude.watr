@@ -10,6 +10,7 @@ extern function __rt_out(const u8* p, usize n): void;      // write to stdout
 extern function __rt_mmap(usize n): u8*;                   // zeroed pages
 extern function __rt_out_of_memory(): void;                // panics
 extern function __rt_panic(string msg): void;              // prints msg, exits with 101
+extern function __rt_exit(int code): void;                // ends the process (flushing stdio if linked)
 extern function __rt_fmt_f64(f64 x, u8* buf): usize;       // "%.14g"; links libc
 extern function __rt_zero(u8* p, usize n): void;           // rep stosb
 extern function __rt_stack_pointer(): u64;                 // the caller's rsp
@@ -64,6 +65,8 @@ u64* __gc_stack;               // mark stack
 usize __gc_stack_len;
 usize __gc_stack_cap;
 u64 __rt_stack_base;           // set by the entry code before main runs
+u64 __rt_argc;                 // the command line, also set by the entry code (std/os)
+u8** __rt_argv;
 bool __rt_gc_stress;           // collect at every allocation (watrc reads WATR_GC_STRESS)
 
 function __gc_bit(__RtChunk* c, u8* h): u64* {
@@ -731,19 +734,34 @@ function __rt_array_null_write(): void {
     __rt_panic("panic: writing to a null array (initialize it first, for example with [])\n");
 }
 
-function __rt_key_hash(mixed key): u64 {
-    if (key->tag == __M_STRING) {
-        string s = *(key->bits as string*);
-        u64 h = 14695981039346656037;
-        for (usize i = 0; i < s->len; i++) {
-            h = (h ^ s->ptr[i] as u64) * 1099511628211;
-        }
-        return h;
+// Hashes, also behind the `hash_of(x)` builtin.
+function __rt_str_hash(string s): u64 {   // FNV-1a
+    u64 h = 14695981039346656037;
+    for (usize i = 0; i < s->len; i++) {
+        h = (h ^ s->ptr[i] as u64) * 1099511628211;
     }
-    u64 x = key->bits + 11400714819323198485;   // splitmix64 finalizer
+    return h;
+}
+
+function __rt_int_hash(u64 x): u64 {   // splitmix64's finalizer
+    x = x + 11400714819323198485;
     x = (x ^ (x >> 30)) * 13787848793156543929;
     x = (x ^ (x >> 27)) * 10723151780598845931;
     return x ^ (x >> 31);
+}
+
+function __rt_f64_hash(f64 x): u64 {
+    if (x == 0.0) {   // -0.0 == 0.0, so they must hash alike
+        return __rt_int_hash(0);
+    }
+    return __rt_int_hash(*((&x) as u64*));
+}
+
+function __rt_key_hash(mixed key): u64 {
+    if (key->tag == __M_STRING) {
+        return __rt_str_hash(*(key->bits as string*));
+    }
+    return __rt_int_hash(key->bits);
 }
 
 function __rt_key_check(mixed key): mixed {

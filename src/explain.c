@@ -1185,6 +1185,17 @@ static const Explanation explanations[] = {
      "are compiled once per set of types they're used with, and functions\n"
      "written in C can't be. Declare one extern function per type instead."},
 
+    {"E0383",
+     "`hash_of(x)` was given a value it can't hash. It hashes numbers,\n"
+     "bools, enums, strings (by content), pointers, objects (by identity)\n"
+     "and `mixed` values. Structs and fixed arrays have no hash; combine the\n"
+     "hashes of their parts instead:\n"
+     "\n"
+     "    u64 h = hash_of(p->x) ^ (hash_of(p->y) * 31);\n"
+     "\n"
+     "std/map's Map<K, V> hashes its keys with `hash_of`, so its key type has\n"
+     "to be one of the hashable ones."},
+
     {"E0900",
      "This feature is part of watrlang's design but isn't implemented yet.\n"
      "The message names the milestone that will add it; docs/DESIGN.md has\n"

@@ -1,0 +1,37 @@
+// std/vec: Vec<T>, and foreach over objects with len() and get(i).
+import "std/vec";
+function main(): int {
+    vec::Vec<int> v = new vec::Vec<int>();
+    for (int i = 0; i < 20; i++) { v->push(i * i); }
+    echo v->len(), " ", v->get(5), " ", v->last(), "\n";
+    v->insert(0, -1);
+    echo v->remove(1), " ", v->first(), "\n";
+    v->reverse();
+    echo v->slice(0, 3), "\n";
+    int total = 0;
+    foreach (v as x) { total += x; }
+    echo total, " ", v->index_of(49), " ", v->contains(50), "\n";
+    foreach (v->slice(0, 2) as i => x) { echo i, ":", x, " "; }
+    echo "\n";
+    vec::Vec<string> words = new vec::Vec<string>();
+    for (int i = 0; i < 1000; i++) { words->push("w{i}"); }
+    echo words->len(), " ", words->get(999), " ", words->slice(10, 13)->join("-"), "\n";
+    int[3] raw = [7, 8, 9];
+    echo vec::of(&raw[0], 3), "\n";
+    more();
+    return 0;
+}
+
+class Countdown {
+    private int from;
+    public function __construct(int f) { this->from = f; }
+    public function len(): int { return this->from; }
+    public function get(int i): string { return "{this->from - i}"; }
+}
+
+function more(): void {
+    foreach (new Countdown(3) as i => s) { echo i, "=", s, " "; }
+    echo "\n";
+    vec::Vec<int> v = new vec::Vec<int>();
+    v->get(0);
+}

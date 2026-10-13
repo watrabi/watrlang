@@ -1,0 +1,187 @@
+// Vec<T>: a growable array. Elements live in one block of garbage-collected
+// memory that doubles as needed, so push is O(1) on average and get/set
+// are O(1). Indexes are bounds-checked. Loop over one with foreach:
+//
+//     Vec<int> v = new Vec<int>();
+//     v->push(1);
+//     foreach (v as x) { echo x; }
+
+class Vec<T> {
+    private T* items;
+    private int n;
+    private int cap;
+
+    public function __construct() { }
+
+    // Room for `count` elements without growing again.
+    public function reserve(int count): void {
+        if (count <= this->cap) {
+            return;
+        }
+        T* bigger = __rt_alloc(count as usize * sizeof(T)) as T*;
+        for (int i = 0; i < this->n; i++) {
+            bigger[i] = this->items[i];
+        }
+        this->items = bigger;
+        this->cap = count;
+    }
+
+    private function check(int i): void {
+        if (i < 0 || i >= this->n) {
+            __rt_panic("panic: Vec index {i} out of bounds (length {this->n})\n");
+        }
+    }
+
+    public function len(): int { return this->n; }
+    public function is_empty(): bool { return this->n == 0; }
+
+    public function get(int i): T {
+        this->check(i);
+        return this->items[i];
+    }
+
+    public function set(int i, T v): void {
+        this->check(i);
+        this->items[i] = v;
+    }
+
+    public function push(T v): void {
+        if (this->n == this->cap) {
+            this->reserve(this->cap == 0 ? 8 : this->cap * 2);
+        }
+        this->items[this->n] = v;
+        this->n++;
+    }
+
+    public function pop(): T {
+        if (this->n == 0) {
+            __rt_panic("panic: pop from an empty Vec\n");
+        }
+        this->n--;
+        T v = this->items[this->n];
+        T zero;
+        this->items[this->n] = zero;   // so the GC can free what it pointed to
+        return v;
+    }
+
+    public function first(): T { return this->get(0); }
+    public function last(): T { return this->get(this->n - 1); }
+
+    // Inserts v before index i (i == len() appends).
+    public function insert(int i, T v): void {
+        if (i != this->n) {
+            this->check(i);
+        }
+        this->push(v);
+        for (int j = this->n - 1; j > i; j--) {
+            this->items[j] = this->items[j - 1];
+        }
+        this->items[i] = v;
+    }
+
+    // Removes and returns the element at i, shifting the rest down.
+    public function remove(int i): T {
+        this->check(i);
+        T v = this->items[i];
+        for (int j = i; j + 1 < this->n; j++) {
+            this->items[j] = this->items[j + 1];
+        }
+        this->pop();
+        return v;
+    }
+
+    public function swap(int i, int j): void {
+        this->check(i);
+        this->check(j);
+        T t = this->items[i];
+        this->items[i] = this->items[j];
+        this->items[j] = t;
+    }
+
+    public function clear(): void { this->truncate(0); }
+
+    // Keeps the first `count` elements.
+    public function truncate(int count): void {
+        T zero;
+        while (this->n > count && this->n > 0) {
+            this->n--;
+            this->items[this->n] = zero;
+        }
+    }
+
+    // Where v first appears (compared with ==), or -1.
+    public function index_of(T v): int {
+        for (int i = 0; i < this->n; i++) {
+            if (this->items[i] == v) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    public function contains(T v): bool { return this->index_of(v) >= 0; }
+
+    public function reverse(): void {
+        int i = 0;
+        int j = this->n - 1;
+        while (i < j) {
+            T t = this->items[i];
+            this->items[i] = this->items[j];
+            this->items[j] = t;
+            i++;
+            j--;
+        }
+    }
+
+    // A new Vec with elements [start, end).
+    public function slice(int start, int end): Vec<T> {
+        if (start < 0 || end > this->n || start > end) {
+            __rt_panic("panic: Vec slice [{start}, {end}) out of bounds (length {this->n})\n");
+        }
+        Vec<T> out = new Vec<T>();
+        out->reserve(end - start);
+        for (int i = start; i < end; i++) {
+            out->push(this->items[i]);
+        }
+        return out;
+    }
+
+    public function copy(): Vec<T> { return this->slice(0, this->n); }
+
+    // Appends every element of `other`.
+    public function extend(Vec<T> other): void {
+        int count = other->len();
+        this->reserve(this->n + count);
+        for (int i = 0; i < count; i++) {
+            this->push(other->get(i));
+        }
+    }
+
+    // The elements as text, joined by `sep`.
+    public function join(string sep): string {
+        string out = "";
+        for (int i = 0; i < this->n; i++) {
+            if (i > 0) {
+                out .= sep;
+            }
+            out .= "{this->items[i]}";
+        }
+        return out;
+    }
+
+    public function __toString(): string { return "[" . this->join(", ") . "]"; }
+
+    // The storage, for passing to code that takes a pointer. Valid until the
+    // Vec grows.
+    public function data(): T* { return this->items; }
+}
+
+// A Vec holding the given fixed array's elements.
+function of<T>(T* items, int count): Vec<T> {
+    Vec<T> v = new Vec<T>();
+    v->reserve(count);
+    for (int i = 0; i < count; i++) {
+        v->push(items[i]);
+    }
+    return v;
+}

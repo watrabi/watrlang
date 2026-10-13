@@ -1682,6 +1682,17 @@ static void emit_gc_roots(Gen *g, const Program *prog) {
 static void emit_runtime_primitive(Gen *g, const char *name) {
     FILE *out = g->out;
     fprintf(out, "\n    .type w.%s, @function\nw.%s:\n", name, name);
+    if (strcmp(name, "__rt_exit") == 0) {
+        if (g->libc)   /* exit() flushes stdio, which __rt_out writes through */
+            fputs("    and rsp, -16\n"
+                  "    call exit\n",
+                  out);
+        else
+            fputs("    mov eax, 231\n"   /* exit_group */
+                  "    syscall\n",
+                  out);
+        return;
+    }
     if (strcmp(name, "__rt_out") == 0) {
         if (g->freestanding) {   /* the program's own output function */
             fputs("    jmp watr_write\n", out);
@@ -1838,6 +1849,8 @@ void codegen_x64(const Module *m, const Program *prog, FILE *out) {
               "    push rbp\n"
               "    mov rbp, rsp\n"
               "    mov qword ptr [rip + w.__rt_stack_base], rsp\n"
+              "    mov qword ptr [rip + w.__rt_argc], rdi\n"
+              "    mov qword ptr [rip + w.__rt_argv], rsi\n"
               "    call w.main\n"
               "    pop rbp\n"
               "    ret\n",
@@ -1848,6 +1861,10 @@ void codegen_x64(const Module *m, const Program *prog, FILE *out) {
               "_start:\n"
               "    xor ebp, ebp\n"
               "    mov qword ptr [rip + w.__rt_stack_base], rsp\n"
+              "    mov rax, qword ptr [rsp]\n"          /* argc, then argv[0..argc], NULL, envp */
+              "    mov qword ptr [rip + w.__rt_argc], rax\n"
+              "    lea rax, [rsp + 8]\n"
+              "    mov qword ptr [rip + w.__rt_argv], rax\n"
               "    call w.main\n"
               "    mov edi, eax\n"
               "    mov eax, 60\n"
