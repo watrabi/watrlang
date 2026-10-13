@@ -8,11 +8,12 @@
 static Arena types_arena;
 static PtrVec derived;   /* interned pointer and array types */
 
-static Type builtin_storage[16];
+static Type builtin_storage[17];
 Type *ty_error, *ty_void, *ty_bool, *ty_null;
 Type *ty_int, *ty_i8, *ty_i16, *ty_i32, *ty_i64;
 Type *ty_u8, *ty_u16, *ty_u32, *ty_u64, *ty_usize;
 Type *ty_float, *ty_f32, *ty_f64;
+Type *ty_string;
 
 static Type *mk(int i, TypeKind kind, const char *name, uint32_t size, bool is_signed) {
     Type *t = &builtin_storage[i];
@@ -42,6 +43,8 @@ void types_init(void) {
     ty_usize = mk(13, TY_INT, "usize", 8, false);
     ty_float = mk(14, TY_FLOAT, "float", 8, true);
     ty_f32   = mk(15, TY_FLOAT, "f32", 4, true);
+    ty_string = mk(16, TY_STRING, "string", 16, false);
+    ty_string->align = 8;
     ty_f64   = ty_float;  /* replaced below so `f64` keeps its own name */
     static Type f64_storage;
     f64_storage = *ty_float;
@@ -73,7 +76,8 @@ Type *type_builtin(TokenKind kw) {
     case TOK_KW_USIZE:   return ty_usize;
     case TOK_KW_F32:     return ty_f32;
     case TOK_KW_F64:     return ty_f64;
-    default:             return NULL;   /* string, array: later milestones */
+    case TOK_KW_STRING_T: return ty_string;
+    default:             return NULL;   /* array: milestone 12 */
     }
 }
 

@@ -1,0 +1,3 @@
+before
+panic at tests/run/string_bounds.watr:5:14: string index out of bounds
+exit: 101

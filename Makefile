@@ -1,11 +1,12 @@
 CC      ?= cc
 CFLAGS  ?= -O2 -g
-CFLAGS  += -std=c99 -Wall -Wextra -Wpedantic -Wshadow -D_POSIX_C_SOURCE=200809L
+# Always applied, even when CFLAGS is set on the command line.
+WATR_CFLAGS := -std=c99 -Wall -Wextra -Wpedantic -Wshadow -D_POSIX_C_SOURCE=200809L -Ibuild
 LDFLAGS ?=
 
 # make SAN=1 builds with AddressSanitizer + UBSan
 ifeq ($(SAN),1)
-CFLAGS  += -fsanitize=address,undefined -fno-omit-frame-pointer
+WATR_CFLAGS += -fsanitize=address,undefined -fno-omit-frame-pointer
 LDFLAGS += -fsanitize=address,undefined
 endif
 
@@ -22,7 +23,12 @@ $(BUILD)/watrc: $(OBJS)
 	$(CC) $(LDFLAGS) -o $@ $^
 
 $(BUILD)/%.o: src/%.c | $(BUILD)
-	$(CC) $(CFLAGS) -MMD -MP -c -o $@ $<
+	$(CC) $(WATR_CFLAGS) $(CFLAGS) -MMD -MP -c -o $@ $<
+
+# The runtime prelude (written in watrlang) is embedded as a byte array.
+$(BUILD)/prelude.o: $(BUILD)/prelude.inc
+$(BUILD)/prelude.inc: runtime/prelude.watr | $(BUILD)
+	od -An -v -tx1 $< | sed -e 's/\([0-9a-f][0-9a-f]\)/0x\1,/g' > $@
 
 $(BUILD):
 	mkdir -p $@

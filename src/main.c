@@ -5,6 +5,7 @@
 #include "diag.h"
 #include "lexer.h"
 #include "parser.h"
+#include "prelude.h"
 #include "codegen.h"
 #include "sema.h"
 #include "types.h"
@@ -164,7 +165,21 @@ int main(int argc, char **argv) {
         if (dump_ast) ast_print_module(stdout, m);
 
         Program prog = {0};
-        bool ok = !dump_ast && diag_error_count() == 0 && sema_check(&arena, m, &prog);
+        bool ok = !dump_ast && diag_error_count() == 0;
+        if (ok) {
+            /* The runtime prelude is compiled along with every program. */
+            SrcFile *rt = ARENA_NEW(&arena, SrcFile);
+            rt->path = WATR_PRELUDE_PATH;
+            rt->text = watr_prelude_source;
+            rt->len = strlen(watr_prelude_source);
+            Module *rtm = parse_file(&arena, rt);
+            Decl **all = ARENA_ARRAY(&arena, Decl *, m->n + rtm->n);
+            memcpy(all, m->decls, m->n * sizeof *all);
+            memcpy(all + m->n, rtm->decls, rtm->n * sizeof *all);
+            m->decls = all;
+            m->n += rtm->n;
+            ok = diag_error_count() == 0 && sema_check(&arena, m, &prog);
+        }
         if (ok) {
             char *asm_text = NULL;
             size_t asm_len = 0;

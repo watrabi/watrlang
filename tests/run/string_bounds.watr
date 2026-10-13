@@ -1,0 +1,6 @@
+function main(): int {
+    string s = "abc";
+    usize i = 3;
+    echo "before\n";
+    return s[i] as int;   // out of bounds: panics, exit status 101
+}

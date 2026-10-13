@@ -13,6 +13,12 @@
 
 typedef enum { SYM_LOCAL, SYM_PARAM, SYM_GLOBAL, SYM_FUNC } SymKind;
 
+/* A pointer to string literal data at `offset` in a global's initial bytes. */
+typedef struct StrReloc {
+    uint32_t offset;
+    StrBuf str;
+} StrReloc;
+
 typedef struct Symbol {
     SymKind kind;
     const char *name;
@@ -30,8 +36,16 @@ typedef struct Symbol {
     Type **param_types;
     size_t nparams;
 
+    /* functions: the call graph, for dropping code nothing uses */
+    struct Symbol **callees;
+    size_t ncallees, callees_cap;
+    bool reachable;
+    bool is_runtime;            /* from the runtime prelude */
+
     /* globals */
     unsigned char *init;        /* initial bytes (type->size of them); NULL = all zero */
+    struct StrReloc *relocs;    /* string literal addresses inside `init` */
+    size_t nrelocs;
     bool has_value;             /* const scalar global whose value folds into constants */
     uint64_t value_bits;        /* int/bool/pointer bits, or the float's bits */
 

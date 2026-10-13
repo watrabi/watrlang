@@ -1,0 +1,7 @@
+Ada is 36
+Hello, blue!
+WATRLANG
+colors: red, green, blue (16 bytes)
+via printf: red, green, blue, 16
+equal: true, ordered: true, true, true
+exit: 0

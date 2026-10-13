@@ -256,13 +256,27 @@ function outb(u16 port, u8 val): void {
     of memory panics. `free(p)` releases it.
   - Until the `string` type exists, a string literal can be passed where
     a `u8*` is expected; it's stored NUL-terminated in read-only memory.
-- **Strings:** `string` is an immutable `{u8* ptr, usize len}` slice. Literals
-  go in `.rodata`, so strings work even when freestanding. Only `.` and
-  interpolation allocate, which means they need the runtime/GC (or a
-  user-supplied allocator).
-- **`echo`** compiles to a call to `__wl_write(u8*, usize)`. The hosted
-  runtime implements it with the `write` syscall. A kernel provides its own
-  (VGA, serial...).
+- **Strings (milestone 7):** `string` is an immutable `{const u8* ptr;
+  usize len}` value (16 bytes, passed in two registers like the C struct).
+  Literals live in read-only memory and are NUL-terminated, as are strings
+  built at run time, so `s->ptr` can always go to C. Operations:
+  `len(s)`, `s[i]` (a bounds-checked `u8`), `s->ptr`, `s->len`, `.` and
+  `.=` (numbers, bools and pointers convert to text automatically),
+  `"{interpolation}"`, and `==`/`<`/... comparing bytes.
+  `string { ptr: p, len: n }` wraps existing bytes without copying.
+  Strings built at run time come from a bump allocator and live until the
+  program exits; the GC (milestone 11) will reclaim them.
+- **`echo`** prints strings, numbers (floats like C's `%.14g`), bools
+  (`true`/`false`) and pointers (hex, or `null`). In a static binary it
+  writes straight to fd 1; when libc is linked it goes through stdio, so it
+  interleaves correctly with `printf`. A kernel will supply its own output.
+- **The runtime is written in watrlang** (`runtime/prelude.watr`), compiled
+  into every program; only what a program uses ends up in its binary.
+  The compiler provides three primitives in assembly: write to stdout,
+  mmap, and float formatting (which uses libc's snprintf, so programs that
+  print floats link libc).
+- **Dead code:** only functions reachable from `main` or an `export` are
+  compiled. Unused functions get warning W0004.
 - **`->` vs `.`:** `->` is *always* member access, auto-dereferencing
   pointers. `.` is *only* concatenation. They never conflict.
 - **Pointer declarations without a sigil:** `Foo* x;` could also parse as
@@ -349,8 +363,8 @@ a code is used without an explanation. Unused-variable and unreachable
 warnings are suppressed in functions that already have errors, where
 they'd mostly be noise.
 
-**The runtime is written in C** at first and linked in through our own FFI.
-Later it can be rewritten in watrlang itself.
+**The runtime** is a watrlang prelude (see the strings rules above) plus a
+few assembly primitives emitted by codegen.
 
 ## 5. Milestones
 

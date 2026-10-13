@@ -799,6 +799,10 @@ static Expr *parse_primary(Parser *p) {
         return e;
     }
 
+    case TOK_KW_STRING_T:
+        /* string { ptr: p, len: n } builds a string from raw parts. */
+        if (peek_at(p, 1)->kind == TOK_LBRACE) return parse_struct_lit(p);
+        /* fall through */
     default:
         if (is_builtin_type(t->kind)) {
             Diag *d = perr_tok(p, "E0105", t, "expected a value, found the type `%s`", token_kind_spelling(t->kind));

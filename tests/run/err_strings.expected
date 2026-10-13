@@ -1,0 +1,60 @@
+error[E0340]: strings are immutable
+ --> tests/run/err_strings.watr:7:5
+  |
+7 |     s[0] = 'b';
+  |     ^^^^ can't assign to part of a string
+  |
+  = help: build a new string instead, for example with `.` or "{interpolation}"
+
+error[E0340]: strings are immutable
+ --> tests/run/err_strings.watr:8:5
+  |
+8 |     s->len = 1;
+  |     ^^^^^^ can't assign to part of a string
+  |
+  = help: build a new string instead, for example with `.` or "{interpolation}"
+
+error[E0338]: a value of type `V` can't be printed with `echo`
+  --> tests/run/err_strings.watr:10:10
+   |
+10 |     echo v, "\n";
+   |          ^ no text form
+   |
+   = note: strings, numbers, bools and pointers can be printed and joined with `.`
+   = help: print the fields you want instead, like `"{v->x}, {v->y}"`
+
+error[E0338]: a value of type `V` can't be joined with `.`
+  --> tests/run/err_strings.watr:11:25
+   |
+11 |     string t = "v = " . v;
+   |                         ^ no text form
+   |
+   = note: strings, numbers, bools and pointers can be printed and joined with `.`
+   = help: print the fields you want instead, like `"{v->x}, {v->y}"`
+
+error[E0310]: `.=` needs a string, found `int`
+  --> tests/run/err_strings.watr:13:5
+   |
+13 |     n .= "x";
+   |     ^ not a string
+
+error[E0339]: the target of `.=` must be a variable or field
+  --> tests/run/err_strings.watr:14:5
+   |
+14 |     make() .= "y";
+   |     ^^^^^^ this would be evaluated twice
+   |
+   = help: store it in a variable first
+
+error[E0309]: mismatched types: expected `u8*`, found `string`
+  --> tests/run/err_strings.watr:15:13
+   |
+15 |     u8* p = s;
+   |     ---     ^ expected `u8*`, found `string`
+   |     |
+   |     expected because of this type
+
+error: could not compile `tests/run/err_strings.watr` due to 7 previous errors
+Some errors have detailed explanations: E0340, E0338, E0310, E0339, E0309.
+For more information about an error, try `watrc --explain E0340`.
+compile failed: 1

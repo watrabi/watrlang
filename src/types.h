@@ -24,6 +24,7 @@ typedef enum {
     TY_PTR,
     TY_ARRAY,
     TY_STRUCT,
+    TY_STRING,   /* immutable {const u8* ptr; usize len}, 16 bytes */
 } TypeKind;
 
 typedef struct Type Type;
@@ -58,10 +59,11 @@ extern Type *ty_error, *ty_void, *ty_bool, *ty_null;
 extern Type *ty_int, *ty_i8, *ty_i16, *ty_i32, *ty_i64;
 extern Type *ty_u8, *ty_u16, *ty_u32, *ty_u64, *ty_usize;
 extern Type *ty_float, *ty_f32, *ty_f64;
+extern Type *ty_string;
 
 void  types_init(void);
 void  types_free(void);
-Type *type_builtin(TokenKind keyword);   /* NULL for `string`/`array` (not yet supported) */
+Type *type_builtin(TokenKind keyword);   /* NULL for `array` (not yet supported) */
 Type *type_ptr(Type *base, bool base_const, bool base_volatile);
 Type *type_array(Type *elem, uint64_t len);
 Type *type_new_struct(const char *name, const struct Decl *decl);
@@ -74,6 +76,8 @@ static inline bool type_is_float(const Type *t)   { return t->kind == TY_FLOAT; 
 static inline bool type_is_numeric(const Type *t) { return t->kind == TY_INT || t->kind == TY_FLOAT; }
 static inline bool type_is_ptr(const Type *t)     { return t->kind == TY_PTR; }
 static inline bool type_is_aggregate(const Type *t) { return t->kind == TY_ARRAY || t->kind == TY_STRUCT; }
+/* Handled by address in codegen: structs, arrays and strings. */
+static inline bool type_in_memory(const Type *t) { return type_is_aggregate(t) || t->kind == TY_STRING; }
 /* Lives in a general-purpose register: ints, bools, pointers, null. */
 static inline bool type_in_gpr(const Type *t) {
     return t->kind == TY_INT || t->kind == TY_BOOL || t->kind == TY_PTR || t->kind == TY_NULL;

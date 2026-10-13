@@ -4,17 +4,19 @@ A compiled systems language with PHP-flavored syntax, written in plain C.
 It's low-level enough to write an operating system in.
 
 ```php
-extern function printf(const u8* fmt, ...): i32;
+struct Person {
+    string name;
+    int age;
+}
 
-struct Vec2 { f64 x; f64 y; }
-
-function length2(Vec2 v): f64 {
-    return v->x * v->x + v->y * v->y;
+function describe(Person p): string {
+    return p->name . " is " . p->age;
 }
 
 function main(): int {
-    Vec2 v = Vec2 { x: 3.0, y: 4.0 };
-    printf("length squared: %.1f\n", length2(v));
+    Person ada = Person { name: "Ada", age: 36 };
+    echo describe(ada), "\n";
+    echo "Hello, {ada->name}! In ten years: {ada->age + 10}\n";
     return 0;
 }
 ```
@@ -32,8 +34,9 @@ The full plan is in [docs/DESIGN.md](docs/DESIGN.md).
 | 4. Variables, if/while/for, parameters, globals | done |
 | 5. Type system: sized ints, bool, floats, pointers, structs, arrays | done |
 | 6. C interop: `extern`/`export`, libc, structs by value, `alloc`/`free` | done |
-| 7. Strings and `echo` | next |
-| 8+. Modules, errors, classes, GC, ... | planned |
+| 7. Strings, `echo`, interpolation; runtime written in watrlang | done |
+| 8. Modules (`import`) | next |
+| 9+. defer/errors, classes, GC, ... | planned |
 
 ## Error messages
 
@@ -82,8 +85,8 @@ holding the output, error messages and exit code.
 Two differential testers compile random code and check every result
 against a Python model of watrlang:
 
-- `tests/expr_fuzz.py`: expressions over every integer type, bool, f32
-  and f64, with casts between them
+- `tests/expr_fuzz.py`: expressions over every integer type, bool, f32,
+  f64 and strings, with casts, concatenation and interpolation
 - `tests/prog_fuzz.py`: whole programs with variables, if/else, loops,
   break/continue and calls with up to 8 arguments
 - `tests/abi_fuzz.py`: random structs passed and returned by value

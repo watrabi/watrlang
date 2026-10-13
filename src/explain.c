@@ -740,6 +740,31 @@ static const Explanation explanations[] = {
      "with libc it becomes C's main, and without it, it's called from the\n"
      "program's own startup code."},
 
+    {"E0338",
+     "A value with no text form was printed, interpolated or joined with `.`.\n"
+     "\n"
+     "Strings, integers, floats, bools and pointers can be turned into text.\n"
+     "Structs and arrays can't; print their fields instead:\n"
+     "\n"
+     "    echo \"{v->x}, {v->y}\\n\";"},
+
+    {"E0339",
+     "The target of `.=` isn't a plain variable or field.\n"
+     "\n"
+     "`s .= x` means `s = s . x`, so the target is evaluated twice. To keep\n"
+     "that from running a function call or ++ twice, it has to be a\n"
+     "variable, a field, or an element with a simple index."},
+
+    {"E0340",
+     "Part of a string was assigned to.\n"
+     "\n"
+     "    string s = \"cat\";\n"
+     "    s[0] = 'b';         // error\n"
+     "    s = \"b\" . \"at\";     // ok: a new string\n"
+     "\n"
+     "Strings are immutable, so they can be shared freely. For a mutable\n"
+     "buffer, use a u8 array or alloc(u8, n)."},
+
     {"E0900",
      "This feature is part of watrlang's design but isn't implemented yet.\n"
      "The message names the milestone that will add it; docs/DESIGN.md has\n"
@@ -753,6 +778,12 @@ static const Explanation explanations[] = {
      "Remove it, or if it's intentional (for example a parameter required by\n"
      "a signature), start its name with an underscore: `_unused`. Variables\n"
      "that are only ever assigned to also count as unused."},
+
+    {"W0004",
+     "A function is never called (directly or indirectly) from main or an\n"
+     "exported function, so it isn't compiled into the program.\n"
+     "\n"
+     "Remove it, or start its name with an underscore to keep it quietly."},
 
     {"W0002",
      "A statement can never run because it comes after a return, break or\n"

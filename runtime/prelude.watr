@@ -1,0 +1,186 @@
+// The watrlang runtime. It's compiled into every program, and only the
+// functions a program actually uses end up in its binary.
+//
+// Names start with __rt_ so they can't clash with yours. The compiler
+// rewrites `echo`, string interpolation, `.` and string comparisons into
+// calls to these functions.
+
+// Provided by the compiler as small assembly routines.
+extern function __rt_out(const u8* p, usize n): void;      // write to stdout
+extern function __rt_mmap(usize n): u8*;                   // zeroed pages
+extern function __rt_out_of_memory(): void;                // panics
+extern function __rt_fmt_f64(f64 x, u8* buf): usize;       // "%.14g"; links libc
+
+// ---- memory ------------------------------------------------------------
+// A bump allocator over 1 MiB chunks. Nothing is freed yet: strings built
+// at run time live until the program exits (the GC arrives in milestone 11).
+
+u8* __rt_heap;
+usize __rt_heap_left;
+
+function __rt_alloc(usize n): u8* {
+    n = (n + 15) & ~15;
+    if (n > __rt_heap_left) {
+        usize chunk = 1048576;
+        if (n > chunk) {
+            chunk = n;
+        }
+        u8* fresh = __rt_mmap(chunk);
+        if (fresh as u64 > 18446744073709547520) {   // mmap returned -errno
+            __rt_out_of_memory();
+        }
+        __rt_heap = fresh;
+        __rt_heap_left = chunk;
+    }
+    u8* p = __rt_heap;
+    __rt_heap += n;
+    __rt_heap_left -= n;
+    return p;
+}
+
+function __rt_copy(u8* dst, const u8* src, usize n): void {
+    for (usize i = 0; i < n; i++) {
+        dst[i] = src[i];
+    }
+}
+
+// Copies bytes into a new NUL-terminated string, so `s->ptr` can always be
+// passed to C.
+function __rt_new_string(const u8* src, usize n): string {
+    u8* p = __rt_alloc(n + 1);
+    __rt_copy(p, src, n);
+    return string { ptr: p, len: n };
+}
+
+// ---- strings -------------------------------------------------------------
+
+function __rt_concat(string a, string b): string {
+    usize n = a->len + b->len;
+    u8* p = __rt_alloc(n + 1);
+    __rt_copy(p, a->ptr, a->len);
+    __rt_copy(p + a->len, b->ptr, b->len);
+    return string { ptr: p, len: n };
+}
+
+function __rt_str_eq(string a, string b): bool {
+    if (a->len != b->len) {
+        return false;
+    }
+    for (usize i = 0; i < a->len; i++) {
+        if (a->ptr[i] != b->ptr[i]) {
+            return false;
+        }
+    }
+    return true;
+}
+
+// Byte-wise comparison: negative, zero or positive.
+function __rt_str_cmp(string a, string b): int {
+    usize n = a->len < b->len ? a->len : b->len;
+    for (usize i = 0; i < n; i++) {
+        if (a->ptr[i] != b->ptr[i]) {
+            return (a->ptr[i] as int) - (b->ptr[i] as int);
+        }
+    }
+    if (a->len == b->len) {
+        return 0;
+    }
+    return a->len < b->len ? -1 : 1;
+}
+
+// ---- formatting ----------------------------------------------------------
+// Digits are written backwards into the end of `buf`; the return value is
+// where they start.
+
+function __rt_fmt_u64(u64 v, u8* buf): usize {
+    usize i = 20;
+    do {
+        i--;
+        buf[i] = (48 + v % 10) as u8;
+        v /= 10;
+    } while (v != 0);
+    return i;
+}
+
+function __rt_fmt_hex(u64 v, u8* buf): usize {
+    usize i = 20;
+    do {
+        i--;
+        u64 d = v & 15;
+        buf[i] = (d < 10 ? 48 + d : 87 + d) as u8;
+        v >>= 4;
+    } while (v != 0);
+    i--;
+    buf[i] = 120;   // x
+    i--;
+    buf[i] = 48;    // 0
+    return i;
+}
+
+function __rt_u64_to_string(u64 v): string {
+    u8[20] buf;
+    usize start = __rt_fmt_u64(v, &buf[0]);
+    return __rt_new_string(&buf[start], 20 - start);
+}
+
+function __rt_i64_to_string(i64 v): string {
+    if (v < 0) {
+        return __rt_concat("-", __rt_u64_to_string(0 - (v as u64)));
+    }
+    return __rt_u64_to_string(v as u64);
+}
+
+function __rt_ptr_to_string(u64 v): string {
+    if (v == 0) {
+        return "null";
+    }
+    u8[20] buf;
+    usize start = __rt_fmt_hex(v, &buf[0]);
+    return __rt_new_string(&buf[start], 20 - start);
+}
+
+function __rt_bool_to_string(bool b): string {
+    return b ? "true" : "false";
+}
+
+function __rt_f64_to_string(f64 x): string {
+    u8[32] buf;
+    usize n = __rt_fmt_f64(x, &buf[0]);
+    return __rt_new_string(&buf[0], n);
+}
+
+// ---- echo ----------------------------------------------------------------
+// These write directly, without building a string first.
+
+function __rt_echo_str(string s): void {
+    __rt_out(s->ptr, s->len);
+}
+
+function __rt_echo_u64(u64 v): void {
+    u8[20] buf;
+    usize start = __rt_fmt_u64(v, &buf[0]);
+    __rt_out(&buf[start], 20 - start);
+}
+
+function __rt_echo_i64(i64 v): void {
+    if (v < 0) {
+        __rt_out("-", 1);
+        __rt_echo_u64(0 - (v as u64));
+        return;
+    }
+    __rt_echo_u64(v as u64);
+}
+
+function __rt_echo_ptr(u64 v): void {
+    __rt_echo_str(__rt_ptr_to_string(v));
+}
+
+function __rt_echo_bool(bool b): void {
+    __rt_echo_str(b ? "true" : "false");
+}
+
+function __rt_echo_f64(f64 x): void {
+    u8[32] buf;
+    usize n = __rt_fmt_f64(x, &buf[0]);
+    __rt_out(&buf[0], n);
+}

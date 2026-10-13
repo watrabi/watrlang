@@ -93,6 +93,13 @@ def float_lit(t, x):
     return s if t == "f64" else f"({s} as f32)"
 
 
+def str_lit(v):
+    out = []
+    for ch in v:
+        out.append({"\\": "\\\\", '"': '\\"', "{": "\\{", "}": "\\}", "\n": "\\n", "\t": "\\t"}.get(ch, ch))
+    return '"' + "".join(out) + '"'
+
+
 class Gen:
     def __init__(self, rng):
         self.rng = rng
@@ -188,6 +195,38 @@ class Gen:
         x = {"+": lambda: ax + bx, "-": lambda: ax - bx, "*": lambda: ax * bx, "/": lambda: ax / bx}[op]()
         return f"({a} {op} {b})", fround(t, x)
 
+    # ---- strings ------------------------------------------------------------
+
+    def str_expr(self, depth):
+        rng = self.rng
+        r = rng.random()
+        if depth <= 0 or r < 0.3:
+            v = "".join(rng.choice('ab yz09{}"\\\n\t') for _ in range(rng.randint(0, 6)))
+            return str_lit(v), v
+        if r < 0.55:
+            a, av = self.str_expr(depth - 1)
+            b, bv = self.str_expr(depth - 1)
+            return f"({a} . {b})", av + bv
+        if r < 0.7:
+            a, av = self.str_expr(depth - 1)
+            t = self.pick_int()
+            b, bv = self.int_expr(t, depth - 1)
+            return f"({a} . {b})", av + str(bv)
+        if r < 0.78:
+            a, av = self.str_expr(depth - 1)
+            b, bv = self.bool_expr(depth - 1)
+            return f"({a} . {b})", av + ("true" if bv else "false")
+        if r < 0.9:
+            # Interpolation with an integer expression inside.
+            t = self.pick_int()
+            b, bv = self.int_expr(t, depth - 1)
+            pre = "".join(rng.choice("ab ") for _ in range(rng.randint(0, 3)))
+            return f'"{pre}{{{b}}}!"', f"{pre}{bv}!"
+        c, cv = self.bool_expr(depth - 1)
+        a, av = self.str_expr(depth - 1)
+        b, bv = self.str_expr(depth - 1)
+        return f"({c} ? {a} : {b})", av if cv else bv
+
     # ---- bools --------------------------------------------------------------
 
     def bool_expr(self, depth):
@@ -208,9 +247,16 @@ class Gen:
                 b, bv = self.float_expr(t, depth - 1)
             v = {"==": av == bv, "!=": av != bv, "<": av < bv, ">": av > bv, "<=": av <= bv, ">=": av >= bv}[op]
             return f"({a} {op} {b})", v
-        if r < 0.65:
+        if r < 0.62:
             s, v = self.bool_expr(depth - 1)
             return f"(!{s})", not v
+        if r < 0.68:
+            op = rng.choice(["==", "!=", "<", ">", "<=", ">="])
+            a, av = self.str_expr(depth - 1)
+            b, bv = self.str_expr(depth - 1)
+            ab, bb = av.encode(), bv.encode()
+            v = {"==": ab == bb, "!=": ab != bb, "<": ab < bb, ">": ab > bb, "<=": ab <= bb, ">=": ab >= bb}[op]
+            return f"({a} {op} {b})", v
         op = rng.choice(["&&", "||", "==", "!=", "&", "|", "^"])
         a, av = self.bool_expr(depth - 1)
         b, bv = self.bool_expr(depth - 1)
@@ -229,10 +275,13 @@ def make_check(rng):
                 t = g.pick_int()
                 s, v = g.int_expr(t, depth)
                 return t, s, int_lit(t, v)
-            if kind < 0.85:
+            if kind < 0.8:
                 t = rng.choice(FLOATS)
                 s, x = g.float_expr(t, depth)
                 return t, s, float_lit(t, x)
+            if kind < 0.9:
+                s, v = g.str_expr(depth)
+                return "string", s, str_lit(v)
             s, v = g.bool_expr(depth)
             return "bool", s, "true" if v else "false"
         except (Undefined, OverflowError):

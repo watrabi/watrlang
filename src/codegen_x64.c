@@ -71,6 +71,7 @@ typedef struct {
     int hidden_slot;        /* where the caller's return buffer pointer is kept (struct returns) */
 
     bool libc;              /* linked with the C runtime */
+    bool need_panic;        /* emit w.panic even without check sites */
     PtrVec panics;          /* PanicSite*: runtime check failure messages */
     PtrVec strings;         /* StringLit*: literals for .rodata */
 } Gen;
@@ -101,7 +102,8 @@ static ValClass cls(const Type *t) {
     switch (t->kind) {
     case TY_FLOAT: return CLS_SSE;
     case TY_ARRAY:
-    case TY_STRUCT: return CLS_MEM;
+    case TY_STRUCT:
+    case TY_STRING: return CLS_MEM;
     case TY_VOID: return CLS_NONE;
     default: return CLS_GPR;
     }
@@ -128,6 +130,10 @@ static void classify_into(const Type *t, uint32_t off, Eightbyte eb[2]) {
     case TY_FLOAT:
         if (eb[off / 8] == EB_NONE) eb[off / 8] = EB_SSE;   /* INTEGER wins if both appear */
         break;
+    case TY_STRING:   /* {ptr, len} */
+        eb[off / 8] = EB_INT;
+        eb[off / 8 + 1] = EB_INT;
+        break;
     default:
         eb[off / 8] = EB_INT;
         break;
@@ -137,7 +143,7 @@ static void classify_into(const Type *t, uint32_t off, Eightbyte eb[2]) {
 static Classification classify(const Type *t) {
     Classification c = {false, 0, {EB_NONE, EB_NONE}};
     if (t->kind == TY_VOID) return c;
-    if (type_is_aggregate(t)) {
+    if (type_in_memory(t)) {
         if (t->size > 16) {
             c.memory = true;
             return c;
@@ -298,6 +304,14 @@ static void emit_int_const(Gen *g, uint64_t bits) {
     else emit(g, "movabs rax, %lld", (long long)v);
 }
 
+static int string_label(Gen *g, StrBuf bytes) {
+    StringLit *lit = xmalloc(sizeof *lit);
+    lit->label = new_label(g);
+    lit->bytes = bytes;
+    ptrvec_push(&g->strings, lit);
+    return lit->label;
+}
+
 /* Calls a C function whose arguments are already in registers, keeping
  * rsp 16-byte aligned. */
 static void emit_c_call(Gen *g, const char *name) {
@@ -374,6 +388,25 @@ static void gen_addr(Gen *g, const Expr *e) {
         return;
     case EXPR_INDEX: {
         const Expr *base = e->u.index.base;
+        if (base->type->kind == TY_STRING) {
+            /* Check against the string's length, then index its bytes. */
+            gen_value(g, base);
+            emit(g, "push rax");
+            g->depth++;
+            gen_value(g, e->u.index.index);
+            emit(g, "mov rcx, rax");
+            emit(g, "pop rax");
+            g->depth--;
+            int site = add_panic(g, e->u.index.index, "string index out of bounds");
+            int ok = new_label(g);
+            emit(g, "cmp rcx, qword ptr [rax + 8]");
+            emit(g, "jb .L%d", ok);
+            emit_panic_call(g, site);
+            emit_label(g, ok);
+            emit(g, "mov rax, qword ptr [rax]");
+            emit(g, "add rax, rcx");
+            return;
+        }
         gen_value(g, base);   /* array address or pointer value */
         emit(g, "push rax");
         g->depth++;
@@ -674,7 +707,7 @@ static void gen_call(Gen *g, const Expr *e) {
         if (t->kind == TY_NULL) t = arg->type;
         args[i].type = t;
         gen_value(g, arg);
-        bool agg = type_is_aggregate(t);
+        bool agg = type_in_memory(t);
         args[i].size = agg ? (t->size + 7) & ~7u : 8;
         args[i].slot = alloc_slot(g, args[i].size, 8);
         snprintf(addr, sizeof addr, "rbp - %d", -args[i].slot);
@@ -734,7 +767,7 @@ static void gen_call(Gen *g, const Expr *e) {
     const Type *rt = fn->type;
     if (ret.memory) {
         emit(g, "lea rax, [rbp - %d]", -ret_slot);
-    } else if (type_is_aggregate(rt)) {
+    } else if (type_in_memory(rt)) {
         /* Reassemble the struct from rax/rdx and xmm0/xmm1. */
         int slot = alloc_slot(g, 16, 8);
         int gi = 0, si = 0;
@@ -755,7 +788,13 @@ static void gen_aggregate_lit(Gen *g, const Expr *e) {
     int slot = alloc_slot(g, t->size, t->align);
     zero_memory(g, slot, t->size);   /* fields that aren't listed are zero */
     char addr[64];
-    if (e->kind == EXPR_STRUCT_LIT) {
+    if (t->kind == TY_STRING) {   /* string { ptr: p, len: n } */
+        for (size_t i = 0; i < e->u.struct_lit.n; i++) {
+            const FieldInit *fi = e->u.struct_lit.fields[i];
+            gen_value(g, fi->value);
+            emit(g, "mov qword ptr [rbp - %d], rax", -slot - (strcmp(fi->name, "len") == 0 ? 8 : 0));
+        }
+    } else if (e->kind == EXPR_STRUCT_LIT) {
         for (size_t i = 0; i < e->u.struct_lit.n; i++) {
             const FieldInit *fi = e->u.struct_lit.fields[i];
             const Field *f = NULL;
@@ -788,11 +827,14 @@ static void gen_value(Gen *g, const Expr *e) {
         emit_float_const(g, t, e->u.float_val);
         return;
     case EXPR_STRING: {
-        StringLit *lit = xmalloc(sizeof *lit);
-        lit->label = new_label(g);
-        lit->bytes = e->u.str;
-        ptrvec_push(&g->strings, lit);
-        emit(g, "lea rax, [rip + .Lstr%d]", lit->label);
+        int label = string_label(g, e->u.str);
+        emit(g, "lea rax, [rip + .Lstr%d]", label);
+        if (t->kind == TY_STRING) {   /* a {ptr, len} value in a temporary */
+            int slot = alloc_slot(g, 16, 8);
+            emit(g, "mov qword ptr [rbp - %d], rax", -slot);
+            emit(g, "mov qword ptr [rbp - %d], %zu", -slot - 8, e->u.str.len);
+            emit(g, "lea rax, [rbp - %d]", -slot);
+        }
         return;
     }
     case EXPR_ALLOC: {
@@ -1038,7 +1080,7 @@ static void gen_stmt(Gen *g, const Stmt *s) {
         if (s->u.expr) {
             gen_value(g, s->u.expr);
             const Type *rt = g->fn->type;
-            if (type_is_aggregate(rt)) {
+            if (type_in_memory(rt)) {
                 Classification c = classify(rt);
                 if (c.memory) {
                     /* Copy into the caller's buffer and return its address. */
@@ -1115,6 +1157,9 @@ static void gen_stmt(Gen *g, const Stmt *s) {
         emit_label(g, end);
         break;
     }
+    case STMT_ECHO:   /* sema turned each value into a runtime call */
+        for (size_t i = 0; i < s->u.echo.n; i++) gen_value(g, s->u.echo.exprs[i]);
+        break;
     case STMT_BREAK:
     case STMT_CONTINUE: {
         const Loop *loop = &g->loops[g->nloops - 1];
@@ -1160,7 +1205,7 @@ static void gen_function(Gen *g, const Symbol *fn) {
             if (c.eb[j] == EB_INT) kint++;
             else ksse++;
         }
-        uint32_t size = type_is_aggregate(p->type) ? (p->type->size + 7) & ~7u : 8;
+        uint32_t size = type_in_memory(p->type) ? (p->type->size + 7) & ~7u : 8;
         if (c.memory || ngpr + kint > 6 || nsse + ksse > 8) {
             p->offset = stack;
             stack += (int)size;
@@ -1210,21 +1255,105 @@ static int log2_align(uint32_t align) {
 }
 
 static void emit_globals(Gen *g, const Program *prog) {
-    /* .data: mutable with an initializer; .rodata: const; .bss: all zero. */
-    static const char *const sections[3] = {".data", ".rodata", ".bss"};
-    for (int sec = 0; sec < 3; sec++) {
+    /* .data: mutable with an initializer; .rodata: const; .bss: all zero;
+     * .data.rel.ro: const but holding addresses, which the dynamic loader
+     * may need to fill in before making it read-only. */
+    static const char *const sections[4] = {".data", ".rodata", ".bss", ".data.rel.ro"};
+    for (int sec = 0; sec < 4; sec++) {
         bool any = false;
         for (size_t i = 0; i < prog->nglobals; i++) {
             const Symbol *v = prog->globals[i];
-            int want = v->is_const ? 1 : v->init ? 0 : 2;
+            int want = v->is_const ? (v->nrelocs ? 3 : 1) : v->init ? 0 : 2;
             if (want != sec || v->type->size == 0 || v->is_extern) continue;
             if (!any) fprintf(g->out, "\n    .section %s\n", sections[sec]);
             any = true;
             if (v->is_export) fprintf(g->out, "    .globl %s\n", v->asm_name);
             fprintf(g->out, "    .p2align %d\n%s:\n", log2_align(v->type->align), v->asm_name);
-            if (v->init) emit_bytes(g, v->init, v->type->size);
-            else fprintf(g->out, "    .zero %u\n", v->type->size);
+            if (!v->init) {
+                fprintf(g->out, "    .zero %u\n", v->type->size);
+                continue;
+            }
+            /* Bytes, with string literal addresses filled in by the linker. */
+            uint32_t at = 0;
+            for (size_t k = 0; k <= v->nrelocs; k++) {
+                uint32_t next = k < v->nrelocs ? v->relocs[k].offset : v->type->size;
+                emit_bytes(g, v->init + at, next - at);
+                if (k == v->nrelocs) break;
+                fprintf(g->out, "    .quad .Lstr%d\n", string_label(g, v->relocs[k].str));
+                at = next + 8;
+            }
         }
+    }
+}
+
+/* The runtime's assembly primitives (declared `extern` in the prelude). */
+static void emit_runtime_primitive(Gen *g, const char *name) {
+    FILE *out = g->out;
+    fprintf(out, "\n    .type w.%s, @function\nw.%s:\n", name, name);
+    if (strcmp(name, "__rt_out") == 0) {
+        if (g->libc) {   /* through stdio, so output interleaves correctly with printf */
+            fputs("    sub rsp, 8\n"
+                  "    mov rdx, rsi\n"
+                  "    mov esi, 1\n"
+                  "    mov rcx, qword ptr [rip + stdout@GOTPCREL]\n"
+                  "    mov rcx, qword ptr [rcx]\n"
+                  "    call fwrite\n"
+                  "    add rsp, 8\n"
+                  "    ret\n",
+                  out);
+        } else {         /* write(1, p, n), retrying partial writes */
+            fputs("    mov rdx, rsi\n"
+                  "    mov rsi, rdi\n"
+                  ".Lrt_out_loop:\n"
+                  "    test rdx, rdx\n"
+                  "    jz .Lrt_out_done\n"
+                  "    mov edi, 1\n"
+                  "    mov eax, 1\n"
+                  "    syscall\n"
+                  "    test rax, rax\n"
+                  "    js .Lrt_out_done\n"
+                  "    add rsi, rax\n"
+                  "    sub rdx, rax\n"
+                  "    jmp .Lrt_out_loop\n"
+                  ".Lrt_out_done:\n"
+                  "    ret\n",
+                  out);
+        }
+    } else if (strcmp(name, "__rt_mmap") == 0) {   /* mmap(NULL, n, RW, PRIVATE|ANON, -1, 0) */
+        fputs("    mov rsi, rdi\n"
+              "    xor edi, edi\n"
+              "    mov edx, 3\n"
+              "    mov r10d, 34\n"
+              "    mov r8, -1\n"
+              "    xor r9d, r9d\n"
+              "    mov eax, 9\n"
+              "    syscall\n"
+              "    ret\n",
+              out);
+    } else if (strcmp(name, "__rt_out_of_memory") == 0) {
+        fputs("    lea rdi, [rip + .Lrt_oom]\n"
+              "    mov esi, 21\n"
+              "    call w.panic\n"
+              "    .section .rodata\n"
+              ".Lrt_oom:\n"
+              "    .ascii \"panic: out of memory\\n\"\n"
+              "    .text\n",
+              out);
+        g->need_panic = true;
+    } else if (strcmp(name, "__rt_fmt_f64") == 0) {   /* snprintf(buf, 32, "%.14g", x) */
+        fputs("    sub rsp, 8\n"
+              "    mov esi, 32\n"
+              "    lea rdx, [rip + .Lrt_fmt_g]\n"
+              "    mov eax, 1\n"
+              "    call snprintf\n"
+              "    mov eax, eax\n"
+              "    add rsp, 8\n"
+              "    ret\n"
+              "    .section .rodata\n"
+              ".Lrt_fmt_g:\n"
+              "    .asciz \"%.14g\"\n"
+              "    .text\n",
+              out);
     }
 }
 
@@ -1271,10 +1400,14 @@ void codegen_x64(const Module *m, const Program *prog, FILE *out) {
               out);
     }
 
-    for (size_t i = 0; i < prog->nfuncs; i++)
-        if (prog->funcs[i]->decl->u.func.body) gen_function(&g, prog->funcs[i]);
+    for (size_t i = 0; i < prog->nfuncs; i++) {
+        const Symbol *fn = prog->funcs[i];
+        if (!fn->reachable) continue;
+        if (fn->decl->u.func.body) gen_function(&g, fn);
+        else if (fn->is_runtime) emit_runtime_primitive(&g, fn->name);
+    }
 
-    if (g.panics.len) {
+    if (g.panics.len || g.need_panic) {
         /* w.panic(msg = rdi, len = rsi): print to stderr, exit with status 101. */
         fputs("\n# Runtime check failures.\n"
               "w.panic:\n"
@@ -1303,6 +1436,8 @@ void codegen_x64(const Module *m, const Program *prog, FILE *out) {
         }
     }
 
+    emit_globals(&g, prog);
+
     if (g.strings.len) {
         fputs("\n    .section .rodata\n", out);
         for (size_t i = 0; i < g.strings.len; i++) {
@@ -1314,7 +1449,6 @@ void codegen_x64(const Module *m, const Program *prog, FILE *out) {
         }
     }
 
-    emit_globals(&g, prog);
 
     /* Tell the linker this code doesn't need an executable stack. */
     fputs("\n    .section .note.GNU-stack,\"\",@progbits\n", out);

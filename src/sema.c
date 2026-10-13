@@ -39,6 +39,8 @@ typedef struct {
 
 static Type *check(Sema *S, Expr **slot, Type *hint);
 static void check_effect(Sema *S, Expr **slot);
+static bool both_values(Sema *S, const Expr *a, const Expr *b);
+static bool require_value(Sema *S, const Expr *e);
 static bool const_eval(Sema *S, const Expr *e, ConstVal *out, bool report);
 
 /* ---- small helpers ------------------------------------------------------- */
@@ -614,9 +616,167 @@ static void check_operands(Sema *S, Expr **lhs, Expr **rhs, Type *hint) {
     }
 }
 
+/* ---- runtime calls ------------------------------------------------------------- */
+
+static bool is_runtime_file(const SrcFile *f) {
+    return f && f->path[0] == '<';
+}
+
+static void add_callee(Sema *S, Symbol *callee) {
+    Symbol *fn = S->fn;
+    if (!fn) return;
+    for (size_t i = 0; i < fn->ncallees; i++)
+        if (fn->callees[i] == callee) return;
+    if (fn->ncallees == fn->callees_cap) {
+        size_t cap = fn->callees_cap ? fn->callees_cap * 2 : 8;
+        Symbol **grown = arena_alloc(S->arena, cap * sizeof *grown);
+        if (fn->ncallees) memcpy(grown, fn->callees, fn->ncallees * sizeof *grown);
+        fn->callees = grown;
+        fn->callees_cap = cap;
+    }
+    fn->callees[fn->ncallees++] = callee;
+}
+
+static Expr *new_node(Sema *S, ExprKind kind, Loc loc, Type *t) {
+    Expr *e = ARENA_NEW(S->arena, Expr);
+    e->kind = kind;
+    e->loc = loc;
+    e->type = t;
+    return e;
+}
+
+/* A call to a runtime prelude function, with already-checked arguments. */
+static Expr *rt_call(Sema *S, const char *name, Loc loc, Expr **args, size_t n) {
+    Symbol *fn = find_func(S, name);
+    if (!fn) fatal("runtime function %s is missing", name);
+    Expr *callee = new_node(S, EXPR_IDENT, loc, ty_error);
+    callee->u.name = fn->name;
+    callee->sym = fn;
+    Expr *e = new_node(S, EXPR_CALL, loc, fn->type);
+    e->sym = fn;
+    e->u.call.callee = callee;
+    e->u.call.nargs = n;
+    e->u.call.args = arena_alloc(S->arena, (n ? n : 1) * sizeof(Expr *));
+    for (size_t i = 0; i < n; i++) e->u.call.args[i] = args[i];
+    add_callee(S, fn);
+    return e;
+}
+
+static Expr *rt_call1(Sema *S, const char *name, Expr *arg) {
+    return rt_call(S, name, arg->loc, &arg, 1);
+}
+
+static Expr *wrap_cast(Sema *S, Expr *inner, Type *to);
+
+static Expr *convert(Sema *S, Expr *e, Type *t) {
+    return type_equiv(e->type, t) ? e : wrap_cast(S, e, t);
+}
+
+/* E0338 */
+static void report_not_stringable(const Expr *e, const char *context) {
+    Diag *d = diag_start(DIAG_ERROR, "E0338", e->loc, "a value of type `%s` can't be %s", type_name(e->type), context);
+    diag_label(d, "no text form");
+    diag_note(d, "strings, numbers, bools and pointers can be printed and joined with `.`");
+    if (e->type->kind == TY_STRUCT) diag_help(d, "print the fields you want instead, like `\"{v->x}, {v->y}\"`");
+    diag_end(d);
+}
+
+/* The text form of a checked expression, as a `string` expression:
+ * numbers in decimal, floats like "%.14g", bools as true/false, pointers in hex. */
+static Expr *stringify(Sema *S, Expr *e, const char *context) {
+    Type *t = e->type;
+    switch (t->kind) {
+    case TY_STRING:
+        return e;
+    case TY_INT:
+        if (t->is_signed) return rt_call1(S, "__rt_i64_to_string", convert(S, e, ty_i64));
+        return rt_call1(S, "__rt_u64_to_string", convert(S, e, ty_u64));
+    case TY_FLOAT:
+        return rt_call1(S, "__rt_f64_to_string", convert(S, e, ty_f64));
+    case TY_BOOL:
+        return rt_call1(S, "__rt_bool_to_string", e);
+    case TY_PTR:
+    case TY_NULL:
+        return rt_call1(S, "__rt_ptr_to_string", convert(S, e, ty_u64));
+    case TY_ERROR:
+        return e;
+    default:
+        report_not_stringable(e, context);
+        return new_node(S, EXPR_NULL, e->loc, ty_error);
+    }
+}
+
+/* `echo e`: writes the value without building a string first. */
+static Expr *echo_call(Sema *S, Expr *e) {
+    Type *t = e->type;
+    switch (t->kind) {
+    case TY_STRING: return rt_call1(S, "__rt_echo_str", e);
+    case TY_INT:
+        if (t->is_signed) return rt_call1(S, "__rt_echo_i64", convert(S, e, ty_i64));
+        return rt_call1(S, "__rt_echo_u64", convert(S, e, ty_u64));
+    case TY_FLOAT: return rt_call1(S, "__rt_echo_f64", convert(S, e, ty_f64));
+    case TY_BOOL: return rt_call1(S, "__rt_echo_bool", e);
+    case TY_PTR:
+    case TY_NULL: return rt_call1(S, "__rt_echo_ptr", convert(S, e, ty_u64));
+    case TY_ERROR: return NULL;
+    default:
+        report_not_stringable(e, "printed with `echo`");
+        return NULL;
+    }
+}
+
+static Type *check_interp(Sema *S, Expr **slot) {
+    Expr *e = *slot;
+    Expr *acc = NULL;
+    bool ok = true;
+    for (size_t i = 0; i < e->u.interp.n; i++) {
+        Type *t = check(S, &e->u.interp.parts[i], NULL);
+        Expr *part = e->u.interp.parts[i];
+        if (is_err(t)) {
+            ok = false;
+            continue;
+        }
+        if (!require_value(S, part)) {
+            ok = false;
+            continue;
+        }
+        Expr *str = stringify(S, part, "interpolated into a string");
+        if (is_err(str->type)) {
+            ok = false;
+            continue;
+        }
+        if (!acc) {
+            acc = str;
+        } else {
+            Expr *pair[2] = {acc, str};
+            acc = rt_call(S, "__rt_concat", e->loc, pair, 2);
+        }
+    }
+    if (!ok) return set_type(e, ty_error);
+    if (!acc) {   /* can't happen: the parser makes at least one part */
+        acc = new_node(S, EXPR_STRING, e->loc, ty_string);
+    }
+    *slot = acc;
+    return acc->type;
+}
+
+/* a . b: joins two values as text. */
+static Type *check_concat(Sema *S, Expr **slot) {
+    Expr *e = *slot;
+    Type *lt = check(S, &e->u.binary.lhs, ty_string);
+    Type *rt = check(S, &e->u.binary.rhs, ty_string);
+    if (!both_values(S, e->u.binary.lhs, e->u.binary.rhs) || is_err(lt) || is_err(rt)) return set_type(e, ty_error);
+    Expr *a = stringify(S, e->u.binary.lhs, "joined with `.`");
+    Expr *b = stringify(S, e->u.binary.rhs, "joined with `.`");
+    if (is_err(a->type) || is_err(b->type)) return set_type(e, ty_error);
+    Expr *pair[2] = {a, b};
+    *slot = rt_call(S, "__rt_concat", e->loc, pair, 2);
+    return ty_string;
+}
+
 /* ---- lvalues ------------------------------------------------------------------- */
 
-typedef enum { LV_NONE, LV_MUT, LV_CONST_VAR, LV_CONST_PTR } LvalueKind;
+typedef enum { LV_NONE, LV_MUT, LV_CONST_VAR, LV_CONST_PTR, LV_STRING } LvalueKind;
 
 static LvalueKind lvalue_kind(const Expr *e) {
     switch (e->kind) {
@@ -626,10 +786,14 @@ static LvalueKind lvalue_kind(const Expr *e) {
     case EXPR_UNARY:
         if (e->u.unary.op != TOK_STAR) return LV_NONE;
         return e->u.unary.operand->type->kind == TY_PTR && e->u.unary.operand->type->base_const ? LV_CONST_PTR : LV_MUT;
-    case EXPR_MEMBER:
-        if (e->via_pointer) return e->u.member.object->type->base_const ? LV_CONST_PTR : LV_MUT;
+    case EXPR_MEMBER: {
+        const Type *ot = e->u.member.object->type;
+        if (ot->kind == TY_STRING || (ot->kind == TY_PTR && ot->base->kind == TY_STRING)) return LV_STRING;
+        if (e->via_pointer) return ot->base_const ? LV_CONST_PTR : LV_MUT;
         return lvalue_kind(e->u.member.object);
+    }
     case EXPR_INDEX:
+        if (e->u.index.base->type->kind == TY_STRING) return LV_STRING;
         if (e->u.index.base->type->kind == TY_PTR) return e->u.index.base->type->base_const ? LV_CONST_PTR : LV_MUT;
         return lvalue_kind(e->u.index.base);
     default:
@@ -659,6 +823,13 @@ static bool check_target(Expr *target, const char *action) {
         return true;
     }
     Diag *d;
+    if (k == LV_STRING) {
+        d = diag_start(DIAG_ERROR, "E0340", target->loc, "strings are immutable");
+        diag_label(d, "can't %s part of a string", action);
+        diag_help(d, "build a new string instead, for example with `.` or \"{interpolation}\"");
+        diag_end(d);
+        return false;
+    }
     if (k == LV_NONE) {
         if (target->kind == EXPR_IDENT && target->sym && target->sym->kind == SYM_FUNC) {
             d = diag_start(DIAG_ERROR, "E0209", target->loc, "can't %s `%s` because it's a function", action,
@@ -827,7 +998,7 @@ static Type *check_unary(Sema *S, Expr *e, Type *hint) {
             return set_type(e, ty_error);
         }
         Type *base = operand->type;
-        bool is_const = k == LV_CONST_VAR || k == LV_CONST_PTR;
+        bool is_const = k == LV_CONST_VAR || k == LV_CONST_PTR || k == LV_STRING;
         return set_type(e, type_ptr(base, is_const, false));
     }
     case TOK_STAR: {
@@ -873,14 +1044,12 @@ static bool is_cmp(TokenKind op) {
     return op == TOK_EQ || op == TOK_NE || op == TOK_LT || op == TOK_GT || op == TOK_LE || op == TOK_GE;
 }
 
-static Type *check_binary(Sema *S, Expr *e, Type *hint) {
+static Type *check_binary(Sema *S, Expr **slot, Type *hint) {
+    Expr *e = *slot;
     TokenKind op = e->u.binary.op;
     Expr **lhs = &e->u.binary.lhs, **rhs = &e->u.binary.rhs;
 
-    if (op == TOK_DOT) {
-        not_yet(e->loc, "string concatenation with `.`", 7);
-        return set_type(e, ty_error);
-    }
+    if (op == TOK_DOT) return check_concat(S, slot);
 
     if (op == TOK_ANDAND || op == TOK_OROR) {
         require_bool(S, lhs, "each side of `&&` and `||`");
@@ -928,6 +1097,27 @@ static Type *check_binary(Sema *S, Expr *e, Type *hint) {
         diag_note(d, "pointers support `p + n`, `p - n`, and `p - q` for pointers of the same type");
         diag_end(d);
         return set_type(e, ty_error);
+    }
+
+    if (is_cmp(op) && lt->kind == TY_STRING && rt->kind == TY_STRING) {
+        /* Strings compare by content. */
+        Expr *pair[2] = {*lhs, *rhs};
+        if (op == TOK_EQ || op == TOK_NE) {
+            Expr *call = rt_call(S, "__rt_str_eq", e->loc, pair, 2);
+            if (op == TOK_NE) {
+                Expr *not_ = new_node(S, EXPR_UNARY, e->loc, ty_bool);
+                not_->u.unary.op = TOK_BANG;
+                not_->u.unary.operand = call;
+                call = not_;
+            }
+            *slot = call;
+        } else {
+            Expr *call = rt_call(S, "__rt_str_cmp", e->loc, pair, 2);
+            Expr *zero = new_node(S, EXPR_INT, e->loc, ty_int);
+            e->u.binary.lhs = call;
+            e->u.binary.rhs = zero;
+        }
+        return set_type(*slot, ty_bool);
     }
 
     if (is_cmp(op)) {
@@ -1022,6 +1212,16 @@ static Type *check_call(Sema *S, Expr *e) {
         }
         Type *t = check(S, &e->u.call.args[0], NULL);
         if (is_err(t)) return set_type(e, ty_error);
+        if (t->kind == TY_STRING) {   /* known at run time: the string's len field */
+            Expr *arg = e->u.call.args[0];
+            e->kind = EXPR_MEMBER;
+            e->u.member.object = arg;
+            e->u.member.name = "len";
+            e->u.member.name_loc = arg->loc;
+            e->field_offset = 8;
+            e->via_pointer = false;
+            return set_type(e, ty_usize);
+        }
         if (t->kind != TY_ARRAY) {
             Diag *d = diag_start(DIAG_ERROR, "E0332", e->u.call.args[0]->loc, "`len` needs an array, found `%s`",
                                  type_name(t));
@@ -1084,6 +1284,7 @@ static Type *check_call(Sema *S, Expr *e) {
 
     e->sym = fn;
     callee->sym = fn;
+    add_callee(S, fn);
     size_t n = e->u.call.nargs, want = fn->nparams;
     bool ok = true;
     if (fn->is_variadic && n >= want) {
@@ -1148,9 +1349,25 @@ static Type *check_member(Sema *S, Expr *e) {
     if (is_err(t)) return set_type(e, ty_error);
     Type *st = t;
     e->via_pointer = false;
-    if (t->kind == TY_PTR && t->base->kind == TY_STRUCT) {
+    if (t->kind == TY_PTR && (t->base->kind == TY_STRUCT || t->base->kind == TY_STRING)) {
         st = t->base;
         e->via_pointer = true;
+    }
+    if (st->kind == TY_STRING) {   /* string is {const u8* ptr; usize len} */
+        const char *name = e->u.member.name;
+        if (strcmp(name, "ptr") == 0) {
+            e->field_offset = 0;
+            return set_type(e, type_ptr(ty_u8, true, false));
+        }
+        if (strcmp(name, "len") == 0) {
+            e->field_offset = 8;
+            return set_type(e, ty_usize);
+        }
+        Diag *d = diag_start(DIAG_ERROR, "E0317", e->u.member.name_loc, "`string` has no field named `%s`", name);
+        diag_label(d, "unknown field");
+        diag_note(d, "a string has `ptr` (const u8*) and `len` (usize)");
+        diag_end(d);
+        return set_type(e, ty_error);
     }
     if (st->kind != TY_STRUCT) {
         Diag *d = diag_start(DIAG_ERROR, "E0318", e->u.member.name_loc, "`->` needs a struct, found `%s`", type_name(t));
@@ -1203,6 +1420,7 @@ static Type *check_index(Sema *S, Expr *e) {
         return set_type(e, bt->base);
     }
     if (bt->kind == TY_PTR && bt->base->kind != TY_VOID) return set_type(e, bt->base);
+    if (bt->kind == TY_STRING) return set_type(e, ty_u8);   /* bounds-checked at run time */
     Diag *d = diag_start(DIAG_ERROR, "E0319", base->loc, "can't index into a value of type `%s`", type_name(bt));
     diag_label(d, bt->kind == TY_PTR ? "`void*` doesn't say what it points to" : "not an array or pointer");
     diag_end(d);
@@ -1233,7 +1451,28 @@ static Type *check_cast(Sema *S, Expr *e) {
     return set_type(e, ty_error);
 }
 
+/* string { ptr: p, len: n } */
+static Type *check_string_lit(Sema *S, Expr *e) {
+    for (size_t i = 0; i < e->u.struct_lit.n; i++) {
+        FieldInit *fi = e->u.struct_lit.fields[i];
+        bool is_ptr = strcmp(fi->name, "ptr") == 0, is_len = strcmp(fi->name, "len") == 0;
+        if (!is_ptr && !is_len) {
+            Diag *d = diag_start(DIAG_ERROR, "E0317", fi->loc, "`string` has no field named `%s`", fi->name);
+            diag_label(d, "unknown field");
+            diag_note(d, "a string has `ptr` (const u8*) and `len` (usize)");
+            diag_end(d);
+            check(S, &fi->value, NULL);
+            continue;
+        }
+        Type *t = is_ptr ? type_ptr(ty_u8, true, false) : ty_usize;
+        check(S, &fi->value, t);
+        coerce(S, &fi->value, t, NULL, NULL);
+    }
+    return set_type(e, ty_string);
+}
+
 static Type *check_struct_lit(Sema *S, Expr *e) {
+    if (strcmp(e->u.struct_lit.type_name, "string") == 0) return check_string_lit(S, e);
     Type *st = find_struct(S, e->u.struct_lit.type_name);
     if (!st) {
         report_unknown_type(S, e->loc, e->u.struct_lit.type_name);
@@ -1334,7 +1573,7 @@ static Type *check(Sema *S, Expr **slot, Type *hint) {
     case EXPR_POSTFIX:
         return check_unary(S, e, hint);
     case EXPR_BINARY:
-        return check_binary(S, e, hint);
+        return check_binary(S, slot, hint);
     case EXPR_TERNARY:
         return check_ternary(S, e, hint);
     case EXPR_CALL:
@@ -1361,13 +1600,13 @@ static Type *check(Sema *S, Expr **slot, Type *hint) {
         return set_type(e, ty_error);
 
     case EXPR_STRING:
-        /* Until the `string` type exists, a literal can be used where a
-         * byte pointer is expected: it's stored NUL-terminated, C-style. */
+        /* A literal is a `string`, or, where a byte pointer is expected
+         * (C functions), a pointer to its NUL-terminated bytes. */
         if (hint && hint->kind == TY_PTR && type_is_int(hint->base) && hint->base->size == 1)
             return set_type(e, hint);
-        not_yet(e->loc, "the `string` type (a literal can be passed where a `u8*` is expected)", 7);
-        break;
-    case EXPR_INTERP:     not_yet(e->loc, "string interpolation", 7); break;
+        return set_type(e, ty_string);
+    case EXPR_INTERP:
+        return check_interp(S, slot);
     case EXPR_THIS:       not_yet(e->loc, "classes", 10); break;
     case EXPR_SCOPE:      not_yet(e->loc, "enums", 12); break;
     case EXPR_NEW:        not_yet(e->loc, "`new`", 11); break;
@@ -1398,6 +1637,17 @@ static Type *check(Sema *S, Expr **slot, Type *hint) {
     return set_type(e, ty_error);
 }
 
+/* An lvalue that's safe to evaluate twice: no calls, no ++/--. */
+static bool pure_lvalue(const Expr *e) {
+    switch (e->kind) {
+    case EXPR_IDENT: case EXPR_INT: case EXPR_CHAR: return true;
+    case EXPR_MEMBER: return pure_lvalue(e->u.member.object);
+    case EXPR_INDEX: return pure_lvalue(e->u.index.base) && pure_lvalue(e->u.index.index);
+    case EXPR_UNARY: return e->u.unary.op == TOK_STAR && pure_lvalue(e->u.unary.operand);
+    default: return false;
+    }
+}
+
 static TokenKind compound_to_binary(TokenKind op) {
     switch (op) {
     case TOK_PLUS_ASSIGN:    return TOK_PLUS;
@@ -1418,7 +1668,36 @@ static void check_assign(Sema *S, Expr *e) {
     TokenKind op = e->u.binary.op;
     set_type(e, ty_void);
     if (op == TOK_DOT_ASSIGN) {
-        not_yet(e->loc, "string concatenation with `.=`", 7);
+        /* s .= x  is  s = s . x  (the target must be simple, since it's used twice). */
+        Expr *target = e->u.binary.lhs;
+        Type *tt = target->kind == EXPR_IDENT ? check_ident(S, target, true) : check(S, &e->u.binary.lhs, NULL);
+        target = e->u.binary.lhs;
+        if (is_err(tt)) {
+            check(S, &e->u.binary.rhs, NULL);
+            return;
+        }
+        if (tt->kind != TY_STRING) {
+            Diag *d = diag_start(DIAG_ERROR, "E0310", target->loc, "`.=` needs a string, found `%s`", type_name(tt));
+            diag_label(d, "not a string");
+            diag_end(d);
+            check(S, &e->u.binary.rhs, NULL);
+            return;
+        }
+        if (!pure_lvalue(target)) {
+            Diag *d = diag_start(DIAG_ERROR, "E0339", target->loc, "the target of `.=` must be a variable or field");
+            diag_label(d, "this would be evaluated twice");
+            diag_help(d, "store it in a variable first");
+            diag_end(d);
+            return;
+        }
+        if (!check_target(target, "append to")) return;
+        Type *rt = check(S, &e->u.binary.rhs, ty_string);
+        if (is_err(rt) || !require_value(S, e->u.binary.rhs)) return;
+        Expr *rhs = stringify(S, e->u.binary.rhs, "appended with `.=`");
+        if (is_err(rhs->type)) return;
+        Expr *pair[2] = {target, rhs};
+        e->u.binary.op = TOK_ASSIGN;
+        e->u.binary.rhs = rt_call(S, "__rt_concat", e->loc, pair, 2);
         return;
     }
     if (e->u.binary.rhs->kind == EXPR_ASSIGN) {
@@ -1688,8 +1967,25 @@ static void write_bytes(unsigned char *buf, uint64_t v, uint32_t size) {
     for (uint32_t i = 0; i < size; i++) buf[i] = (unsigned char)(v >> (8 * i));
 }
 
+static void add_reloc(Sema *S, Symbol *g, uint32_t offset, StrBuf str) {
+    StrReloc *grown = arena_alloc(S->arena, (g->nrelocs + 1) * sizeof *grown);
+    if (g->nrelocs) memcpy(grown, g->relocs, g->nrelocs * sizeof *grown);
+    grown[g->nrelocs].offset = offset;
+    grown[g->nrelocs].str = str;
+    g->relocs = grown;
+    g->nrelocs++;
+}
+
+static Symbol *init_target;   /* the global whose initial bytes const_init is filling */
+
 /* Fills `buf` with the initial bytes of a global. */
 static bool const_init(Sema *S, const Expr *e, const Type *t, unsigned char *buf) {
+    if (e->kind == EXPR_STRING && init_target) {
+        /* The literal's address is filled in by the linker. */
+        add_reloc(S, init_target, (uint32_t)(buf - init_target->init), e->u.str);
+        if (t->kind == TY_STRING) write_bytes(buf + 8, e->u.str.len, 8);
+        return true;
+    }
     if (e->kind == EXPR_STRUCT_LIT && t->kind == TY_STRUCT) {
         bool ok = true;
         for (size_t i = 0; i < e->u.struct_lit.n; i++) {
@@ -1858,7 +2154,28 @@ static void check_stmt(Sema *S, Stmt *s) {
         }
         break;
     case STMT_FOREACH: not_yet(s->loc, "`foreach`", 12); break;
-    case STMT_ECHO:    not_yet(s->loc, "`echo`", 7); break;
+    case STMT_ECHO: {
+        /* Each value becomes a runtime call; interpolations print part by part. */
+        PtrVec calls = {0};
+        for (size_t i = 0; i < s->u.echo.n; i++) {
+            Expr *e = s->u.echo.exprs[i];
+            if (e->kind == EXPR_INTERP) {
+                for (size_t j = 0; j < e->u.interp.n; j++) {
+                    Type *t = check(S, &e->u.interp.parts[j], NULL);
+                    if (is_err(t) || !require_value(S, e->u.interp.parts[j])) continue;
+                    Expr *call = echo_call(S, e->u.interp.parts[j]);
+                    if (call) ptrvec_push(&calls, call);
+                }
+                continue;
+            }
+            Type *t = check(S, &s->u.echo.exprs[i], ty_string);
+            if (is_err(t) || !require_value(S, s->u.echo.exprs[i])) continue;
+            Expr *call = echo_call(S, s->u.echo.exprs[i]);
+            if (call) ptrvec_push(&calls, call);
+        }
+        s->u.echo.exprs = (Expr **)ptrvec_finish(&calls, S->arena, &s->u.echo.n);
+        break;
+    }
     case STMT_DEFER:   not_yet(s->loc, "`defer`", 9); break;
     case STMT_ASM:     not_yet(s->loc, "inline asm", 13); break;
     }
@@ -1991,6 +2308,15 @@ static void set_asm_name(Sema *S, Symbol *sym, const Decl *d) {
         sym->asm_name = name;
         return;
     }
+    if (d->is_extern && is_runtime_file(d->loc.file)) {
+        /* Runtime primitives that codegen writes in assembly. */
+        size_t n = strlen(sym->name) + 3;
+        char *name = arena_alloc(S->arena, n);
+        snprintf(name, n, "w.%s", sym->name);
+        sym->asm_name = name;
+        sym->is_runtime = true;
+        return;
+    }
     sym->asm_name = sym->name;
     if (d->is_extern) S->needs_libc = true;  /* defined elsewhere: link with the C toolchain */
     if (is_register_name(sym->name)) {
@@ -2005,6 +2331,7 @@ static void set_asm_name(Sema *S, Symbol *sym, const Decl *d) {
 static void declare_function(Sema *S, Decl *d) {
     Symbol *fn = new_symbol(S, SYM_FUNC, d->name, d->name_loc);
     fn->decl = d;
+    fn->is_runtime = is_runtime_file(d->loc.file);
     d->sym = fn;
     ptrvec_push(&S->funcs, fn);
 
@@ -2055,7 +2382,10 @@ static void declare_global(Sema *S, Decl *d) {
             check(S, &vd->init, g->type);
             if (coerce(S, &vd->init, g->type, &vd->type->loc, "expected because of this type")) {
                 g->init = arena_alloc(S->arena, g->type->size ? g->type->size : 1);
-                if (const_init(S, vd->init, g->type, g->init) && g->is_const && !type_is_aggregate(g->type)) {
+                init_target = g;
+                bool ok = const_init(S, vd->init, g->type, g->init);
+                init_target = NULL;
+                if (ok && g->is_const && !type_in_memory(g->type) && g->nrelocs == 0) {
                     ConstVal v;
                     const_eval(S, vd->init, &v, false);
                     g->has_value = true;
@@ -2143,6 +2473,40 @@ bool sema_check(Arena *arena, Module *m, Program *prog) {
     for (size_t i = 0; i < S.funcs.len; i++) {
         Symbol *fn = S.funcs.items[i];
         if (fn->decl->u.func.body) check_function_body(&S, fn);
+    }
+
+    /* Only functions reachable from main (or exported) are compiled. */
+    PtrVec work = {0};
+    for (size_t i = 0; i < S.funcs.len; i++) {
+        Symbol *fn = S.funcs.items[i];
+        if (fn == main_fn || fn->is_export) {
+            fn->reachable = true;
+            ptrvec_push(&work, fn);
+        }
+    }
+    while (work.len) {
+        Symbol *fn = work.items[--work.len];
+        for (size_t i = 0; i < fn->ncallees; i++) {
+            if (!fn->callees[i]->reachable) {
+                fn->callees[i]->reachable = true;
+                ptrvec_push(&work, fn->callees[i]);
+            }
+        }
+    }
+    free(work.items);
+    Symbol *fmt = find_func(&S, "__rt_fmt_f64");
+    if (fmt && fmt->reachable) S.needs_libc = true;   /* float formatting uses snprintf */
+    if (diag_error_count() == errors_before) {
+        for (size_t i = 0; i < S.funcs.len; i++) {
+            Symbol *fn = S.funcs.items[i];
+            if (fn->reachable || fn->is_runtime || fn->is_extern || fn->name[0] == '_') continue;
+            Diag *d = diag_start(DIAG_WARNING, "W0004", fn->loc, "function `%s` is never used", fn->name);
+            diag_label(d, "never called");
+            char renamed[128];
+            snprintf(renamed, sizeof renamed, "_%s", fn->name);
+            diag_fix(d, fn->loc, renamed, "if this is intentional, prefix it with an underscore");
+            diag_end(d);
+        }
     }
 
     prog->needs_libc = S.needs_libc;

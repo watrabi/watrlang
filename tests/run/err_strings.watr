@@ -1,0 +1,19 @@
+struct V { int x; }
+
+function make(): string { return "x"; }
+
+function main(): int {
+    string s = "cat";
+    s[0] = 'b';
+    s->len = 1;
+    V v;
+    echo v, "\n";
+    string t = "v = " . v;
+    int n = 5;
+    n .= "x";
+    make() .= "y";
+    u8* p = s;
+    return 0;
+}
+
+function helper(): int { return 1; }

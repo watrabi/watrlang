@@ -1,0 +1,47 @@
+extern function printf(const u8* fmt, ...): i32;
+
+struct Person {
+    string name;
+    int age;
+}
+
+const string GREETING = "Hello";
+const string[3] COLORS = ["red", "green", "blue"];
+
+function describe(Person p): string {
+    return p->name . " is " . p->age;
+}
+
+function shout(string s): string {
+    string out = "";
+    for (usize i = 0; i < len(s); i++) {
+        u8 c = s[i];
+        if (c >= 'a' && c <= 'z') {
+            c -= 32;
+        }
+        out .= string { ptr: &c, len: 1 };
+    }
+    return out;
+}
+
+function main(): int {
+    Person ada = Person { name: "Ada", age: 36 };
+    echo describe(ada), "\n";
+    echo GREETING . ", " . COLORS[2] . "!\n";
+    echo shout("watrlang"), "\n";
+
+    string joined = "";
+    for (int i = 0; i < 3; i++) {
+        joined .= COLORS[i];
+        if (i < 2) joined .= ", ";
+    }
+    echo "colors: {joined} ({len(joined)} bytes)\n";
+
+    // Strings stay NUL-terminated, so ->ptr works with C.
+    printf("via printf: %s, %zu\n", joined->ptr, joined->len);
+
+    string a = "same";
+    string b = "sa" . "me";
+    echo "equal: {a == b}, ordered: {"abc" < "abd"}, {"b" > "abc"}, {"" < "a"}\n";
+    return 0;
+}

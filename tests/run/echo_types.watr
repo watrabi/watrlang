@@ -1,0 +1,17 @@
+struct P { int x; }
+
+function main(): int {
+    i8 a = -128;
+    u8 b = 255;
+    u64 c = 18446744073709551615;
+    i64 d = -9223372036854775807 - 1;
+    f64 e = 3.14159;
+    f32 f = 0.1;
+    bool g = true;
+    P* h = null;
+    echo a, " ", b, " ", c, " ", d, "\n";
+    echo e, " ", f, " ", 1e100, " ", 1.0, " ", -0.5, " ", 1.0 / 3.0, "\n";
+    echo g, " ", !g, " ", h, "\n";
+    echo "interpolated: {a} {c} {e} {g}\n";
+    return 0;
+}
