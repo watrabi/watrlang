@@ -1,6 +1,6 @@
 ---
 name: watrlang
-description: Write, fix, explain, port, or review code in watrlang (.watr files, compiled with `watrc`), a statically typed systems language with PHP-flavored syntax (echo, "string {interpolation}", `.` concatenation, `->` members, foreach, classes) on a C-like core (pointers, structs, alloc/free, inline asm, generics, error unions, bare-metal kernels). Use this skill whenever the user mentions watrlang, watr, watrc, a .watr file, or asks for a program "in watr", even for a tiny snippet, because watrlang looks like PHP and C but differs from both in ways that make plausible-looking code fail to compile.
+description: Write, fix, explain, port, or review code in watrlang (.watr files, compiled with `watrc`), a statically typed systems language with PHP-flavored syntax (echo, "string {interpolation}", `.` concatenation, arrow-style member access, foreach, classes) on a C-like core (pointers, structs, alloc/free, inline asm, generics, error unions, bare-metal kernels). Use this skill whenever the user mentions watrlang, watr, watrc, a .watr file, or asks for a program "in watr", even for a tiny snippet, because watrlang looks like PHP and C but differs from both in ways that make plausible-looking code fail to compile.
 ---
 
 # Writing watrlang
