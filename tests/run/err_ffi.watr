@@ -1,0 +1,4 @@
+function sum(int[4] xs): int { return 0; }
+function v(int a, ...): int { return a; }
+extern function rax(): int;
+export function main(): int { return 0; }

@@ -1,0 +1,30 @@
+struct Vec2 { f32 x; f32 y; }
+struct Mixed { i64 a; f64 b; }
+struct Big { i32[5] v; }
+
+extern function c_scale(Vec2 v, f32 k): Vec2;
+extern function c_mix(int a, Mixed m, f64 d, int b): Mixed;
+extern function c_big(Big b, int add): Big;
+extern function c_calls_watr(): i64;
+extern i64 c_counter;
+extern function printf(const u8* fmt, ...): i32;
+
+export function w_triple(i64 x): i64 {
+    return x * 3;
+}
+
+export function w_swap(Vec2 v): Vec2 {
+    return Vec2 { x: v->y, y: v->x };
+}
+
+function main(): int {
+    Vec2 s = c_scale(Vec2 { x: 1.5, y: -2.0 }, 2.0);
+    Mixed m = c_mix(1, Mixed { a: 10, b: 2.5 }, 4.0, 2);
+    Big b = c_big(Big { v: [1, 2, 3, 4, 5] }, 10);
+    i64 back = c_calls_watr();
+    c_counter += 1;
+    printf("scale: %.1f %.1f | mix: %lld %.1f | big: %d %d | back: %lld | counter: %lld\n",
+           s->x, s->y, m->a, m->b, b->v[0], b->v[4], back, c_counter);
+    return (s->x == 3.0 && s->y == -4.0 && m->a == 13 && m->b == 10.0 && b->v[0] == 11 && b->v[4] == 15
+            && back == 63 && c_counter == 101) as int;
+}

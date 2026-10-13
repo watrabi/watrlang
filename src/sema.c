@@ -29,6 +29,7 @@ typedef struct {
     size_t nmarks, marks_cap;
     int loop_depth;
     int fn_errors_before;
+    bool needs_libc;
 } Sema;
 
 typedef struct {
@@ -1034,6 +1035,27 @@ static Type *check_call(Sema *S, Expr *e) {
         return set_type(e, ty_usize);
     }
 
+    /* free(p) releases memory from alloc. */
+    if (!fn && strcmp(callee->u.name, "free") == 0 && !find_var(S, "free")) {
+        e->builtin = BUILTIN_FREE;
+        S->needs_libc = true;
+        if (e->u.call.nargs != 1) {
+            Diag *d = diag_start(DIAG_ERROR, "E0206", callee->loc, "`free` takes 1 argument but %zu were supplied",
+                                 e->u.call.nargs);
+            diag_label(d, "expected a pointer from `alloc`");
+            diag_end(d);
+            return set_type(e, ty_error);
+        }
+        Type *t = check(S, &e->u.call.args[0], NULL);
+        if (!is_err(t) && t->kind != TY_PTR && t->kind != TY_NULL) {
+            Diag *d = diag_start(DIAG_ERROR, "E0309", e->u.call.args[0]->loc, "`free` needs a pointer, found `%s`",
+                                 type_name(t));
+            diag_label(d, "expected a pointer");
+            diag_end(d);
+        }
+        return set_type(e, ty_void);
+    }
+
     if (!fn) {
         Symbol *v = find_var(S, callee->u.name);
         Diag *d;
@@ -1064,6 +1086,31 @@ static Type *check_call(Sema *S, Expr *e) {
     callee->sym = fn;
     size_t n = e->u.call.nargs, want = fn->nparams;
     bool ok = true;
+    if (fn->is_variadic && n >= want) {
+        /* Fixed parameters as usual; the rest get C's default promotions. */
+        for (size_t i = 0; i < n; i++) {
+            if (i < want) {
+                check(S, &e->u.call.args[i], fn->param_types[i]);
+                coerce(S, &e->u.call.args[i], fn->param_types[i], &fn->decl->u.func.params[i]->type->loc,
+                       "declared parameter type");
+                continue;
+            }
+            Expr *arg = e->u.call.args[i];
+            Type *hint = arg->kind == EXPR_STRING ? type_ptr(ty_u8, true, false) : NULL;
+            Type *t = check(S, &e->u.call.args[i], hint);
+            arg = e->u.call.args[i];
+            if (is_err(t) || !require_value(S, arg)) continue;
+            if (t->kind == TY_ARRAY) {
+                Diag *d = diag_start(DIAG_ERROR, "E0335", arg->loc, "arrays can't be passed by value");
+                diag_label(d, "this is `%s`", type_name(t));
+                diag_help(d, "pass a pointer to the first element: `&arr[0]`");
+                diag_end(d);
+            } else if (t->kind == TY_FLOAT && t->size == 4) {
+                e->u.call.args[i] = wrap_cast(S, arg, ty_f64);   /* C promotes float to double */
+            }
+        }
+        return set_type(e, fn->type);
+    }
     if (n != want) {
         Diag *d = diag_start(DIAG_ERROR, "E0206", callee->loc, "function `%s` takes %zu argument%s but %zu %s supplied",
                              fn->name, want, want == 1 ? "" : "s", n, n == 1 ? "was" : "were");
@@ -1314,11 +1361,38 @@ static Type *check(Sema *S, Expr **slot, Type *hint) {
         return set_type(e, ty_error);
 
     case EXPR_STRING:
-    case EXPR_INTERP:     not_yet(e->loc, "strings", 7); break;
+        /* Until the `string` type exists, a literal can be used where a
+         * byte pointer is expected: it's stored NUL-terminated, C-style. */
+        if (hint && hint->kind == TY_PTR && type_is_int(hint->base) && hint->base->size == 1)
+            return set_type(e, hint);
+        not_yet(e->loc, "the `string` type (a literal can be passed where a `u8*` is expected)", 7);
+        break;
+    case EXPR_INTERP:     not_yet(e->loc, "string interpolation", 7); break;
     case EXPR_THIS:       not_yet(e->loc, "classes", 10); break;
     case EXPR_SCOPE:      not_yet(e->loc, "enums", 12); break;
     case EXPR_NEW:        not_yet(e->loc, "`new`", 11); break;
-    case EXPR_ALLOC:      not_yet(e->loc, "`alloc`", 6); break;
+    case EXPR_ALLOC: {
+        /* alloc(T) or alloc(T, n): zeroed memory for n values of T. */
+        S->needs_libc = true;
+        Type *t = resolve_type(S, e->u.alloc.type, false);
+        if (e->u.alloc.count) {
+            Type *ct = check(S, &e->u.alloc.count, ty_usize);
+            if (!is_err(ct) && !type_is_int(ct)) {
+                Diag *d = diag_start(DIAG_ERROR, "E0309", e->u.alloc.count->loc, "`alloc` count must be an integer, found `%s`",
+                                     type_name(ct));
+                diag_label(d, "expected an integer");
+                diag_end(d);
+            }
+        }
+        if (is_err(t)) return set_type(e, ty_error);
+        if (t->size == 0) {
+            Diag *d = diag_start(DIAG_ERROR, "E0330", e->u.alloc.type->loc, "can't allocate a zero-sized type");
+            diag_label(d, "`%s` has no size", type_name(t));
+            diag_end(d);
+            return set_type(e, ty_error);
+        }
+        return set_type(e, type_ptr(t, false, false));
+    }
     case EXPR_TRY:        not_yet(e->loc, "error propagation with `?`", 9); break;
     }
     return set_type(e, ty_error);
@@ -1873,18 +1947,59 @@ static void check_function_body(Sema *S, Symbol *fn) {
     S->fn = NULL;
 }
 
-/* Parameters and return values travel in registers; structs and arrays
- * by value need the full System V classification (milestone 6). */
+/* Structs can be passed and returned by value (System V rules); arrays
+ * can't, as in C. */
 static bool passable(Sema *S, Type *t, Loc loc, const char *what) {
     (void)S;
-    if (!type_is_aggregate(t)) return true;
-    Diag *d = diag_start(DIAG_ERROR, "E0900", loc, "not supported yet: %s of type `%s`", what, type_name(t));
-    diag_label(d, "planned for milestone 6");
+    if (t->kind != TY_ARRAY) return true;
+    Diag *d = diag_start(DIAG_ERROR, "E0335", loc, "arrays can't be %s by value", what);
+    diag_label(d, "`%s` is an array", type_name(t));
     char fixed[160];
-    snprintf(fixed, sizeof fixed, "%s*", type_name(t));
-    diag_fix(d, loc, fixed, "pass a pointer instead");
+    snprintf(fixed, sizeof fixed, "%s*", type_name(t->base));
+    diag_fix(d, loc, fixed, "pass a pointer to the first element instead");
+    diag_note(d, "the caller can pass `&arr[0]`, and the length alongside it");
     diag_end(d);
     return false;
+}
+
+/* x86 register names can't be symbol names in Intel-syntax assembly:
+ * `call rax` would call the register. watrlang's own names are prefixed
+ * with `w.`, but extern/export names are used as they are. */
+static bool is_register_name(const char *n) {
+    static const char *const regs[] = {
+        "rax", "rbx", "rcx", "rdx", "rsi", "rdi", "rbp", "rsp", "eax", "ebx", "ecx", "edx", "esi", "edi", "ebp",
+        "esp", "ax", "bx", "cx", "dx", "si", "di", "bp", "sp", "al", "bl", "cl", "dl", "ah", "bh", "ch", "dh",
+        "sil", "dil", "bpl", "spl", "rip", "eip", "cs", "ds", "es", "fs", "gs", "ss", "cr0", "cr2", "cr3", "cr4",
+    };
+    for (size_t i = 0; i < sizeof regs / sizeof regs[0]; i++)
+        if (strcmp(n, regs[i]) == 0) return true;
+    if (n[0] == 'r' && n[1] >= '8' && n[1] <= '9') return true;            /* r8..r9, r8d, ... */
+    if (n[0] == 'r' && n[1] == '1' && n[2] >= '0' && n[2] <= '5') return true;  /* r10..r15 */
+    if (strncmp(n, "xmm", 3) == 0 || strncmp(n, "ymm", 3) == 0 || strncmp(n, "zmm", 3) == 0) return true;
+    if (n[0] == 's' && n[1] == 't' && (n[2] == '\0' || n[2] == '(')) return true;
+    return false;
+}
+
+/* Sets the assembly name: plain for extern/export, `w.name` otherwise. */
+static void set_asm_name(Sema *S, Symbol *sym, const Decl *d) {
+    sym->is_extern = d->is_extern;
+    sym->is_export = d->is_export;
+    if (!d->is_extern && !d->is_export) {
+        size_t n = strlen(sym->name) + 3;
+        char *name = arena_alloc(S->arena, n);
+        snprintf(name, n, "w.%s", sym->name);
+        sym->asm_name = name;
+        return;
+    }
+    sym->asm_name = sym->name;
+    if (d->is_extern) S->needs_libc = true;  /* defined elsewhere: link with the C toolchain */
+    if (is_register_name(sym->name)) {
+        Diag *e = diag_start(DIAG_ERROR, "E0336", sym->loc, "`%s` can't be %s because it's an x86 register name",
+                             sym->name, d->is_extern ? "an extern symbol" : "exported");
+        diag_label(e, "assembles as a register, not a symbol");
+        diag_note(e, "watrlang's own functions are renamed internally, but extern and export names are used as-is");
+        diag_end(e);
+    }
 }
 
 static void declare_function(Sema *S, Decl *d) {
@@ -1893,20 +2008,30 @@ static void declare_function(Sema *S, Decl *d) {
     d->sym = fn;
     ptrvec_push(&S->funcs, fn);
 
-    if (d->is_extern || d->is_export) {
-        not_yet(d->loc, d->is_extern ? "`extern` functions" : "`export`", d->is_extern ? 6 : 13);
+    set_asm_name(S, fn, d);
+    fn->is_variadic = d->u.func.variadic;
+    if (d->u.func.variadic && !d->is_extern) {
+        Diag *e = diag_start(DIAG_ERROR, "E0334", d->name_loc, "only `extern` functions can be variadic");
+        diag_label(e, "`%s` takes `...`", d->name);
+        diag_note(e, "watrlang functions can't read variadic arguments; `...` is for calling C functions like printf");
+        diag_end(e);
     }
-    if (d->u.func.variadic) not_yet(d->name_loc, "variadic functions", 6);
+    if (strcmp(d->name, "main") == 0 && (d->is_extern || d->is_export)) {
+        Diag *e = diag_start(DIAG_ERROR, "E0337", d->loc, "`main` can't be `%s`", d->is_extern ? "extern" : "export");
+        diag_label(e, "remove `%s`", d->is_extern ? "extern" : "export");
+        diag_note(e, "the compiler already makes `main` the program's entry point");
+        diag_end(e);
+    }
 
     fn->type = d->u.func.ret ? resolve_type(S, d->u.func.ret, true) : ty_void;
-    if (!is_err(fn->type) && !passable(S, fn->type, d->u.func.ret ? d->u.func.ret->loc : d->name_loc, "returning a value"))
+    if (!is_err(fn->type) && !passable(S, fn->type, d->u.func.ret ? d->u.func.ret->loc : d->name_loc, "returned"))
         fn->type = ty_error;
     fn->nparams = d->u.func.nparams;
     fn->param_types = arena_alloc(S->arena, (fn->nparams ? fn->nparams : 1) * sizeof(Type *));
     for (size_t i = 0; i < fn->nparams; i++) {
         Param *p = d->u.func.params[i];
         Type *t = resolve_type(S, p->type, false);
-        if (!is_err(t) && !passable(S, t, p->type->loc, "a parameter")) t = ty_error;
+        if (!is_err(t) && !passable(S, t, p->type->loc, "passed")) t = ty_error;
         fn->param_types[i] = t;
     }
 }
@@ -1919,7 +2044,7 @@ static void declare_global(Sema *S, Decl *d) {
     g->is_const = vd->type->is_const;
     d->sym = g;
     vd->sym = g;
-    if (d->is_extern || d->is_export) not_yet(d->loc, d->is_extern ? "`extern` variables" : "`export`", d->is_extern ? 6 : 13);
+    set_asm_name(S, g, d);
     g->type = resolve_type(S, vd->type, false);
     if (g->is_const && !vd->init) report_missing_const_value(vd);
 
@@ -2020,6 +2145,7 @@ bool sema_check(Arena *arena, Module *m, Program *prog) {
         if (fn->decl->u.func.body) check_function_body(&S, fn);
     }
 
+    prog->needs_libc = S.needs_libc;
     prog->funcs = (Symbol **)ptrvec_finish(&S.funcs, arena, &prog->nfuncs);
     prog->globals = (Symbol **)ptrvec_finish(&S.globals, arena, &prog->nglobals);
     free(S.structs.items);

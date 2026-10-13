@@ -6,7 +6,7 @@ error[E0900]: not supported yet: `echo`
   |
   = note: watrlang is still being built; docs/DESIGN.md has the roadmap
 
-error[E0900]: not supported yet: strings
+error[E0900]: not supported yet: the `string` type (a literal can be passed where a `u8*` is expected)
  --> tests/run/err_not_yet.watr:5:12
   |
 5 |     return "nope";

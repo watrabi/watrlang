@@ -53,6 +53,11 @@ typedef struct {
 } PanicSite;
 
 typedef struct {
+    int label;
+    StrBuf bytes;
+} StringLit;
+
+typedef struct {
     FILE *out;
     int labels;
 
@@ -62,8 +67,12 @@ typedef struct {
     int frame;              /* bytes of locals/temporaries */
     Loop *loops;
     size_t nloops, loops_cap;
+    const Symbol *fn;
+    int hidden_slot;        /* where the caller's return buffer pointer is kept (struct returns) */
 
-    PtrVec panics;          /* PanicSite*: bounds-check failure messages */
+    bool libc;              /* linked with the C runtime */
+    PtrVec panics;          /* PanicSite*: runtime check failure messages */
+    PtrVec strings;         /* StringLit*: literals for .rodata */
 } Gen;
 
 static void emit(Gen *g, const char *fmt, ...) WATR_PRINTF(2, 3);
@@ -96,6 +105,52 @@ static ValClass cls(const Type *t) {
     case TY_VOID: return CLS_NONE;
     default: return CLS_GPR;
     }
+}
+
+/* System V classification of a value passed in registers: up to two
+ * eightbytes, each INTEGER or SSE; larger structs go in MEMORY. */
+typedef enum { EB_NONE, EB_INT, EB_SSE } Eightbyte;
+
+typedef struct {
+    bool memory;
+    int n;              /* eightbytes */
+    Eightbyte eb[2];
+} Classification;
+
+static void classify_into(const Type *t, uint32_t off, Eightbyte eb[2]) {
+    switch (t->kind) {
+    case TY_STRUCT:
+        for (size_t i = 0; i < t->nfields; i++) classify_into(t->fields[i].type, off + t->fields[i].offset, eb);
+        break;
+    case TY_ARRAY:
+        for (uint64_t i = 0; i < t->len; i++) classify_into(t->base, off + (uint32_t)(i * t->base->size), eb);
+        break;
+    case TY_FLOAT:
+        if (eb[off / 8] == EB_NONE) eb[off / 8] = EB_SSE;   /* INTEGER wins if both appear */
+        break;
+    default:
+        eb[off / 8] = EB_INT;
+        break;
+    }
+}
+
+static Classification classify(const Type *t) {
+    Classification c = {false, 0, {EB_NONE, EB_NONE}};
+    if (t->kind == TY_VOID) return c;
+    if (type_is_aggregate(t)) {
+        if (t->size > 16) {
+            c.memory = true;
+            return c;
+        }
+        c.n = (int)((t->size + 7) / 8);
+        classify_into(t, 0, c.eb);
+        for (int i = 0; i < c.n; i++)
+            if (c.eb[i] == EB_NONE) c.eb[i] = EB_SSE;   /* padding-only eightbyte */
+        return c;
+    }
+    c.n = 1;
+    c.eb[0] = t->kind == TY_FLOAT ? EB_SSE : EB_INT;
+    return c;
 }
 
 static const char *size_ptr(uint32_t size) {
@@ -198,7 +253,7 @@ static void emit_store(Gen *g, const Type *t, const char *addr) {
 
 /* Where a variable lives, as an addressing expression. */
 static const char *var_addr(char *buf, size_t cap, const Symbol *s) {
-    if (s->kind == SYM_GLOBAL) snprintf(buf, cap, "rip + w.%s", s->name);
+    if (s->kind == SYM_GLOBAL) snprintf(buf, cap, "rip + %s", s->asm_name);
     else snprintf(buf, cap, "rbp %c %d", s->offset < 0 ? '-' : '+', s->offset < 0 ? -s->offset : s->offset);
     return buf;
 }
@@ -243,6 +298,35 @@ static void emit_int_const(Gen *g, uint64_t bits) {
     else emit(g, "movabs rax, %lld", (long long)v);
 }
 
+/* Calls a C function whose arguments are already in registers, keeping
+ * rsp 16-byte aligned. */
+static void emit_c_call(Gen *g, const char *name) {
+    bool pad = g->depth % 2 != 0;
+    if (pad) emit(g, "sub rsp, 8");
+    emit(g, "call %s", name);
+    if (pad) emit(g, "add rsp, 8");
+}
+
+static int add_panic(Gen *g, const Expr *at, const char *what) {
+    PanicSite *site = xmalloc(sizeof *site);
+    site->label = new_label(g);
+    char msg[512];
+    snprintf(msg, sizeof msg, "panic at %s:%u:%u: %s\n", at->loc.file->path, at->loc.line, at->loc.col, what);
+    site->msg = xmalloc(strlen(msg) + 1);
+    strcpy(site->msg, msg);
+    ptrvec_push(&g->panics, site);
+    return site->label;
+}
+
+static void emit_panic_call(Gen *g, int label) {
+    PanicSite *site = NULL;
+    for (size_t i = 0; i < g->panics.len; i++)
+        if (((PanicSite *)g->panics.items[i])->label == label) site = g->panics.items[i];
+    emit(g, "lea rdi, [rip + .Lpanic%d]", label);
+    emit(g, "mov esi, %zu", strlen(site->msg));
+    emit(g, "call w.panic");
+}
+
 /* ---- expressions --------------------------------------------------------- */
 
 static void gen_value(Gen *g, const Expr *e);
@@ -262,21 +346,13 @@ static void emit_scale(Gen *g, const char *reg, uint32_t n) {
 /* Index in rax: continue if it's below `len`, otherwise report where and
  * exit with status 101. Negative indexes are huge when compared unsigned. */
 static void emit_bounds_check(Gen *g, const Expr *index, uint64_t len) {
-    PanicSite *site = xmalloc(sizeof *site);
-    site->label = new_label(g);
-    char msg[512];
-    snprintf(msg, sizeof msg, "panic at %s:%u:%u: index out of bounds (array length %llu)\n", index->loc.file->path,
-             index->loc.line, index->loc.col, (unsigned long long)len);
-    site->msg = xmalloc(strlen(msg) + 1);
-    strcpy(site->msg, msg);
-    ptrvec_push(&g->panics, site);
-
+    char what[96];
+    snprintf(what, sizeof what, "index out of bounds (array length %llu)", (unsigned long long)len);
+    int site = add_panic(g, index, what);
     int ok = new_label(g);
     emit(g, "cmp rax, %llu", (unsigned long long)len);
     emit(g, "jb .L%d", ok);
-    emit(g, "lea rdi, [rip + .Lpanic%d]", site->label);
-    emit(g, "mov esi, %zu", strlen(msg));
-    emit(g, "call w.panic");
+    emit_panic_call(g, site);
     emit_label(g, ok);
 }
 
@@ -285,7 +361,8 @@ static void gen_addr(Gen *g, const Expr *e) {
     char buf[96];
     switch (e->kind) {
     case EXPR_IDENT:
-        emit(g, "lea rax, [%s]", var_addr(buf, sizeof buf, e->sym));
+        if (e->sym->is_extern) emit(g, "mov rax, qword ptr [rip + %s@GOTPCREL]", e->sym->asm_name);
+        else emit(g, "lea rax, [%s]", var_addr(buf, sizeof buf, e->sym));
         return;
     case EXPR_UNARY:  /* *p */
         gen_value(g, e->u.unary.operand);
@@ -560,46 +637,117 @@ static void gen_cast(Gen *g, const Expr *e) {
     normalize(g, to);
 }
 
+/* Where one argument goes. */
+typedef struct {
+    const Type *type;
+    int slot;            /* frame temp holding the evaluated argument */
+    uint32_t size;       /* bytes copied when passed on the stack (multiple of 8) */
+    bool on_stack;
+    int stack_off;
+    int reg[2];          /* per eightbyte: GPR or XMM index */
+    Classification c;
+} ArgPlace;
+
+/*
+ * System V calls: arguments are evaluated left to right into frame
+ * temporaries, then placed: each eightbyte of an INTEGER-class value in
+ * rdi, rsi, rdx, rcx, r8, r9; SSE-class in xmm0-7; a struct whose
+ * eightbytes don't all fit (or that's bigger than 16 bytes) goes on the
+ * stack whole. A struct returned in MEMORY gets a hidden pointer in rdi.
+ */
 static void gen_call(Gen *g, const Expr *e) {
+    if (e->builtin == BUILTIN_FREE) {
+        gen_value(g, e->u.call.args[0]);
+        emit(g, "mov rdi, rax");
+        emit_c_call(g, "free");
+        return;
+    }
+
     const Symbol *fn = e->sym;
     size_t n = e->u.call.nargs;
+    ArgPlace *args = xmalloc((n ? n : 1) * sizeof *args);
+    char addr[64];
 
     for (size_t i = 0; i < n; i++) {
-        gen_value(g, e->u.call.args[i]);
-        push_value(g, fn->param_types[i]);
+        const Expr *arg = e->u.call.args[i];
+        const Type *t = i < fn->nparams ? fn->param_types[i] : arg->type;
+        if (t->kind == TY_NULL) t = arg->type;
+        args[i].type = t;
+        gen_value(g, arg);
+        bool agg = type_is_aggregate(t);
+        args[i].size = agg ? (t->size + 7) & ~7u : 8;
+        args[i].slot = alloc_slot(g, args[i].size, 8);
+        snprintf(addr, sizeof addr, "rbp - %d", -args[i].slot);
+        if (agg) emit_store(g, t, addr);
+        else if (cls(t) == CLS_SSE) emit(g, "movsd qword ptr [%s], xmm0", addr);
+        else emit(g, "mov qword ptr [%s], rax", addr);
     }
 
-    /* System V: ints and pointers go in rdi, rsi, rdx, rcx, r8, r9; floats
-     * in xmm0-7; whatever doesn't fit goes on the stack, in order. */
-    int where[256];   /* >= 0: register index; < 0: -(stack slot + 1) */
-    int ngpr = 0, nsse = 0, nstack = 0;
-    for (size_t i = 0; i < n && i < 256; i++) {
-        bool sse = cls(fn->param_types[i]) == CLS_SSE;
-        if (sse && nsse < 8) where[i] = nsse++;
-        else if (!sse && ngpr < 6) where[i] = ngpr++;
-        else where[i] = -(++nstack);
-    }
-
-    int pad = (g->depth + nstack) % 2 != 0;
-    int extra = 8 * (nstack + pad);
-    if (extra) emit(g, "sub rsp, %d", extra);
-    /* With everything pushed, argument i sits at [rsp + extra + 8*(n-1-i)]. */
+    Classification ret = classify(fn->type);
+    int ngpr = ret.memory ? 1 : 0, nsse = 0, stack = 0;
     for (size_t i = 0; i < n; i++) {
-        if (where[i] >= 0) continue;
-        emit(g, "mov rax, qword ptr [rsp + %d]", extra + 8 * (int)(n - 1 - i));
-        emit(g, "mov qword ptr [rsp + %d], rax", 8 * (-where[i] - 1));
-    }
-    for (size_t i = 0; i < n; i++) {
-        if (where[i] < 0) continue;
-        int src = extra + 8 * (int)(n - 1 - i);
-        if (cls(fn->param_types[i]) == CLS_SSE) emit(g, "movsd xmm%d, qword ptr [rsp + %d]", where[i], src);
-        else emit(g, "mov %s, qword ptr [rsp + %d]", arg_regs[where[i]]->q, src);
+        ArgPlace *a = &args[i];
+        a->c = classify(a->type);
+        int kint = 0, ksse = 0;
+        for (int j = 0; j < a->c.n; j++) {
+            if (a->c.eb[j] == EB_INT) kint++;
+            else ksse++;
+        }
+        a->on_stack = a->c.memory || ngpr + kint > 6 || nsse + ksse > 8;
+        if (a->on_stack) {
+            a->stack_off = stack;
+            stack += (int)a->size;
+        } else {
+            for (int j = 0; j < a->c.n; j++) a->reg[j] = a->c.eb[j] == EB_INT ? ngpr++ : nsse++;
+        }
     }
 
-    emit(g, "call w.%s", fn->name);
-    int cleanup = extra + 8 * (int)n;
-    if (cleanup) emit(g, "add rsp, %d", cleanup);
-    g->depth -= (int)n;
+    int pad = (g->depth * 8 + stack) % 16 ? 8 : 0;
+    int total = stack + pad;
+    if (total) emit(g, "sub rsp, %d", total);
+    for (size_t i = 0; i < n; i++) {
+        if (!args[i].on_stack) continue;
+        for (uint32_t j = 0; j < args[i].size; j += 8) {
+            emit(g, "mov rax, qword ptr [rbp - %d]", -args[i].slot - (int)j);
+            emit(g, "mov qword ptr [rsp + %d], rax", args[i].stack_off + (int)j);
+        }
+    }
+    for (size_t i = 0; i < n; i++) {
+        if (args[i].on_stack) continue;
+        for (int j = 0; j < args[i].c.n; j++) {
+            int src = -args[i].slot - 8 * j;
+            if (args[i].c.eb[j] == EB_INT) emit(g, "mov %s, qword ptr [rbp - %d]", arg_regs[args[i].reg[j]]->q, src);
+            else emit(g, "movsd xmm%d, qword ptr [rbp - %d]", args[i].reg[j], src);
+        }
+    }
+    int ret_slot = 0;
+    if (ret.memory) {
+        ret_slot = alloc_slot(g, fn->type->size, fn->type->align);
+        emit(g, "lea rdi, [rbp - %d]", -ret_slot);
+    }
+    if (fn->is_variadic) emit(g, "mov eax, %d", nsse);   /* vector registers used, for varargs */
+
+    emit(g, "call %s", fn->asm_name);
+    if (total) emit(g, "add rsp, %d", total);
+    free(args);
+
+    const Type *rt = fn->type;
+    if (ret.memory) {
+        emit(g, "lea rax, [rbp - %d]", -ret_slot);
+    } else if (type_is_aggregate(rt)) {
+        /* Reassemble the struct from rax/rdx and xmm0/xmm1. */
+        int slot = alloc_slot(g, 16, 8);
+        int gi = 0, si = 0;
+        for (int j = 0; j < ret.n; j++) {
+            if (ret.eb[j] == EB_INT) emit(g, "mov qword ptr [rbp - %d], %s", -slot - 8 * j, gi++ ? "rdx" : "rax");
+            else emit(g, "movsd qword ptr [rbp - %d], xmm%d", -slot - 8 * j, si++);
+        }
+        emit(g, "lea rax, [rbp - %d]", -slot);
+    } else if (rt->kind == TY_BOOL) {
+        emit(g, "movzx eax, al");   /* C only defines the low byte */
+    } else {
+        normalize(g, rt);           /* C leaves the upper bits of small ints undefined */
+    }
 }
 
 static void gen_aggregate_lit(Gen *g, const Expr *e) {
@@ -639,6 +787,29 @@ static void gen_value(Gen *g, const Expr *e) {
     case EXPR_FLOAT:
         emit_float_const(g, t, e->u.float_val);
         return;
+    case EXPR_STRING: {
+        StringLit *lit = xmalloc(sizeof *lit);
+        lit->label = new_label(g);
+        lit->bytes = e->u.str;
+        ptrvec_push(&g->strings, lit);
+        emit(g, "lea rax, [rip + .Lstr%d]", lit->label);
+        return;
+    }
+    case EXPR_ALLOC: {
+        /* calloc(count, size): zeroed, and it checks count * size for overflow. */
+        if (e->u.alloc.count) gen_value(g, e->u.alloc.count);
+        else emit(g, "mov eax, 1");
+        emit(g, "mov rdi, rax");
+        emit(g, "mov esi, %u", t->base->size);
+        emit_c_call(g, "calloc");
+        int site = add_panic(g, e, "out of memory");
+        int ok = new_label(g);
+        emit(g, "test rax, rax");
+        emit(g, "jnz .L%d", ok);
+        emit_panic_call(g, site);
+        emit_label(g, ok);
+        return;
+    }
     case EXPR_BOOL:
         emit(g, "mov eax, %d", e->u.bool_val ? 1 : 0);
         return;
@@ -646,7 +817,12 @@ static void gen_value(Gen *g, const Expr *e) {
         emit(g, "xor eax, eax");
         return;
     case EXPR_IDENT:
-        emit_load(g, t, var_addr(buf, sizeof buf, e->sym));
+        if (e->sym->is_extern) {
+            gen_addr(g, e);
+            emit_load(g, t, "rax");
+        } else {
+            emit_load(g, t, var_addr(buf, sizeof buf, e->sym));
+        }
         return;
     case EXPR_UNARY: {
         TokenKind op = e->u.unary.op;
@@ -758,7 +934,7 @@ static void gen_assign(Gen *g, const Expr *e) {
     char buf[96];
 
     if (op == TOK_ASSIGN) {
-        if (target->kind == EXPR_IDENT) {
+        if (target->kind == EXPR_IDENT && !target->sym->is_extern) {
             gen_value(g, value);
             emit_store(g, t, var_addr(buf, sizeof buf, target->sym));
             return;
@@ -859,7 +1035,34 @@ static void gen_stmt(Gen *g, const Stmt *s) {
         gen_var_decl(g, s->u.var);
         break;
     case STMT_RETURN:
-        if (s->u.expr) gen_value(g, s->u.expr);
+        if (s->u.expr) {
+            gen_value(g, s->u.expr);
+            const Type *rt = g->fn->type;
+            if (type_is_aggregate(rt)) {
+                Classification c = classify(rt);
+                if (c.memory) {
+                    /* Copy into the caller's buffer and return its address. */
+                    emit(g, "mov rdi, qword ptr [rbp - %d]", -g->hidden_slot);
+                    emit(g, "mov rsi, rax");
+                    emit(g, "mov ecx, %u", rt->size);
+                    emit(g, "rep movsb");
+                    emit(g, "mov rax, qword ptr [rbp - %d]", -g->hidden_slot);
+                } else {
+                    /* Copy to a 16-byte temp so loading whole eightbytes
+                     * can't read past the end of the source. */
+                    int slot = alloc_slot(g, 16, 8);
+                    emit(g, "lea rdi, [rbp - %d]", -slot);
+                    emit(g, "mov rsi, rax");
+                    emit(g, "mov ecx, %u", rt->size);
+                    emit(g, "rep movsb");
+                    int gi = 0, si = 0;
+                    for (int j = 0; j < c.n; j++) {
+                        if (c.eb[j] == EB_INT) emit(g, "mov %s, qword ptr [rbp - %d]", gi++ ? "rdx" : "rax", -slot - 8 * j);
+                        else emit(g, "movsd xmm%d, qword ptr [rbp - %d]", si++, -slot - 8 * j);
+                    }
+                }
+            }
+        }
         emit(g, "jmp .L%d", g->ret_label);
         break;
     case STMT_IF: {
@@ -940,17 +1143,33 @@ static void gen_function(Gen *g, const Symbol *fn) {
     g->out = open_memstream(&body, &body_len);
     if (!g->out) fatal("open_memstream failed");
 
-    /* Spill register parameters; stack parameters stay where the caller put them. */
-    int ngpr = 0, nsse = 0, nstack = 0;
+    /* Spill register parameters; stack parameters stay where the caller
+     * put them. This must place arguments exactly like gen_call. */
+    int ngpr = 0, nsse = 0, stack = 16;
+    g->fn = fn;
+    if (classify(fn->type).memory) {
+        g->hidden_slot = alloc_slot(g, 8, 8);
+        emit(g, "mov qword ptr [rbp - %d], rdi", -g->hidden_slot);
+        ngpr = 1;
+    }
     for (size_t i = 0; i < d->u.func.nparams; i++) {
         Symbol *p = d->u.func.params[i]->sym;
-        bool sse = cls(p->type) == CLS_SSE;
-        if ((sse && nsse < 8) || (!sse && ngpr < 6)) {
-            p->offset = alloc_slot(g, 8, 8);
-            if (sse) emit(g, "movsd qword ptr [rbp - %d], xmm%d", -p->offset, nsse++);
-            else emit(g, "mov qword ptr [rbp - %d], %s", -p->offset, arg_regs[ngpr++]->q);
-        } else {
-            p->offset = 16 + 8 * nstack++;
+        Classification c = classify(p->type);
+        int kint = 0, ksse = 0;
+        for (int j = 0; j < c.n; j++) {
+            if (c.eb[j] == EB_INT) kint++;
+            else ksse++;
+        }
+        uint32_t size = type_is_aggregate(p->type) ? (p->type->size + 7) & ~7u : 8;
+        if (c.memory || ngpr + kint > 6 || nsse + ksse > 8) {
+            p->offset = stack;
+            stack += (int)size;
+            continue;
+        }
+        p->offset = alloc_slot(g, size, 8);
+        for (int j = 0; j < c.n; j++) {
+            if (c.eb[j] == EB_INT) emit(g, "mov qword ptr [rbp - %d], %s", -p->offset - 8 * j, arg_regs[ngpr++]->q);
+            else emit(g, "movsd qword ptr [rbp - %d], xmm%d", -p->offset - 8 * j, nsse++);
         }
     }
     gen_body(g, d->u.func.body);
@@ -959,7 +1178,10 @@ static void gen_function(Gen *g, const Symbol *fn) {
     g->out = real_out;
 
     int frame = (g->frame + 15) & ~15;
-    fprintf(g->out, "\n    .globl w.%s\n    .type w.%s, @function\nw.%s:\n", d->name, d->name, d->name);
+    const char *name = fn->asm_name;
+    fputc('\n', g->out);
+    if (fn->is_export) fprintf(g->out, "    .globl %s\n", name);
+    fprintf(g->out, "    .type %s, @function\n%s:\n", name, name);
     emit(g, "push rbp");
     emit(g, "mov rbp, rsp");
     if (frame) emit(g, "sub rsp, %d", frame);
@@ -968,7 +1190,7 @@ static void gen_function(Gen *g, const Symbol *fn) {
     emit_label(g, g->ret_label);
     emit(g, "leave");
     emit(g, "ret");
-    fprintf(g->out, "    .size w.%s, .-w.%s\n", d->name, d->name);
+    fprintf(g->out, "    .size %s, .-%s\n", name, name);
 }
 
 /* ---- data ------------------------------------------------------------------ */
@@ -995,10 +1217,11 @@ static void emit_globals(Gen *g, const Program *prog) {
         for (size_t i = 0; i < prog->nglobals; i++) {
             const Symbol *v = prog->globals[i];
             int want = v->is_const ? 1 : v->init ? 0 : 2;
-            if (want != sec || v->type->size == 0) continue;
+            if (want != sec || v->type->size == 0 || v->is_extern) continue;
             if (!any) fprintf(g->out, "\n    .section %s\n", sections[sec]);
             any = true;
-            fprintf(g->out, "    .p2align %d\nw.%s:\n", log2_align(v->type->align), v->name);
+            if (v->is_export) fprintf(g->out, "    .globl %s\n", v->asm_name);
+            fprintf(g->out, "    .p2align %d\n%s:\n", log2_align(v->type->align), v->asm_name);
             if (v->init) emit_bytes(g, v->init, v->type->size);
             else fprintf(g->out, "    .zero %u\n", v->type->size);
         }
@@ -1021,19 +1244,32 @@ void codegen_x64(const Module *m, const Program *prog, FILE *out) {
     Gen g = {0};
     g.out = out;
 
+    g.libc = prog->needs_libc;
     fprintf(out, "# generated by watrc from %s\n", m->file->path);
-    fputs("    .intel_syntax noprefix\n"
-          "    .text\n"
-          "\n"
-          "# Process entry: call main, exit with its return value.\n"
-          "    .globl _start\n"
-          "_start:\n"
-          "    xor ebp, ebp\n"
-          "    call w.main\n"
-          "    mov edi, eax\n"
-          "    mov eax, 60\n"
-          "    syscall\n",
-          out);
+    fputs("    .intel_syntax noprefix\n    .text\n", out);
+    if (g.libc) {
+        /* Linked with the C runtime: its startup code calls this `main`. */
+        fputs("\n# C entry point: the C runtime calls this, and exits with its result.\n"
+              "    .globl main\n"
+              "    .type main, @function\n"
+              "main:\n"
+              "    push rbp\n"
+              "    mov rbp, rsp\n"
+              "    call w.main\n"
+              "    pop rbp\n"
+              "    ret\n",
+              out);
+    } else {
+        fputs("\n# Process entry: call main, exit with its return value.\n"
+              "    .globl _start\n"
+              "_start:\n"
+              "    xor ebp, ebp\n"
+              "    call w.main\n"
+              "    mov edi, eax\n"
+              "    mov eax, 60\n"
+              "    syscall\n",
+              out);
+    }
 
     for (size_t i = 0; i < prog->nfuncs; i++)
         if (prog->funcs[i]->decl->u.func.body) gen_function(&g, prog->funcs[i]);
@@ -1047,11 +1283,17 @@ void codegen_x64(const Module *m, const Program *prog, FILE *out) {
               "    mov edi, 2\n"
               "    mov eax, 1\n"
               "    syscall\n"
-              "    mov edi, 101\n"
-              "    mov eax, 60\n"
-              "    syscall\n"
-              "\n    .section .rodata\n",
+              "    mov edi, 101\n",
               out);
+        if (g.libc)   /* exit() flushes stdio buffers, so earlier printf output isn't lost */
+            fputs("    and rsp, -16\n"
+                  "    call exit\n",
+                  out);
+        else
+            fputs("    mov eax, 60\n"
+                  "    syscall\n",
+                  out);
+        fputs("\n    .section .rodata\n", out);
         for (size_t i = 0; i < g.panics.len; i++) {
             PanicSite *site = g.panics.items[i];
             fprintf(out, ".Lpanic%d:\n", site->label);
@@ -1061,11 +1303,23 @@ void codegen_x64(const Module *m, const Program *prog, FILE *out) {
         }
     }
 
+    if (g.strings.len) {
+        fputs("\n    .section .rodata\n", out);
+        for (size_t i = 0; i < g.strings.len; i++) {
+            StringLit *lit = g.strings.items[i];
+            fprintf(out, ".Lstr%d:\n", lit->label);
+            emit_bytes(&g, (const unsigned char *)lit->bytes.data, (uint32_t)lit->bytes.len);
+            fputs("    .byte 0\n", out);
+            free(lit);
+        }
+    }
+
     emit_globals(&g, prog);
 
     /* Tell the linker this code doesn't need an executable stack. */
     fputs("\n    .section .note.GNU-stack,\"\",@progbits\n", out);
 
     free(g.panics.items);
+    free(g.strings.items);
     free(g.loops);
 }

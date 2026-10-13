@@ -13,9 +13,10 @@
 #define WATRC_VERSION "0.0.1"
 
 static void usage(FILE *out) {
-    fputs("usage: watrc [options] file.watr\n"
+    fputs("usage: watrc [options] file.watr [file.c file.o lib.a ...]\n"
           "\n"
           "Compiles file.watr into a native executable (file, without .watr).\n"
+          "Extra C sources, objects and libraries are linked in.\n"
           "\n"
           "options:\n"
           "  -o <path>    write the output here\n"
@@ -38,6 +39,11 @@ static char *default_output(const char *path, const char *suffix) {
     memcpy(out, path, n);
     strcpy(out + n, suffix);
     return out;
+}
+
+static bool has_suffix(const char *s, const char *suffix) {
+    size_t n = strlen(s), k = strlen(suffix);
+    return n > k && strcmp(s + n - k, suffix) == 0;
 }
 
 static void dump_token(const Token *t) {
@@ -79,6 +85,8 @@ int main(int argc, char **argv) {
     int emit_asm = 0;
     int verbose = 0;
     const char *out_path = NULL;
+    const char *link_inputs[argc > 0 ? argc : 1];   /* extra .c/.o/.a files to link */
+    size_t nlink = 0;
 
     for (int i = 1; i < argc; i++) {
         const char *arg = argv[i];
@@ -119,8 +127,10 @@ int main(int argc, char **argv) {
             fprintf(stderr, "error: unknown option `%s`\n\n", arg);
             usage(stderr);
             return 2;
+        } else if (has_suffix(arg, ".c") || has_suffix(arg, ".o") || has_suffix(arg, ".a") || has_suffix(arg, ".so")) {
+            link_inputs[nlink++] = arg;
         } else if (path) {
-            fprintf(stderr, "error: only one input file is supported for now\n");
+            fprintf(stderr, "error: only one .watr file is supported for now (imports are coming in milestone 8)\n");
             return 2;
         } else {
             path = arg;
@@ -166,7 +176,8 @@ int main(int argc, char **argv) {
             char *def = default_output(path, emit_asm ? ".s" : "");
             const char *dest = out_path ? out_path : def;
             bool built = emit_asm ? write_file(dest, asm_text, asm_len)
-                                  : toolchain_build_executable(asm_text, asm_len, dest, verbose);
+                                  : toolchain_build_executable(asm_text, asm_len, dest, verbose,
+                                                               prog.needs_libc || nlink > 0, link_inputs, nlink);
             free(def);
             free(asm_text);
             if (!built) {

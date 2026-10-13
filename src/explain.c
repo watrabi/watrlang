@@ -705,6 +705,41 @@ static const Explanation explanations[] = {
      "point at garbage. Return the value itself, or have the caller pass in\n"
      "a pointer to fill."},
 
+    {"E0334",
+     "A watrlang function was declared with `...`.\n"
+     "\n"
+     "Variadic parameters exist so watrlang can call C functions like\n"
+     "printf, so only `extern` functions can have them:\n"
+     "\n"
+     "    extern function printf(const u8* fmt, ...): i32;   // ok"},
+
+    {"E0335",
+     "An array was passed to or returned from a function by value.\n"
+     "\n"
+     "As in C, arrays aren't passed by value. Pass a pointer to the first\n"
+     "element, plus the length:\n"
+     "\n"
+     "    function sum(int* xs, usize n): int { ... }\n"
+     "    sum(&nums[0], len(nums));\n"
+     "\n"
+     "Structs (including ones that contain arrays) can be passed by value."},
+
+    {"E0336",
+     "An `extern` or `export` symbol is named like an x86 register (rax,\n"
+     "eax, rsp, xmm0, ...).\n"
+     "\n"
+     "In assembly, `call rax` calls the address in the register, not a\n"
+     "function called rax. watrlang renames its own functions internally to\n"
+     "avoid this, but extern and export names have to stay as written so\n"
+     "C code can find them."},
+
+    {"E0337",
+     "`main` was marked `extern` or `export`.\n"
+     "\n"
+     "The compiler wires `main` up as the program's entry point itself:\n"
+     "with libc it becomes C's main, and without it, it's called from the\n"
+     "program's own startup code."},
+
     {"E0900",
      "This feature is part of watrlang's design but isn't implemented yet.\n"
      "The message names the milestone that will add it; docs/DESIGN.md has\n"

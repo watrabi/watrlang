@@ -38,7 +38,8 @@ static bool run(char *const argv[], bool verbose) {
     if (pid == 0) {
         execvp(argv[0], argv);
         /* Only reached if exec failed; 127 is the shell convention for "not found". */
-        fprintf(stderr, "watrc: error: cannot run '%s': %s (is GNU binutils installed?)\n", argv[0], strerror(errno));
+        fprintf(stderr, "error: cannot run `%s`: %s (is %s installed?)\n", argv[0], strerror(errno),
+                strcmp(argv[0], "as") == 0 || strcmp(argv[0], "ld") == 0 ? "GNU binutils" : "a C compiler");
         _exit(127);
     }
 
@@ -51,7 +52,10 @@ static bool run(char *const argv[], bool verbose) {
     }
     if (WIFEXITED(status) && WEXITSTATUS(status) == 0) return true;
     if (WIFEXITED(status) && WEXITSTATUS(status) == 127) return false;  /* already explained */
-    fprintf(stderr, "watrc: error: '%s' failed; this is a compiler bug, please report it\n", argv[0]);
+    if (strcmp(argv[0], "as") == 0)
+        fprintf(stderr, "error: the assembler rejected watrc's output; this is a compiler bug, please report it\n");
+    else
+        fprintf(stderr, "error: linking failed (see the messages above)\n");
     return false;
 }
 
@@ -72,7 +76,8 @@ static char *make_temp(void) {
     return path;
 }
 
-bool toolchain_build_executable(const char *asm_text, size_t asm_len, const char *out_path, bool verbose) {
+bool toolchain_build_executable(const char *asm_text, size_t asm_len, const char *out_path, bool verbose,
+                                bool libc, const char *const *extra, size_t nextra) {
     char *asm_path = make_temp();
     char *obj_path = asm_path ? make_temp() : NULL;
     bool ok = asm_path && obj_path && write_file(asm_path, asm_text, asm_len);
@@ -81,9 +86,23 @@ bool toolchain_build_executable(const char *asm_text, size_t asm_len, const char
         char *as_argv[] = {"as", "--64", "-o", obj_path, asm_path, NULL};
         ok = run(as_argv, verbose);
     }
-    if (ok) {
+    if (ok && !libc) {
         char *ld_argv[] = {"ld", "-o", (char *)out_path, obj_path, NULL};
         ok = run(ld_argv, verbose);
+    } else if (ok) {
+        const char *cc = getenv("CC");
+        if (!cc || !cc[0]) cc = "cc";
+        char **argv = xmalloc((nextra + 8) * sizeof *argv);
+        size_t n = 0;
+        argv[n++] = (char *)cc;
+        argv[n++] = "-o";
+        argv[n++] = (char *)out_path;
+        argv[n++] = obj_path;
+        for (size_t i = 0; i < nextra; i++) argv[n++] = (char *)extra[i];
+        argv[n++] = "-lm";
+        argv[n] = NULL;
+        ok = run(argv, verbose);
+        free(argv);
     }
 
     if (asm_path) unlink(asm_path);

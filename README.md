@@ -4,11 +4,17 @@ A compiled systems language with PHP-flavored syntax, written in plain C.
 It's low-level enough to write an operating system in.
 
 ```php
-import "std/io";
+extern function printf(const u8* fmt, ...): i32;
+
+struct Vec2 { f64 x; f64 y; }
+
+function length2(Vec2 v): f64 {
+    return v->x * v->x + v->y * v->y;
+}
 
 function main(): int {
-    string name = "world";
-    echo "Hello, {name}!\n";
+    Vec2 v = Vec2 { x: 3.0, y: 4.0 };
+    printf("length squared: %.1f\n", length2(v));
     return 0;
 }
 ```
@@ -25,8 +31,9 @@ The full plan is in [docs/DESIGN.md](docs/DESIGN.md).
 | 3. First binary: int math, calls, return | done |
 | 4. Variables, if/while/for, parameters, globals | done |
 | 5. Type system: sized ints, bool, floats, pointers, structs, arrays | done |
-| 6. C interop (`extern`, libc, `alloc`) | next |
-| 7+. Strings, modules, classes, ... | planned |
+| 6. C interop: `extern`/`export`, libc, structs by value, `alloc`/`free` | done |
+| 7. Strings and `echo` | next |
+| 8+. Modules, errors, classes, GC, ... | planned |
 
 ## Error messages
 
@@ -79,6 +86,8 @@ against a Python model of watrlang:
   and f64, with casts between them
 - `tests/prog_fuzz.py`: whole programs with variables, if/else, loops,
   break/continue and calls with up to 8 arguments
+- `tests/abi_fuzz.py`: random structs passed and returned by value
+  between watrlang and gcc-compiled C, in both directions
 
 `make test` runs a quick pass of each; for a long one add
 `--seed 5 --programs 500`. After an intentional output change, regenerate

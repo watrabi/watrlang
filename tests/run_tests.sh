@@ -23,7 +23,9 @@ for src in tests/lexer/*.watr tests/parser/*.watr tests/run/*.watr; do
         tests/run/*)
             bin="build/tests/$(basename "${src%.watr}")"
             rm -f "$bin"
-            if compile_out=$("$WATRC" -o "$bin" "$src" 2>&1); then
+            extra=""
+            [ -f "${src%.watr}.c" ] && extra="${src%.watr}.c"   # C code to link in
+            if compile_out=$("$WATRC" -o "$bin" "$src" $extra 2>&1); then
                 run_out=$("$bin" 2>&1; echo "exit: $?")
                 # Keep warnings from a successful compile in the expected output.
                 if [ -n "$compile_out" ]; then

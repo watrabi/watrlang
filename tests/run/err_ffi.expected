@@ -1,0 +1,51 @@
+error[E0335]: arrays can't be passed by value
+ --> tests/run/err_ffi.watr:1:14
+  |
+1 | function sum(int[4] xs): int { return 0; }
+  |              ^^^^^^ `int[4]` is an array
+  |
+  = note: the caller can pass `&arr[0]`, and the length alongside it
+help: pass a pointer to the first element instead
+  |
+1 | function sum(int* xs): int { return 0; }
+  |              ~~~~
+
+error[E0334]: only `extern` functions can be variadic
+ --> tests/run/err_ffi.watr:2:10
+  |
+2 | function v(int a, ...): int { return a; }
+  |          ^ `v` takes `...`
+  |
+  = note: watrlang functions can't read variadic arguments; `...` is for calling C functions like printf
+
+error[E0336]: `rax` can't be an extern symbol because it's an x86 register name
+ --> tests/run/err_ffi.watr:3:17
+  |
+3 | extern function rax(): int;
+  |                 ^^^ assembles as a register, not a symbol
+  |
+  = note: watrlang's own functions are renamed internally, but extern and export names are used as-is
+
+error[E0337]: `main` can't be `export`
+ --> tests/run/err_ffi.watr:4:1
+  |
+4 | export function main(): int { return 0; }
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ remove `export`
+  |
+  = note: the compiler already makes `main` the program's entry point
+
+warning[W0001]: unused parameter `xs`
+ --> tests/run/err_ffi.watr:1:21
+  |
+1 | function sum(int[4] xs): int { return 0; }
+  |                     ^^ never used
+  |
+help: if this is intentional, prefix it with an underscore
+  |
+1 | function sum(int[4] _xs): int { return 0; }
+  |                     ~~~
+
+error: could not compile `tests/run/err_ffi.watr` due to 4 previous errors; 1 warning emitted
+Some errors have detailed explanations: E0335, E0334, E0336, E0337, W0001.
+For more information about an error, try `watrc --explain E0335`.
+compile failed: 1

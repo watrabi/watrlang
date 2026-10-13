@@ -1,0 +1,14 @@
+extern function printf(const u8* fmt, ...): i32;
+extern function puts(const u8* s): i32;
+
+function main(): int {
+    puts("Hello from watrlang!");
+    int answer = 42;
+    f64 pi = 3.14159;
+    f32 half = 0.5;           // promoted to double, as C expects
+    u8 letter = 'w';
+    i64 big = -9000000000;
+    printf("int %d, double %.3f, float %.1f, char %c, i64 %lld, str %s, hex %x\n",
+           answer, pi, half, letter, big, "ok", 255);
+    return 0;
+}

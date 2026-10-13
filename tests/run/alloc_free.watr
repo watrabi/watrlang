@@ -1,0 +1,35 @@
+extern function printf(const u8* fmt, ...): i32;
+
+struct Node {
+    int value;
+    Node* next;
+}
+
+function push(Node* head, int value): Node* {
+    Node* n = alloc(Node);        // zeroed
+    n->value = value;
+    n->next = head;
+    return n;
+}
+
+function main(): int {
+    Node* list = null;
+    for (int i = 1; i <= 5; i++) {
+        list = push(list, i * 10);
+    }
+    int sum = 0;
+    for (Node* n = list; n != null; n = n->next) {
+        sum += n->value;
+    }
+    while (list != null) {
+        Node* next = list->next;
+        free(list);
+        list = next;
+    }
+    int* buf = alloc(int, 1000);   // 1000 zeroed ints
+    buf[999] = 7;
+    int last = buf[999] + buf[0];
+    free(buf);
+    printf("sum = %d, last = %d\n", sum, last);
+    return (sum == 150 && last == 7) as int;
+}

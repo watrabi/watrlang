@@ -237,6 +237,25 @@ function outb(u16 port, u8 val): void {
     value yet (it needs the full System V classification, milestone 6);
     pass a pointer.
   - Returning the address of a local variable is an error (E0333).
+- **C interop (milestone 6):**
+  - `extern function name(...): T;` declares a C function; `...` makes it
+    variadic (only extern functions can be). Variadic arguments get C's
+    promotions (`f32` → `f64`), and calls set `al` as the ABI requires.
+  - `extern T name;` declares a C global (accessed through the GOT).
+  - `export function` / `export T name` keep their plain symbol names so C
+    can call or read them. Everything else is `w.name` internally.
+  - Structs pass and return by value following System V exactly: up to
+    16 bytes in registers (each eightbyte INTEGER or SSE), larger ones in
+    memory, with a hidden pointer for struct returns. Arrays don't pass by
+    value. `tests/abi_fuzz.py` checks this against gcc.
+  - A program that uses `extern`, `alloc` or `free`, or is given extra
+    `.c`/`.o`/`.a` files, is linked with the system C compiler and the C
+    runtime; the C runtime calls the compiler-generated `main`. Otherwise
+    the binary is static, libc-free, and starts at watrlang's own `_start`.
+  - `alloc(T)` / `alloc(T, n)` return zeroed memory (calloc); running out
+    of memory panics. `free(p)` releases it.
+  - Until the `string` type exists, a string literal can be passed where
+    a `u8*` is expected; it's stored NUL-terminated in read-only memory.
 - **Strings:** `string` is an immutable `{u8* ptr, usize len}` slice. Literals
   go in `.rodata`, so strings work even when freestanding. Only `.` and
   interpolation allocate, which means they need the runtime/GC (or a

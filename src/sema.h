@@ -21,6 +21,10 @@ typedef struct Symbol {
     const TypeExpr *type_expr;  /* as written, for fixes like "remove `const`" */
     bool is_const;
     const Decl *decl;           /* functions and globals */
+    const char *asm_name;       /* functions and globals: `w.name`, or the plain name for extern/export */
+    bool is_extern;             /* defined outside watrlang (C, libc) */
+    bool is_export;
+    bool is_variadic;
 
     /* functions */
     Type **param_types;
@@ -44,6 +48,7 @@ typedef struct {
     size_t nfuncs;
     Symbol **globals;
     size_t nglobals;
+    bool needs_libc;            /* uses extern symbols or alloc/free: link with the C runtime */
 } Program;
 
 /* Returns false if errors were reported. */

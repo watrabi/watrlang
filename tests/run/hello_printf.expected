@@ -1,0 +1,3 @@
+Hello from watrlang!
+int 42, double 3.142, float 0.5, char w, i64 -9000000000, str ok, hex ff
+exit: 0

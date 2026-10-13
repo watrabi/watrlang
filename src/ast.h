@@ -53,6 +53,8 @@ struct TypeExpr {
 
 /* ---- expressions --------------------------------------------------------- */
 
+enum { BUILTIN_NONE, BUILTIN_FREE };
+
 typedef enum {
     EXPR_INT,         /* u.int_val */
     EXPR_FLOAT,       /* u.float_val */
@@ -102,6 +104,7 @@ struct Expr {
     struct Symbol *sym;   /* EXPR_IDENT: the variable; EXPR_CALL: the function */
     bool implicit;        /* EXPR_CAST inserted by sema (e.g. f32 -> f64) */
     uint32_t field_offset;   /* EXPR_MEMBER */
+    uint8_t builtin;         /* EXPR_CALL: BUILTIN_* for compiler-provided functions */
     bool via_pointer;        /* EXPR_MEMBER: obj is a pointer to the struct */
 
     union {

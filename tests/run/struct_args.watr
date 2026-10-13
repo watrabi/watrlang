@@ -1,0 +1,31 @@
+// Structs by value between watrlang functions, in every class.
+struct Pair { i32 a; i32 b; }              // one INTEGER eightbyte
+struct Wide { i64 a; i64 b; }              // two INTEGER eightbytes
+struct FPair { f64 x; f64 y; }             // two SSE eightbytes
+struct Mixed { f32 f; i32 i; f64 d; }      // INTEGER (mixed) + SSE
+struct Big { i64 a; i64 b; i64 c; }        // MEMORY
+
+function sum_pair(Pair p): i32 { return p->a + p->b; }
+function flip(Wide w): Wide { return Wide { a: w->b, b: w->a }; }
+function norm2(FPair p): f64 { return p->x * p->x + p->y * p->y; }
+function bump(Mixed m): Mixed { m->i += 1; m->f *= 2.0; m->d += 0.5; return m; }
+function big_sum(Big b, int extra): i64 { return b->a + b->b + b->c + extra; }
+function make_big(i64 base): Big { return Big { a: base, b: base * 2, c: base * 3 }; }
+
+// More struct arguments than registers: later ones spill to the stack.
+function many(Wide a, Wide b, Wide c, Wide d, int e): i64 {
+    return a->a + b->b + c->a + d->b + e;
+}
+
+function main(): int {
+    Pair p = Pair { a: 20, b: 22 };
+    Wide w = flip(Wide { a: 1, b: 2 });
+    Mixed m = bump(Mixed { f: 1.5, i: 41, d: 1.0 });
+    Big big = make_big(10);
+    Big copy = big;
+    copy->a = 0;
+    bool ok = sum_pair(p) == 42 && w->a == 2 && w->b == 1 && norm2(FPair { x: 3.0, y: 4.0 }) == 25.0
+           && m->i == 42 && m->f == 3.0 && m->d == 1.5 && big_sum(big, 4) == 64 && big->a == 10
+           && many(Wide { a: 1, b: 2 }, Wide { a: 3, b: 4 }, Wide { a: 5, b: 6 }, Wide { a: 7, b: 8 }, 9) == 1 + 4 + 5 + 8 + 9;
+    return ok as int;
+}
