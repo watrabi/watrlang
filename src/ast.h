@@ -55,7 +55,7 @@ struct TypeExpr {
 
 /* EXPR_CALL: compiler-provided functions. EXPR_MEMBER: the parts of an
  * error union (`r->ok`, `r->value`, `r->error`). */
-enum { BUILTIN_NONE, BUILTIN_FREE, BUILTIN_EU_OK, BUILTIN_EU_VALUE, BUILTIN_EU_ERROR };
+enum { BUILTIN_NONE, BUILTIN_FREE, BUILTIN_EU_OK, BUILTIN_EU_VALUE, BUILTIN_EU_ERROR, BUILTIN_METHOD };
 
 typedef enum {
     EXPR_INT,         /* u.int_val */
@@ -123,7 +123,14 @@ struct Expr {
         struct { Expr *base; Expr *index; } index;
         struct { Expr *object; const char *name; Loc name_loc; } member;
         struct { Expr *expr; TypeExpr *type; } cast;
-        struct { TypeExpr *type; Expr **args; size_t nargs; } new_;
+        struct {
+            TypeExpr *type;
+            Expr **args;
+            size_t nargs;
+            Expr *ctor;            /* sema: the __construct call (first argument: tmp), or NULL */
+            struct Symbol *tmp;    /* sema: holds the new object while it's initialized */
+            struct Symbol *alloc;  /* sema: the runtime allocator */
+        } new_;
         struct { TypeExpr *type; Expr *count; } alloc;
         TypeExpr *sizeof_type;
         Expr *try_expr;
@@ -219,6 +226,7 @@ struct Decl {
     Loc name_loc;
     bool is_export;
     bool is_extern;
+    bool is_static;        /* class methods only */
     Visibility vis;        /* class members only */
     struct Symbol *sym;    /* filled in by sema: functions and globals */
     struct Type *type;     /* filled in by sema: structs */

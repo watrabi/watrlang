@@ -37,8 +37,9 @@ The full plan is in [docs/DESIGN.md](docs/DESIGN.md).
 | 7. Strings, `echo`, interpolation; runtime written in watrlang | done |
 | 8. Modules, `private`, a first standard library | done |
 | 9. `defer`, enums, error unions (`T!E`, `?`, `??`) | done |
-| 10. Classes | next |
-| 11+. GC, foreach and PHP arrays, freestanding, a kernel, ... | planned |
+| 10. Classes: methods, constructors, `static`, `private`, `__toString` | done |
+| 11. Garbage collector for `new` and strings | next |
+| 12+. foreach and PHP arrays, freestanding, a kernel, ... | planned |
 
 ## Error messages
 

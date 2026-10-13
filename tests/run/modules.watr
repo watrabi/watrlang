@@ -16,5 +16,8 @@ function main(): int {
     Shape sq = Shape::Square;
     geometry::Shape pent = geometry::Shape::Pentagon;
     echo "shapes: ", sq, " ", geometry::sides(pent), " ", pent, "\n";
+    Circle c = new Circle(2.0);
+    geometry::Circle u = geometry::Circle::unit();
+    echo "circles: ", c->area(), " ", u->area(), " ", Circle::unit()->r, "\n";
     return 0;
 }

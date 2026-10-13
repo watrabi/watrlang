@@ -37,3 +37,23 @@ private enum Hidden { Secret }
 function sides(Shape s): int {
     return s as int;
 }
+
+class Circle {
+    public f64 r;
+    private f64 cached = -1.0;
+
+    public function __construct(f64 r) {
+        this->r = r;
+    }
+
+    public static function unit(): Circle {
+        return new Circle(1.0);
+    }
+
+    public function area(): f64 {
+        if (this->cached < 0.0) {
+            this->cached = 3.0 * this->r * this->r;
+        }
+        return this->cached;
+    }
+}

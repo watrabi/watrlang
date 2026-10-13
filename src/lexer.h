@@ -88,6 +88,7 @@
     X(ENUM,      "enum")        \
     X(PUBLIC,    "public")      \
     X(PRIVATE,   "private")     \
+    X(STATIC,    "static")      \
     X(IMPORT,    "import")      \
     X(EXTERN,    "extern")      \
     X(EXPORT,    "export")      \

@@ -1,0 +1,10 @@
+counter: 20 20 secret 500
+(1.5, 2) + ... = (4, 6)
+interpolated: (4, 6)
+as string: (1.5, 2)
+shared: 100 same: true different: false
+list sum: 30
+pair: (3, 4)
+true
+panic at tests/run/classes.watr:107:10: field `value` of a null `Node`
+exit: 101

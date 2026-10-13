@@ -1588,10 +1588,12 @@ static Decl *parse_class(Parser *p, Loc start) {
         Visibility vis = VIS_DEFAULT;
         if (accept(p, TOK_KW_PUBLIC)) vis = VIS_PUBLIC;
         else if (accept(p, TOK_KW_PRIVATE)) vis = VIS_PRIVATE;
+        bool is_static = accept(p, TOK_KW_STATIC);
 
         Decl *m = NULL;
         if (check(p, TOK_KW_FUNCTION)) {
             m = parse_function(p, mstart, false, false);
+            if (m) m->is_static = is_static;
         } else {
             VarDecl *v = parse_var_decl(p);
             if (v) {
@@ -1604,6 +1606,7 @@ static Decl *parse_class(Parser *p, Loc start) {
         }
         if (m) {
             m->vis = vis;
+            m->is_static = is_static;
             ptrvec_push(&members, m);
         }
         if (p->panic) sync_stmt(p);

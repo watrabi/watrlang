@@ -21,6 +21,8 @@ class Point
     return (+ (* (-> this x) (-> this x)) (* (-> this y) (-> this y)))
   private function secret() -> void
     (empty)
+  public static function origin() -> Point
+    return (new Point 0 0)
 enum Color
   Red
   Green

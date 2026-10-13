@@ -1,11 +1,3 @@
-error[E0900]: not supported yet: classes
- --> tests/run/err_unsupported_decls.watr:2:1
-  |
-2 | class Point { public int x; }
-  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ planned for milestone 10
-  |
-  = note: watrlang is still being built; docs/DESIGN.md has the roadmap
-
 error[E0900]: not supported yet: `foreach`
  --> tests/run/err_unsupported_decls.watr:8:5
   |
@@ -22,7 +14,7 @@ error[E0900]: not supported yet: inline asm
   |
   = note: watrlang is still being built; docs/DESIGN.md has the roadmap
 
-error: could not compile `tests/run/err_unsupported_decls.watr` due to 3 previous errors
+error: could not compile `tests/run/err_unsupported_decls.watr` due to 2 previous errors
 This error has a detailed explanation: E0900.
 For more information about an error, try `watrc --explain E0900`.
 compile failed: 1

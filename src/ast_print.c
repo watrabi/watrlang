@@ -383,6 +383,7 @@ static void print_decl(FILE *out, const Decl *d, int indent) {
     indent_to(out, indent);
     if (d->vis == VIS_PUBLIC) fputs("public ", out);
     if (d->vis == VIS_PRIVATE) fputs("private ", out);
+    if (d->is_static) fputs("static ", out);
     if (d->is_export) fputs("export ", out);
     if (d->is_extern) fputs("extern ", out);
 

@@ -1,0 +1,109 @@
+// Classes: reference types with fields, methods, constructors.
+class Counter {
+    public int count = 10;
+    private int step = 1;
+    public string label = "counter";
+
+    public function __construct(int step) {
+        this->step = step;
+    }
+
+    public function tick(): Counter {
+        this->count += this->step;
+        return this;
+    }
+
+    public function get(): int {
+        return this->count;
+    }
+
+    private function secret(): int {
+        return this->step * 100;
+    }
+
+    public function reveal(): int {
+        return this->secret();
+    }
+}
+
+class Vec {
+    public f64 x;
+    public f64 y;
+
+    public function __construct(f64 x, f64 y) {
+        this->x = x;
+        this->y = y;
+    }
+
+    public static function zero(): Vec {
+        return new Vec(0.0, 0.0);
+    }
+
+    public function add(Vec o): Vec {
+        return new Vec(this->x + o->x, this->y + o->y);
+    }
+
+    public function scale(f64 k): void {
+        this->x *= k;
+        this->y *= k;
+    }
+
+    public function __toString(): string {
+        return "({this->x}, {this->y})";
+    }
+}
+
+class Node {
+    public int value;
+    public Node next;
+}
+
+struct Pair {
+    Vec a;
+    int n;
+}
+
+function sum_list(Node head): int {
+    int total = 0;
+    Node n = head;
+    while (n != null) {
+        total += n->value;
+        n = n->next;
+    }
+    return total;
+}
+
+function main(): int {
+    Counter c = new Counter(5);
+    c->tick()->tick();
+    echo c->label, ": ", c->get(), " ", c->count, " secret ", c->reveal(), "\n";
+
+    Vec v = new Vec(1.5, 2.0);
+    Vec w = v->add(Vec::zero())->add(new Vec(0.5, 1.0));
+    w->scale(2.0);
+    echo v, " + ... = ", w, "\n";
+    echo "interpolated: {w}\n";
+    string s = "as string: " . v;
+    echo s, "\n";
+
+    Vec alias = v;
+    alias->x = 100.0;
+    echo "shared: ", v->x, " same: ", alias == v, " different: ", v == w, "\n";
+
+    Node head = null;
+    for (int i = 1; i <= 4; i++) {
+        Node n = new Node;
+        n->value = i * i;
+        n->next = head;
+        head = n;
+    }
+    echo "list sum: ", sum_list(head), "\n";
+
+    Pair p = Pair { a: new Vec(3.0, 4.0), n: 1 };
+    echo "pair: ", p->a, "\n";
+
+    Node missing = null;
+    echo missing == null, "\n";
+    echo missing->value, "\n";   // panics
+    return 0;
+}

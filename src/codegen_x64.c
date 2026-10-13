@@ -393,6 +393,39 @@ static void gen_eu_member(Gen *g, const Expr *e) {
     emit_load(g, e->type, addr);
 }
 
+static void gen_call(Gen *g, const Expr *e);
+
+/* new Class(args) */
+static void gen_new(Gen *g, const Expr *e) {
+    const Type *ct = e->type;
+    Symbol *tmp = e->u.new_.tmp;
+    emit(g, "mov edi, %u", ct->obj_size ? ct->obj_size : 1);
+    emit_c_call(g, e->u.new_.alloc->asm_name);   /* zeroed memory */
+    tmp->offset = alloc_slot(g, 8, 8);
+    emit(g, "mov qword ptr [rbp - %d], rax", -tmp->offset);
+    char addr[64];
+    for (size_t i = 0; i < ct->nfields; i++) {
+        const Field *f = &ct->fields[i];
+        if (!f->init) continue;
+        gen_value(g, f->init);
+        emit(g, "mov rdx, qword ptr [rbp - %d]", -tmp->offset);
+        snprintf(addr, sizeof addr, "rdx + %u", f->offset);
+        emit_store(g, f->type, addr);
+    }
+    if (e->u.new_.ctor) gen_call(g, e->u.new_.ctor);
+    emit(g, "mov rax, qword ptr [rbp - %d]", -tmp->offset);
+}
+
+/* Panics if the object reference in rax is null. */
+static void emit_null_check(Gen *g, const Expr *at, const char *what) {
+    int site = add_panic(g, at, what);
+    int ok = new_label(g);
+    emit(g, "test rax, rax");
+    emit(g, "jnz .L%d", ok);
+    emit_panic_call(g, site);
+    emit_label(g, ok);
+}
+
 /* r?: on an error, return it from this function (running defers);
  * otherwise produce the value. */
 static void gen_try(Gen *g, const Expr *e) {
@@ -473,6 +506,11 @@ static void gen_addr(Gen *g, const Expr *e) {
     case EXPR_MEMBER:
         /* The pointer's value, or the struct's address: either way, rax. */
         gen_value(g, e->u.member.object);
+        if (e->u.member.object->type->kind == TY_CLASS) {
+            char what[160];
+            snprintf(what, sizeof what, "field `%s` of a null `%s`", e->u.member.name, e->u.member.object->type->name);
+            emit_null_check(g, e->u.member.object, what);
+        }
         if (e->field_offset) emit(g, "add rax, %u", e->field_offset);
         return;
     case EXPR_INDEX: {
@@ -823,6 +861,11 @@ static void gen_call(Gen *g, const Expr *e) {
         if (t->kind == TY_NULL) t = arg->type;
         args[i].type = t;
         gen_value(g, arg);
+        if (i == 0 && e->builtin == BUILTIN_METHOD) {
+            char what[160];
+            snprintf(what, sizeof what, "method `%s` called on a null `%s`", fn->name, fn->owner->name);
+            emit_null_check(g, arg, what);
+        }
         bool agg = type_in_memory(t);
         args[i].size = agg ? (t->size + 7) & ~7u : 8;
         args[i].slot = alloc_slot(g, args[i].size, 8);
@@ -1067,6 +1110,12 @@ static void gen_value(Gen *g, const Expr *e) {
         return;
     case EXPR_TRY:
         gen_try(g, e);
+        return;
+    case EXPR_THIS:
+        emit_load(g, t, var_addr(buf, sizeof buf, e->sym));
+        return;
+    case EXPR_NEW:
+        gen_new(g, e);
         return;
     case EXPR_CAST:
         gen_cast(g, e);
@@ -1346,6 +1395,10 @@ static void gen_function(Gen *g, const Symbol *fn) {
             emit(g, "mov qword ptr [rbp - %d], 0", -g->ret_slot);
             emit(g, "mov qword ptr [rbp - %d], 0", -g->ret_slot - 8);
         }
+    }
+    if (fn->this_param) {   /* methods: `this` comes first, in a register */
+        fn->this_param->offset = alloc_slot(g, 8, 8);
+        emit(g, "mov qword ptr [rbp - %d], %s", -fn->this_param->offset, arg_regs[ngpr++]->q);
     }
     for (size_t i = 0; i < d->u.func.nparams; i++) {
         Symbol *p = d->u.func.params[i]->sym;

@@ -168,12 +168,12 @@ static Symbol *find_in(Sema *S, PtrVec *v, const char *name, Symbol **other) {
     if (other) *other = NULL;
     for (size_t i = 0; i < v->len; i++) {
         Symbol *s = v->items[i];
-        if (s->module == S->cur && strcmp(s->name, name) == 0) return s;
+        if (s->module == S->cur && !s->owner && strcmp(s->name, name) == 0) return s;
     }
     Symbol *found = NULL;
     for (size_t i = 0; i < v->len; i++) {
         Symbol *s = v->items[i];
-        if (s->module == S->cur || strcmp(s->name, name) != 0) continue;
+        if (s->module == S->cur || s->owner || strcmp(s->name, name) != 0) continue;
         if (!visible(S, S->cur, s->module, s->is_private)) continue;
         if (!found) found = s;
         else if (other && !*other) *other = s;
@@ -185,7 +185,7 @@ static Symbol *find_in(Sema *S, PtrVec *v, const char *name, Symbol **other) {
 static Symbol *find_in_module(PtrVec *v, int mod, const char *name) {
     for (size_t i = 0; i < v->len; i++) {
         Symbol *s = v->items[i];
-        if (s->module == mod && strcmp(s->name, name) == 0) return s;
+        if (s->module == mod && !s->owner && strcmp(s->name, name) == 0) return s;
     }
     return NULL;
 }
@@ -666,6 +666,12 @@ static void check_enum_variants(Sema *S, Type *et) {
     }
 }
 
+static Symbol *find_method(const Type *ct, const char *name) {
+    for (size_t i = 0; i < ct->nmethods; i++)
+        if (strcmp(ct->methods[i]->name, name) == 0) return ct->methods[i];
+    return NULL;
+}
+
 static const Field *find_field(const Type *st, const char *name) {
     for (size_t i = 0; i < st->nfields; i++)
         if (strcmp(st->fields[i].name, name) == 0) return &st->fields[i];
@@ -674,7 +680,8 @@ static const Field *find_field(const Type *st, const char *name) {
 
 /* E0317 */
 static void report_unknown_field(Sema *S, const Type *st, const char *name, Loc loc) {
-    Diag *d = diag_start(DIAG_ERROR, "E0317", loc, "struct `%s` has no field named `%s`", st->name, name);
+    Diag *d = diag_start(DIAG_ERROR, "E0317", loc, "%s `%s` has no field named `%s`",
+                         st->kind == TY_CLASS ? "class" : "struct", st->name, name);
     diag_label(d, "unknown field");
     const char *names[64];
     size_t n = 0;
@@ -951,6 +958,8 @@ static void report_not_stringable(const Expr *e, const char *context) {
     diag_note(d, "strings, numbers, bools, enums and pointers can be printed and joined with `.`");
     if (e->type->kind == TY_ERRUNION)
         diag_help(d, "unwrap it first: `?` passes the error on, `??` gives a fallback value");
+    else if (e->type->kind == TY_CLASS)
+        diag_help(d, "give `%s` a `public function __toString(): string` method", e->type->name);
     else if (e->type->kind == TY_STRUCT) diag_help(d, "print the fields you want instead, like `\"{v->x}, {v->y}\"`");
     diag_end(d);
 }
@@ -994,6 +1003,23 @@ static Expr *enum_name_call(Sema *S, Expr *e) {
     return call;
 }
 
+/* obj->__toString() */
+static Expr *to_string_call(Sema *S, Expr *e) {
+    Symbol *m = find_method(e->type, "__toString");
+    add_callee(S, m);
+    Expr *callee = new_node(S, EXPR_IDENT, e->loc, ty_error);
+    callee->u.name = m->name;
+    callee->sym = m;
+    Expr *call = new_node(S, EXPR_CALL, e->loc, ty_string);
+    call->sym = m;
+    call->builtin = BUILTIN_METHOD;
+    call->u.call.callee = callee;
+    call->u.call.nargs = 1;
+    call->u.call.args = arena_alloc(S->arena, sizeof(Expr *));
+    call->u.call.args[0] = e;
+    return call;
+}
+
 /* The text form of a checked expression, as a `string` expression:
  * numbers in decimal, floats like "%.14g", bools as true/false, pointers in hex. */
 static Expr *stringify(Sema *S, Expr *e, const char *context) {
@@ -1010,6 +1036,10 @@ static Expr *stringify(Sema *S, Expr *e, const char *context) {
         return rt_call1(S, "__rt_bool_to_string", e);
     case TY_ENUM:
         return enum_name_call(S, e);
+    case TY_CLASS:
+        if (find_method(t, "__toString")) return to_string_call(S, e);
+        report_not_stringable(e, context);
+        return new_node(S, EXPR_NULL, e->loc, ty_error);
     case TY_PTR:
     case TY_NULL:
         return rt_call1(S, "__rt_ptr_to_string", convert(S, e, ty_u64));
@@ -1032,6 +1062,10 @@ static Expr *echo_call(Sema *S, Expr *e) {
     case TY_FLOAT: return rt_call1(S, "__rt_echo_f64", convert(S, e, ty_f64));
     case TY_BOOL: return rt_call1(S, "__rt_echo_bool", e);
     case TY_ENUM: return rt_call1(S, "__rt_echo_str", enum_name_call(S, e));
+    case TY_CLASS:
+        if (find_method(t, "__toString")) return rt_call1(S, "__rt_echo_str", to_string_call(S, e));
+        report_not_stringable(e, "printed with `echo`");
+        return NULL;
     case TY_PTR:
     case TY_NULL: return rt_call1(S, "__rt_echo_ptr", convert(S, e, ty_u64));
     case TY_ERROR: return NULL;
@@ -1457,6 +1491,10 @@ static Type *check_binary(Sema *S, Expr **slot, Type *hint) {
         }
         if (eq && lt->kind == TY_BOOL && rt->kind == TY_BOOL) return set_type(e, ty_bool);
         if (lt->kind == TY_ENUM && lt == rt) return set_type(e, ty_bool);
+        /* Objects compare by identity, with each other or with null. */
+        if (eq && (lt->kind == TY_CLASS || rt->kind == TY_CLASS) &&
+            (lt == rt || lt->kind == TY_NULL || rt->kind == TY_NULL))
+            return set_type(e, ty_bool);
         bool lp = lt->kind == TY_PTR || lt->kind == TY_NULL, rp = rt->kind == TY_PTR || rt->kind == TY_NULL;
         if (lp && rp && (eq || (lt->kind == TY_PTR && rt->kind == TY_PTR)) &&
             (type_assignable(lt, rt) || type_assignable(rt, lt) ||
@@ -1606,8 +1644,196 @@ static Type *check_ternary(Sema *S, Expr *e, Type *hint) {
     return set_type(e, ty_error);
 }
 
+/* Checks a call's arguments against `fn`. The first `skip` arguments
+ * (a method's object) are already checked and aren't counted in messages. */
+static Type *check_args(Sema *S, Expr *e, Symbol *fn, size_t skip) {
+    Expr *callee = e->u.call.callee;
+    e->sym = fn;
+    callee->sym = fn;
+    add_callee(S, fn);
+    size_t n = e->u.call.nargs, want = fn->nparams;
+    bool ok = true;
+    if (fn->is_variadic && n >= want) {
+        /* Fixed parameters as usual; the rest get C's default promotions. */
+        for (size_t i = 0; i < n; i++) {
+            if (i < want) {
+                check(S, &e->u.call.args[i], fn->param_types[i]);
+                coerce(S, &e->u.call.args[i], fn->param_types[i], &fn->decl->u.func.params[i]->type->loc,
+                       "declared parameter type");
+                continue;
+            }
+            Expr *arg = e->u.call.args[i];
+            Type *hint = arg->kind == EXPR_STRING ? type_ptr(ty_u8, true, false) : NULL;
+            Type *t = check(S, &e->u.call.args[i], hint);
+            arg = e->u.call.args[i];
+            if (is_err(t) || !require_value(S, arg)) continue;
+            if (t->kind == TY_ARRAY) {
+                Diag *d = diag_start(DIAG_ERROR, "E0335", arg->loc, "arrays can't be passed by value");
+                diag_label(d, "this is `%s`", type_name(t));
+                diag_help(d, "pass a pointer to the first element: `&arr[0]`");
+                diag_end(d);
+            } else if (t->kind == TY_FLOAT && t->size == 4) {
+                e->u.call.args[i] = wrap_cast(S, arg, ty_f64);   /* C promotes float to double */
+            }
+        }
+        return set_type(e, fn->type);
+    }
+    if (n != want) {
+        size_t un = n - skip, uwant = want - skip;   /* as written, without `this` */
+        const char *what = !fn->owner ? "function" : fn->is_static ? "static method" : "method";
+        Diag *d = fn->owner && strcmp(fn->name, "__construct") == 0
+                      ? diag_start(DIAG_ERROR, "E0206", callee->loc, "`new %s(...)` takes %zu argument%s but %zu %s supplied",
+                                   fn->owner->name, uwant, uwant == 1 ? "" : "s", un, un == 1 ? "was" : "were")
+                      : diag_start(DIAG_ERROR, "E0206", callee->loc, "%s `%s` takes %zu argument%s but %zu %s supplied",
+                                   what, fn->name, uwant, uwant == 1 ? "" : "s", un, un == 1 ? "was" : "were");
+        diag_label(d, "expected %zu argument%s, found %zu", uwant, uwant == 1 ? "" : "s", un);
+        diag_span(d, fn->loc, "`%s` is defined here", fn->name);
+        for (size_t i = want; i < n && i < want + 3; i++) diag_span(d, e->u.call.args[i]->loc, "unexpected argument");
+        if (n < want) {
+            char missing[256] = "";
+            size_t used = 0;
+            for (size_t i = n; i < want && used < sizeof missing - 60; i++)
+                used += (size_t)snprintf(missing + used, sizeof missing - used, "%s`%s: %s`", i > n ? ", " : "",
+                                         fn->decl->u.func.params[i - skip]->name, type_name(fn->param_types[i]));
+            diag_note(d, "missing: %s", missing);
+        }
+        diag_end(d);
+        ok = false;
+    }
+    for (size_t i = skip; i < n; i++) {
+        Type *pt = i < want ? fn->param_types[i] : NULL;
+        check(S, &e->u.call.args[i], pt);
+        if (pt) {
+            const Param *p = fn->decl->u.func.params[i - skip];
+            char why[160];
+            snprintf(why, sizeof why, "parameter `%s` is declared as `%s`", p->name, type_name(pt));
+            ok = coerce(S, &e->u.call.args[i], pt, &p->type->loc, why) && ok;
+        }
+    }
+    (void)ok;
+    return set_type(e, fn->type);
+}
+
+static void check_args_only(Sema *S, Expr *e) {
+    for (size_t i = 0; i < e->u.call.nargs; i++) check(S, &e->u.call.args[i], NULL);
+}
+
+/* E0362 for methods */
+static bool method_visible(Sema *S, const Symbol *m, Loc loc) {
+    if (!m->is_private || (S->fn && S->fn->owner == m->owner)) return true;
+    Diag *d = diag_start(DIAG_ERROR, "E0362", loc, "method `%s` of class `%s` is private", m->name, m->owner->name);
+    diag_label(d, "private method");
+    diag_span(d, m->loc, "declared `private` here");
+    diag_note(d, "private members can only be used by the class's own methods");
+    diag_end(d);
+    return false;
+}
+
+/* E0364 */
+static void report_unknown_method(Sema *S, const Type *ct, const char *name, Loc loc) {
+    Diag *d = diag_start(DIAG_ERROR, "E0364", loc, "class `%s` has no method named `%s`", ct->name, name);
+    diag_label(d, "unknown method");
+    const char *names[64];
+    size_t n = 0;
+    for (size_t i = 0; i < ct->nmethods && n < 64; i++) names[n++] = ct->methods[i]->name;
+    const char *guess = closest(name, names, n);
+    if (guess) diag_fix(d, loc, guess, "a method with a similar name exists");
+    if (find_field(ct, name)) diag_note(d, "`%s` is a field; fields can't be called", name);
+    diag_span(d, ct->decl->name_loc, "`%s` is declared here", ct->name);
+    (void)S;
+    diag_end(d);
+}
+
+/* obj->method(args): the object becomes the first argument. */
+static Type *check_method_call(Sema *S, Expr *e) {
+    Expr *callee = e->u.call.callee;
+    Type *ot = check(S, &callee->u.member.object, NULL);
+    Expr *obj = callee->u.member.object;
+    const char *name = callee->u.member.name;
+    Loc name_loc = callee->u.member.name_loc;
+    if (is_err(ot) || !require_value(S, obj)) {
+        check_args_only(S, e);
+        return set_type(e, ty_error);
+    }
+    if (ot->kind != TY_CLASS) {
+        Diag *d = diag_start(DIAG_ERROR, "E0364", name_loc, "`->%s(...)` calls a method, but `%s` has no methods", name,
+                             type_name(ot));
+        diag_label(d, "not an object");
+        diag_span(d, obj->loc, "this is `%s`", type_name(ot));
+        if (ot->kind == TY_STRUCT) diag_help(d, "structs only hold data; use a `class` for methods, or call a function");
+        diag_end(d);
+        check_args_only(S, e);
+        return set_type(e, ty_error);
+    }
+    Symbol *m = find_method(ot, name);
+    if (!m) {
+        report_unknown_method(S, ot, name, name_loc);
+        check_args_only(S, e);
+        return set_type(e, ty_error);
+    }
+    if (m->is_static) {
+        Diag *d = diag_start(DIAG_ERROR, "E0364", name_loc, "`%s` is a static method, so it isn't called on an object",
+                             name);
+        diag_label(d, "static method");
+        diag_span(d, m->loc, "declared `static` here");
+        diag_help(d, "call it on the class: `%s::%s(...)`", ot->name, name);
+        diag_end(d);
+        check_args_only(S, e);
+        return set_type(e, ty_error);
+    }
+    if (!method_visible(S, m, name_loc)) {
+        check_args_only(S, e);
+        return set_type(e, ty_error);
+    }
+    size_t n = e->u.call.nargs;
+    Expr **args = arena_alloc(S->arena, (n + 1) * sizeof(Expr *));
+    args[0] = obj;
+    for (size_t i = 0; i < n; i++) args[i + 1] = e->u.call.args[i];
+    e->u.call.args = args;
+    e->u.call.nargs = n + 1;
+    callee->kind = EXPR_IDENT;
+    callee->u.name = m->name;
+    callee->loc = name_loc;
+    e->builtin = BUILTIN_METHOD;
+    return check_args(S, e, m, 1);
+}
+
+/* Class::method(args) */
+static Type *check_static_call(Sema *S, Expr *e, Type *ct) {
+    Expr *callee = e->u.call.callee;
+    const char *name = callee->u.scope.member;
+    Symbol *m = find_method(ct, name);
+    if (!m) {
+        report_unknown_method(S, ct, name, callee->loc);
+        check_args_only(S, e);
+        return set_type(e, ty_error);
+    }
+    if (!m->is_static) {
+        Diag *d = diag_start(DIAG_ERROR, "E0364", callee->loc, "`%s::%s` needs an object", ct->name, name);
+        diag_label(d, "not a static method");
+        diag_span(d, m->loc, "`%s` is declared here, without `static`", name);
+        diag_help(d, "call it on an object: `obj->%s(...)`", name);
+        diag_end(d);
+        check_args_only(S, e);
+        return set_type(e, ty_error);
+    }
+    if (!method_visible(S, m, callee->loc)) {
+        check_args_only(S, e);
+        return set_type(e, ty_error);
+    }
+    callee->kind = EXPR_IDENT;
+    callee->u.name = m->name;
+    return check_args(S, e, m, 0);
+}
+
 static Type *check_call(Sema *S, Expr *e) {
     Expr *callee = e->u.call.callee;
+    if (callee->kind == EXPR_MEMBER) return check_method_call(S, e);
+    if (callee->kind == EXPR_SCOPE &&
+        (strstr(callee->u.scope.scope, "::") || module_by_alias(S, callee->u.scope.scope) < 0)) {
+        Type *ct = find_struct(S, callee->u.scope.scope);
+        if (ct && ct->kind == TY_CLASS) return check_static_call(S, e, ct);
+    }
     if (callee->kind == EXPR_SCOPE) {   /* module::function(...) */
         Symbol *qf = find_qualified(S, &S->funcs, callee->loc, callee->u.scope.scope, callee->u.scope.member, "function");
         if (!qf) {
@@ -1620,7 +1846,11 @@ static Type *check_call(Sema *S, Expr *e) {
         callee->sym = qf;
     }
     if (callee->kind != EXPR_IDENT) {
-        not_yet(callee->loc, "calling anything but a named function", 10);
+        Diag *d = diag_start(DIAG_ERROR, "E0204", callee->loc, "this can't be called");
+        diag_label(d, "not a function or method");
+        diag_note(d, "function pointers aren't supported yet");
+        diag_end(d);
+        check_args_only(S, e);
         return set_type(e, ty_error);
     }
     Symbol *other_fn = NULL;
@@ -1703,7 +1933,7 @@ static Type *check_call(Sema *S, Expr *e) {
             size_t n = 0;
             for (size_t i = 0; i < S->funcs.len && n < 256; i++) {
                 Symbol *f = S->funcs.items[i];
-                if (!f->is_runtime && visible(S, S->cur, f->module, f->is_private)) names[n++] = f->name;
+                if (!f->is_runtime && !f->owner && visible(S, S->cur, f->module, f->is_private)) names[n++] = f->name;
             }
             const char *guess = closest(callee->u.name, names, n);
             if (guess) {
@@ -1716,65 +1946,7 @@ static Type *check_call(Sema *S, Expr *e) {
         return set_type(e, ty_error);
     }
 
-    e->sym = fn;
-    callee->sym = fn;
-    add_callee(S, fn);
-    size_t n = e->u.call.nargs, want = fn->nparams;
-    bool ok = true;
-    if (fn->is_variadic && n >= want) {
-        /* Fixed parameters as usual; the rest get C's default promotions. */
-        for (size_t i = 0; i < n; i++) {
-            if (i < want) {
-                check(S, &e->u.call.args[i], fn->param_types[i]);
-                coerce(S, &e->u.call.args[i], fn->param_types[i], &fn->decl->u.func.params[i]->type->loc,
-                       "declared parameter type");
-                continue;
-            }
-            Expr *arg = e->u.call.args[i];
-            Type *hint = arg->kind == EXPR_STRING ? type_ptr(ty_u8, true, false) : NULL;
-            Type *t = check(S, &e->u.call.args[i], hint);
-            arg = e->u.call.args[i];
-            if (is_err(t) || !require_value(S, arg)) continue;
-            if (t->kind == TY_ARRAY) {
-                Diag *d = diag_start(DIAG_ERROR, "E0335", arg->loc, "arrays can't be passed by value");
-                diag_label(d, "this is `%s`", type_name(t));
-                diag_help(d, "pass a pointer to the first element: `&arr[0]`");
-                diag_end(d);
-            } else if (t->kind == TY_FLOAT && t->size == 4) {
-                e->u.call.args[i] = wrap_cast(S, arg, ty_f64);   /* C promotes float to double */
-            }
-        }
-        return set_type(e, fn->type);
-    }
-    if (n != want) {
-        Diag *d = diag_start(DIAG_ERROR, "E0206", callee->loc, "function `%s` takes %zu argument%s but %zu %s supplied",
-                             fn->name, want, want == 1 ? "" : "s", n, n == 1 ? "was" : "were");
-        diag_label(d, "expected %zu argument%s, found %zu", want, want == 1 ? "" : "s", n);
-        diag_span(d, fn->loc, "`%s` is defined here", fn->name);
-        for (size_t i = want; i < n && i < want + 3; i++) diag_span(d, e->u.call.args[i]->loc, "unexpected argument");
-        if (n < want) {
-            char missing[256] = "";
-            size_t used = 0;
-            for (size_t i = n; i < want && used < sizeof missing - 60; i++)
-                used += (size_t)snprintf(missing + used, sizeof missing - used, "%s`%s: %s`", i > n ? ", " : "",
-                                         fn->decl->u.func.params[i]->name, type_name(fn->param_types[i]));
-            diag_note(d, "missing: %s", missing);
-        }
-        diag_end(d);
-        ok = false;
-    }
-    for (size_t i = 0; i < n; i++) {
-        Type *pt = i < want ? fn->param_types[i] : NULL;
-        check(S, &e->u.call.args[i], pt);
-        if (pt) {
-            const Param *p = fn->decl->u.func.params[i];
-            char why[160];
-            snprintf(why, sizeof why, "parameter `%s` is declared as `%s`", p->name, type_name(pt));
-            ok = coerce(S, &e->u.call.args[i], pt, &p->type->loc, why) && ok;
-        }
-    }
-    (void)ok;
-    return set_type(e, fn->type);
+    return check_args(S, e, fn, 0);
 }
 
 static Type *check_member(Sema *S, Expr *e) {
@@ -1789,14 +1961,14 @@ static Type *check_member(Sema *S, Expr *e) {
     }
     if (st->kind == TY_ERRUNION) {   /* r->ok, r->value, r->error */
         const char *name = e->u.member.name;
-        const char *field = strcmp(name, "ok") == 0 ? "is_err" : strcmp(name, "error") == 0 ? "err" : name;
-        const Field *f = strcmp(name, "ok") == 0 || strcmp(name, "error") == 0 ||
-                                 (strcmp(name, "value") == 0 && st->base->kind != TY_VOID)
-                             ? find_field(st, field)
-                             : NULL;
+        const Field *f = NULL;
+        if (strcmp(name, "ok") == 0) f = find_field(st, "is_err");
+        else if (strcmp(name, "error") == 0) f = find_field(st, "err");
+        else if (strcmp(name, "value") == 0) f = find_field(st, "value");   /* absent for void!E */
         if (!f) {
+            const char *tname = type_name(st);
             Diag *d = diag_start(DIAG_ERROR, "E0317", e->u.member.name_loc, "`%s` has no field named `%s`",
-                                 type_name(st), name);
+                                 tname ? tname : "?", name ? name : "?");   /* (never NULL; quiets gcc -fsanitize) */
             diag_label(d, "unknown field");
             if (strcmp(name, "value") == 0) diag_note(d, "a `void` result has no value; check `->ok` instead");
             else diag_note(d, "an error union has `ok` (bool), `value` and `error`");
@@ -1809,6 +1981,40 @@ static Type *check_member(Sema *S, Expr *e) {
             return set_type(e, ty_bool);
         }
         e->builtin = strcmp(name, "value") == 0 ? BUILTIN_EU_VALUE : BUILTIN_EU_ERROR;
+        return set_type(e, f->type);
+    }
+    if (st->kind == TY_CLASS) {   /* obj->field: through the reference */
+        e->via_pointer = true;
+        const Field *f = find_field(st, e->u.member.name);
+        if (!f) {
+            Symbol *m = find_method(st, e->u.member.name);
+            if (m) {
+                Diag *d = diag_start(DIAG_ERROR, "E0205", e->u.member.name_loc, "`%s` is a method, not a field",
+                                     e->u.member.name);
+                diag_label(d, "method used without calling it");
+                char *text = loc_text(S, e->loc);
+                if (text && m->nparams == 1 && !m->is_static) {
+                    size_t n = strlen(text) + 3;
+                    char *fixed = arena_alloc(S->arena, n);
+                    snprintf(fixed, n, "%s()", text);
+                    diag_fix(d, e->loc, fixed, "call it");
+                }
+                diag_end(d);
+                return set_type(e, ty_error);
+            }
+            report_unknown_field(S, st, e->u.member.name, e->u.member.name_loc);
+            return set_type(e, ty_error);
+        }
+        if (f->is_private && !(S->fn && S->fn->owner == st)) {
+            Diag *d = diag_start(DIAG_ERROR, "E0362", e->u.member.name_loc, "field `%s` of class `%s` is private",
+                                 f->name, st->name);
+            diag_label(d, "private field");
+            diag_span(d, f->loc, "declared `private` here");
+            diag_note(d, "private members can only be used by the class's own methods");
+            diag_end(d);
+            return set_type(e, ty_error);
+        }
+        e->field_offset = f->offset;
         return set_type(e, f->type);
     }
     if (st->kind == TY_STRING) {   /* string is {const u8* ptr; usize len} */
@@ -1828,7 +2034,8 @@ static Type *check_member(Sema *S, Expr *e) {
         return set_type(e, ty_error);
     }
     if (st->kind != TY_STRUCT) {
-        Diag *d = diag_start(DIAG_ERROR, "E0318", e->u.member.name_loc, "`->` needs a struct, found `%s`", type_name(t));
+        Diag *d = diag_start(DIAG_ERROR, "E0318", e->u.member.name_loc, "`->` needs a struct or object, found `%s`",
+                             type_name(t));
         diag_label(d, "unknown field");
         diag_span(d, obj->loc, "this is `%s`", type_name(t));
         if (t->kind == TY_PTR && t->base->kind == TY_PTR) diag_help(d, "dereference it first: `(*p)->field`");
@@ -1932,7 +2139,13 @@ static Type *check_string_lit(Sema *S, Expr *e) {
 static Type *check_struct_lit(Sema *S, Expr *e) {
     if (strcmp(e->u.struct_lit.type_name, "string") == 0) return check_string_lit(S, e);
     Type *st = find_struct(S, e->u.struct_lit.type_name);
-    if (st && st->kind != TY_STRUCT) {
+    if (st && st->kind == TY_CLASS) {
+        Diag *d = diag_start(DIAG_ERROR, "E0363", e->loc, "`%s` is a class, not a struct", st->name);
+        diag_label(d, "can't be built with `{ ... }`");
+        diag_help(d, "create objects with `new %s(...)`", st->name);
+        diag_end(d);
+        st = NULL;
+    } else if (st && st->kind != TY_STRUCT) {
         Diag *d = diag_start(DIAG_ERROR, "E0352", e->loc, "`%s` is an enum, not a struct", st->name);
         diag_label(d, "can't be built with `{ ... }`");
         diag_help(d, "name a variant instead, like `%s::%s`", st->name, st->nvariants ? st->variants[0].name : "Variant");
@@ -2046,6 +2259,62 @@ static Type *check_enum_value(Sema *S, Expr *e, Type *et) {
     return set_type(e, ty_error);
 }
 
+/* new Class(args): allocates the object, sets field defaults, then runs
+ * __construct(args) if the class has one. */
+static Type *check_new(Sema *S, Expr *e) {
+    Type *ct = resolve_type(S, e->u.new_.type, false);
+    if (is_err(ct)) {
+        for (size_t i = 0; i < e->u.new_.nargs; i++) check(S, &e->u.new_.args[i], NULL);
+        return set_type(e, ty_error);
+    }
+    if (ct->kind != TY_CLASS) {
+        Diag *d = diag_start(DIAG_ERROR, "E0363", e->u.new_.type->loc, "`new` needs a class, found `%s`", type_name(ct));
+        diag_label(d, "not a class");
+        if (ct->kind == TY_STRUCT)
+            diag_help(d, "structs are values: write `%s { field: value, ... }`, or use `alloc(%s)` for heap memory",
+                      ct->name, ct->name);
+        else
+            diag_help(d, "for heap memory holding a `%s`, use `alloc(%s)`", type_name(ct), type_name(ct));
+        diag_end(d);
+        for (size_t i = 0; i < e->u.new_.nargs; i++) check(S, &e->u.new_.args[i], NULL);
+        return set_type(e, ty_error);
+    }
+    e->u.new_.alloc = find_runtime_func(S, "__rt_alloc");
+    add_callee(S, e->u.new_.alloc);
+    Symbol *tmp = new_symbol(S, SYM_LOCAL, "this", e->loc);
+    tmp->type = ct;
+    e->u.new_.tmp = tmp;
+    Symbol *ctor = find_method(ct, "__construct");
+    if (!ctor) {
+        if (e->u.new_.nargs) {
+            Diag *d = diag_start(DIAG_ERROR, "E0206", e->u.new_.args[0]->loc, "class `%s` has no `__construct`, so `new %s` takes no arguments",
+                                 ct->name, ct->name);
+            diag_label(d, "unexpected argument%s", e->u.new_.nargs == 1 ? "" : "s");
+            diag_span(d, ct->decl->name_loc, "`%s` is declared here", ct->name);
+            diag_help(d, "add `public function __construct(...)` to the class to take arguments");
+            diag_end(d);
+            for (size_t i = 0; i < e->u.new_.nargs; i++) check(S, &e->u.new_.args[i], NULL);
+        }
+        return set_type(e, ct);
+    }
+    if (!method_visible(S, ctor, e->loc)) return set_type(e, ct);
+    /* The __construct call, with the new object as `this`. */
+    Expr *self = new_node(S, EXPR_IDENT, e->loc, ct);
+    self->u.name = "this";
+    self->sym = tmp;
+    Expr *callee = new_node(S, EXPR_IDENT, e->u.new_.type->loc, ty_error);
+    callee->u.name = ctor->name;
+    Expr *call = new_node(S, EXPR_CALL, e->loc, ty_void);
+    call->u.call.callee = callee;
+    call->u.call.nargs = e->u.new_.nargs + 1;
+    call->u.call.args = arena_alloc(S->arena, call->u.call.nargs * sizeof(Expr *));
+    call->u.call.args[0] = self;
+    for (size_t i = 0; i < e->u.new_.nargs; i++) call->u.call.args[i + 1] = e->u.new_.args[i];
+    check_args(S, call, ctor, 1);
+    e->u.new_.ctor = call;
+    return set_type(e, ct);
+}
+
 static void report_assign_as_value(const Expr *e) {
     Diag *d = diag_start(DIAG_ERROR, "E0210", e->loc, "an assignment can't be used as a value");
     diag_label(d, "assignment used as a value");
@@ -2135,9 +2404,24 @@ static Type *check(Sema *S, Expr **slot, Type *hint) {
         return set_type(e, ty_string);
     case EXPR_INTERP:
         return check_interp(S, slot);
-    case EXPR_THIS:       not_yet(e->loc, "classes", 10); break;
+    case EXPR_THIS:
+        if (S->fn && S->fn->this_param) {
+            e->sym = S->fn->this_param;
+            return set_type(e, S->fn->owner);
+        } else {
+            Diag *d = diag_start(DIAG_ERROR, "E0361", e->loc, "`this` can only be used inside a method");
+            if (S->fn && S->fn->owner) {
+                diag_label(d, "`%s` is static, so it has no `this`", S->fn->name);
+                diag_span(d, S->fn->loc, "declared `static` here");
+            } else {
+                diag_label(d, "not inside a class method");
+            }
+            diag_end(d);
+            return set_type(e, ty_error);
+        }
 
-    case EXPR_NEW:        not_yet(e->loc, "`new`", 11); break;
+    case EXPR_NEW:
+        return check_new(S, e);
     case EXPR_ALLOC: {
         /* alloc(T) or alloc(T, n): zeroed memory for n values of T. */
         S->needs_libc = true;
@@ -2812,10 +3096,16 @@ static void check_function_body(Sema *S, Symbol *fn) {
     S->in_defer = false;
 
     push_scope(S);
+    size_t skip = 0;
+    if (fn->owner && !fn->is_static) {
+        fn->this_param = new_symbol(S, SYM_PARAM, "this", d->name_loc);
+        fn->this_param->type = fn->owner;
+        skip = 1;
+    }
     for (size_t i = 0; i < d->u.func.nparams; i++) {
         Param *p = d->u.func.params[i];
-        p->sym = declare_local(S, SYM_PARAM, p->name, p->loc, fn->param_types[i], p->type);
-        p->sym->param_index = (int)i;
+        p->sym = declare_local(S, SYM_PARAM, p->name, p->loc, fn->param_types[i + skip], p->type);
+        p->sym->param_index = (int)(i + skip);
     }
     Stmt *b = d->u.func.body;
     check_stmt_list(S, b->u.block.stmts, b->u.block.n);
@@ -2974,6 +3264,162 @@ static void declare_global(Sema *S, Decl *d) {
     ptrvec_push(&S->globals, g);
 }
 
+/* ---- classes ------------------------------------------------------------------ */
+
+/* E0360 */
+static void report_member_twice(const Type *ct, const char *name, Loc loc, Loc first) {
+    Diag *d = diag_start(DIAG_ERROR, "E0360", loc, "`%s` is declared twice in class `%s`", name, ct->name);
+    diag_label(d, "declared again here");
+    diag_span(d, first, "first declared here");
+    diag_note(d, "a class's fields and methods share one namespace");
+    diag_end(d);
+}
+
+/* The object's fields, laid out like a struct. */
+static void layout_class(Sema *S, Type *ct) {
+    const Decl *d = ct->decl;
+    size_t n = d->u.class_.n;
+    ct->fields = arena_alloc(S->arena, (n ? n : 1) * sizeof(Field));
+    ct->nfields = 0;
+    uint32_t offset = 0, align = 1;
+    for (size_t i = 0; i < n; i++) {
+        const Decl *m = d->u.class_.members[i];
+        if (m->kind != DECL_VAR) continue;
+        const VarDecl *f = m->u.var;
+        if (m->is_static) {
+            Diag *e = diag_start(DIAG_ERROR, "E0360", m->loc, "static fields aren't supported");
+            diag_label(e, "`static` field");
+            diag_help(e, "use a global variable next to the class instead");
+            diag_end(e);
+        }
+        for (size_t j = 0; j < ct->nfields; j++)
+            if (strcmp(ct->fields[j].name, f->name) == 0) report_member_twice(ct, f->name, f->loc, ct->fields[j].loc);
+        Type *ft = resolve_type(S, f->type, false);
+        Type *inner = ft;
+        while (inner->kind == TY_ARRAY) inner = inner->base;
+        if (inner->kind == TY_STRUCT) layout_struct(S, inner);
+        uint32_t fa = ft->align ? ft->align : 1;
+        offset = (offset + fa - 1) & ~(fa - 1);
+        Field *field = &ct->fields[ct->nfields++];
+        field->name = f->name;
+        field->loc = f->loc;
+        field->type = ft;
+        field->offset = offset;
+        field->init = f->init;
+        field->is_private = m->vis == VIS_PRIVATE;
+        offset += ft->size;
+        if (fa > align) align = fa;
+    }
+    ct->obj_align = align;
+    ct->obj_size = (offset + align - 1) & ~(align - 1);
+}
+
+/* Default values are set by `new`, before __construct runs. They must be
+ * constants. */
+static void check_field_defaults(Sema *S, Type *ct) {
+    for (size_t i = 0; i < ct->nfields; i++) {
+        Field *f = &ct->fields[i];
+        if (!f->init || is_err(f->type)) continue;
+        const Decl *m = NULL;
+        for (size_t j = 0; j < ct->decl->u.class_.n; j++) {
+            const Decl *c = ct->decl->u.class_.members[j];
+            if (c->kind == DECL_VAR && c->u.var->init == f->init) m = c;
+        }
+        VarDecl *vd = m->u.var;
+        if (vd->init->kind == EXPR_ASSIGN) {
+            report_assign_as_value(vd->init);
+            f->init = NULL;
+            continue;
+        }
+        Type *t = check(S, &vd->init, f->type);
+        if (is_err(t) || !coerce(S, &vd->init, f->type, &vd->type->loc, "expected because of this type")) {
+            f->init = NULL;
+            continue;
+        }
+        f->init = vd->init;
+        ConstVal cv;
+        bool is_lit = f->init->kind == EXPR_STRING;
+        if (!is_lit && !const_eval(S, f->init, &cv, false)) {
+            Diag *d = diag_start(DIAG_ERROR, "E0307", f->init->loc, "field defaults must be constant expressions");
+            diag_label(d, "not a compile-time constant");
+            diag_help(d, "set it in `__construct` instead");
+            diag_end(d);
+            f->init = NULL;
+        }
+    }
+}
+
+static void declare_methods(Sema *S, Type *ct) {
+    const Decl *cd = ct->decl;
+    size_t n = cd->u.class_.n;
+    ct->methods = arena_alloc(S->arena, (n ? n : 1) * sizeof(Symbol *));
+    ct->nmethods = 0;
+    for (size_t i = 0; i < n; i++) {
+        Decl *d = cd->u.class_.members[i];
+        if (d->kind != DECL_FUNC) continue;
+        Symbol *prev = find_method(ct, d->name);
+        if (prev) {
+            report_member_twice(ct, d->name, d->name_loc, prev->loc);
+            continue;
+        }
+        for (size_t j = 0; j < ct->nfields; j++)
+            if (strcmp(ct->fields[j].name, d->name) == 0) report_member_twice(ct, d->name, d->name_loc, ct->fields[j].loc);
+
+        Symbol *fn = new_symbol(S, SYM_FUNC, d->name, d->name_loc);
+        fn->decl = d;
+        fn->owner = ct;
+        fn->is_static = d->is_static;
+        fn->is_private = d->vis == VIS_PRIVATE;
+        d->sym = fn;
+        const char *prefix = S->mods[fn->module]->prefix;
+        size_t len = strlen(prefix) + strlen(ct->name) + strlen(d->name) + 4;
+        char *asm_name = arena_alloc(S->arena, len);
+        snprintf(asm_name, len, "w.%s%s.%s", prefix, ct->name, d->name);
+        fn->asm_name = asm_name;
+        if (d->u.func.variadic) {
+            Diag *e = diag_start(DIAG_ERROR, "E0334", d->name_loc, "only `extern` functions can be variadic");
+            diag_label(e, "method `%s` takes `...`", d->name);
+            diag_end(e);
+        }
+
+        fn->type = d->u.func.ret ? resolve_type(S, d->u.func.ret, true) : ty_void;
+        if (!is_err(fn->type) && !passable(S, fn->type, ret_type_loc(d), "returned")) fn->type = ty_error;
+        size_t skip = fn->is_static ? 0 : 1;
+        fn->nparams = d->u.func.nparams + skip;
+        fn->param_types = arena_alloc(S->arena, fn->nparams * sizeof(Type *) + sizeof(Type *));
+        if (skip) fn->param_types[0] = ct;
+        for (size_t j = 0; j < d->u.func.nparams; j++) {
+            Param *p = d->u.func.params[j];
+            Type *t = resolve_type(S, p->type, false);
+            if (!is_err(t) && !passable(S, t, p->type->loc, "passed")) t = ty_error;
+            fn->param_types[j + skip] = t;
+        }
+
+        /* PHP's magic methods. */
+        bool ctor = strcmp(d->name, "__construct") == 0, to_string = strcmp(d->name, "__toString") == 0;
+        if ((ctor || to_string) && d->is_static) {
+            Diag *e = diag_start(DIAG_ERROR, "E0360", d->name_loc, "`%s` can't be static", d->name);
+            diag_label(e, "it runs on an object");
+            diag_end(e);
+        }
+        if (ctor && d->u.func.ret && fn->type->kind != TY_VOID) {
+            Diag *e = diag_start(DIAG_ERROR, "E0360", d->u.func.ret->loc, "`__construct` can't return a value");
+            diag_label(e, "remove the return type");
+            diag_note(e, "`new %s(...)` always produces the new object", ct->name);
+            diag_end(e);
+            fn->type = ty_void;
+        }
+        if (to_string && (d->u.func.nparams != 0 || fn->type->kind != TY_STRING)) {
+            Diag *e = diag_start(DIAG_ERROR, "E0360", d->name_loc, "`__toString` must take no parameters and return `string`");
+            diag_label(e, "wrong signature");
+            diag_note(e, "echo and interpolation call `__toString()` to print an object");
+            diag_end(e);
+        }
+        ct->methods[ct->nmethods++] = fn;
+        ptrvec_push(&S->funcs, fn);
+    }
+}
+
 static void check_duplicates(Sema *S) {
     Module *m = S->mod;
     for (size_t i = 0; i < m->n; i++) {
@@ -3032,6 +3478,7 @@ bool sema_check(Arena *arena, Module **mods, size_t nmods, Program *prog) {
         S.cur = module_of(&S, d->loc.file);
         switch (d->kind) {
         case DECL_STRUCT:
+        case DECL_CLASS:
         case DECL_ENUM: {
             bool dup = false;
             for (size_t j = 0; j < S.structs.len; j++) {
@@ -3041,6 +3488,8 @@ bool sema_check(Arena *arena, Module **mods, size_t nmods, Program *prog) {
             if (dup) break;
             if (d->kind == DECL_STRUCT) {
                 d->type = type_new_struct(d->name, d);
+            } else if (d->kind == DECL_CLASS) {
+                d->type = type_new_class(d->name, d);
             } else {
                 Type *base = d->u.enum_.base ? resolve_type(&S, d->u.enum_.base, false) : ty_i32;
                 if (!is_err(base) && base->kind != TY_INT) {
@@ -3057,7 +3506,6 @@ bool sema_check(Arena *arena, Module **mods, size_t nmods, Program *prog) {
             break;
         }
         case DECL_IMPORT: break;   /* handled by the module loader */
-        case DECL_CLASS:  not_yet(d->loc, "classes", 10); break;
         default: break;
         }
     }
@@ -3065,19 +3513,30 @@ bool sema_check(Arena *arena, Module **mods, size_t nmods, Program *prog) {
         Type *t = S.structs.items[i];
         S.cur = module_of(&S, t->decl->loc.file);
         if (t->kind == TY_STRUCT) layout_struct(&S, t);
-        else check_enum_variants(&S, t);
+        else if (t->kind == TY_ENUM) check_enum_variants(&S, t);
+    }
+    for (size_t i = 0; i < S.structs.len; i++) {   /* classes may hold structs and enums */
+        Type *t = S.structs.items[i];
+        S.cur = module_of(&S, t->decl->loc.file);
+        if (t->kind == TY_CLASS) layout_class(&S, t);
     }
 
     for (size_t i = 0; i < m->n; i++) {
         Decl *d = m->decls[i];
-        if (d->kind != DECL_FUNC) continue;
         S.cur = module_of(&S, d->loc.file);
-        if (!find_in_module(&S.funcs, S.cur, d->name)) declare_function(&S, d);
+        if (d->kind == DECL_FUNC && !find_in_module(&S.funcs, S.cur, d->name)) declare_function(&S, d);
+        if (d->kind == DECL_CLASS && d->type) declare_methods(&S, d->type);
     }
     for (size_t i = 0; i < m->n; i++) {
         if (m->decls[i]->kind != DECL_VAR) continue;
         S.cur = module_of(&S, m->decls[i]->loc.file);
         declare_global(&S, m->decls[i]);
+    }
+    /* Field defaults are constants, checked once globals are known. */
+    for (size_t i = 0; i < S.structs.len; i++) {
+        Type *t = S.structs.items[i];
+        S.cur = module_of(&S, t->decl->loc.file);
+        if (t->kind == TY_CLASS) check_field_defaults(&S, t);
     }
 
     S.cur = 0;
@@ -3135,7 +3594,9 @@ bool sema_check(Arena *arena, Module **mods, size_t nmods, Program *prog) {
             Symbol *fn = S.funcs.items[i];
             if (fn->reachable || fn->is_runtime || fn->is_extern || fn->name[0] == '_') continue;
             if (fn->module != 0) continue;   /* libraries may have functions a program doesn't use */
-            Diag *d = diag_start(DIAG_WARNING, "W0004", fn->loc, "function `%s` is never used", fn->name);
+            Diag *d = fn->owner ? diag_start(DIAG_WARNING, "W0004", fn->loc, "method `%s::%s` is never used",
+                                             fn->owner->name, fn->name)
+                                : diag_start(DIAG_WARNING, "W0004", fn->loc, "function `%s` is never used", fn->name);
             diag_label(d, "never called");
             char renamed[128];
             snprintf(renamed, sizeof renamed, "_%s", fn->name);

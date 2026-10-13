@@ -892,6 +892,62 @@ static const Explanation explanations[] = {
      "Enums are built by naming a variant, not with `Name { ... }`, which is\n"
      "for structs."},
 
+    {"E0360",
+     "Something is wrong in a class declaration:\n"
+     "\n"
+     "- a field or method name is used twice (they share one namespace),\n"
+     "- a field is `static` (use a global variable instead),\n"
+     "- `__construct` returns a value or is static,\n"
+     "- `__toString` takes parameters or doesn't return `string`.\n"
+     "\n"
+     "    class Point {\n"
+     "        public int x = 0;\n"
+     "        public function __construct(int x) { this->x = x; }\n"
+     "        public function __toString(): string { return \"Point({this->x})\"; }\n"
+     "    }"},
+
+    {"E0361",
+     "`this` is the object a method was called on, so it only exists inside\n"
+     "a class's (non-static) methods.\n"
+     "\n"
+     "    function helper(): int {\n"
+     "        return this->x;      // error: not a method\n"
+     "    }\n"
+     "\n"
+     "Pass the object as a parameter instead, or make the function a method."},
+
+    {"E0362",
+     "A `private` field or method can only be used by the class's own\n"
+     "methods.\n"
+     "\n"
+     "    class Account {\n"
+     "        private int pin;\n"
+     "    }\n"
+     "    a->pin = 5;             // error outside Account's methods\n"
+     "\n"
+     "Use a public method that does what you need, or make the member public.\n"
+     "Members are public unless marked `private`."},
+
+    {"E0363",
+     "Objects of a class are created with `new`, and only classes can be\n"
+     "created that way.\n"
+     "\n"
+     "    Point p = Point { x: 1 };        // fine for a struct\n"
+     "    Counter c = new Counter(5);      // classes use new\n"
+     "\n"
+     "A class value is a reference to an object (it can be `null`, and\n"
+     "copying it doesn't copy the object). A struct value is the data itself."},
+
+    {"E0364",
+     "The method doesn't exist, or is called the wrong way.\n"
+     "\n"
+     "    c->tick();              // a method, called on an object\n"
+     "    Vec::zero();            // a static method, called on the class\n"
+     "\n"
+     "Static methods have no `this` and are called as `Class::name(...)`;\n"
+     "other methods need an object: `obj->name(...)`. Structs have no\n"
+     "methods."},
+
     {"E0900",
      "This feature is part of watrlang's design but isn't implemented yet.\n"
      "The message names the milestone that will add it; docs/DESIGN.md has\n"

@@ -44,6 +44,9 @@ typedef struct Symbol {
     int module;                 /* index of the defining module */
     bool is_private;            /* `private`: invisible to importing modules */
     Type *enum_type;            /* generated enum-name functions: the enum (decl is NULL) */
+    Type *owner;                /* methods: their class */
+    bool is_static;             /* methods without `this` */
+    struct Symbol *this_param;  /* methods: the implicit first parameter */
 
     /* globals */
     unsigned char *init;        /* initial bytes (type->size of them); NULL = all zero */

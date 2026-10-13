@@ -82,9 +82,6 @@ class Point {
 
 function main(): int {
     Point p = new Point(3, 4);           // GC-managed
-    Point* q = alloc(Point);             // manual, no constructor call
-    defer free(q);
-
     echo "len2 = " . p->len2() . "\n";   // . is concat
     return 0;
 }
@@ -322,6 +319,22 @@ function outb(u16 port, u8 val): void {
   control reached it. `return`'s value is computed before defers run.
   Deferred code can't itself `return`, `break`/`continue` out of the defer,
   or use `?` (E0346).
+- **Classes (milestone 10):** a class value is a *reference* to an object
+  on the heap, like in PHP: it's 8 bytes, can be `null`, and copying it
+  shares the object. `new C(args)` allocates a zeroed object, sets field
+  defaults (`public int n = 10;`, which must be constants), then runs
+  `__construct(args)` if there is one.
+  - Methods use `this`; `static function` methods have no `this` and are
+    called as `C::name()` (or `mod::C::name()`).
+  - Members are public unless marked `private`, which limits them to the
+    class's own methods.
+  - `__toString(): string` makes objects printable with `echo`,
+    interpolation and `.`.
+  - `==`/`!=` compare identity. Using a field or calling a method through
+    `null` panics with the location, instead of crashing.
+  - Objects come from the runtime heap. Until the GC (milestone 11) they
+    are never freed; code that manages memory by hand uses structs and
+    `alloc`/`free`. Inheritance and interfaces are still deferred.
 - **`->` vs `.`:** `->` is *always* member access, auto-dereferencing
   pointers. `.` is *only* concatenation. They never conflict.
 - **Pointer declarations without a sigil:** `Foo* x;` could also parse as
@@ -427,7 +440,7 @@ Each milestone ends with tests passing and something you can run.
 | 7  | Strings + echo         | literals, `echo`, `len`, slices                           |
 | 8  | Modules                | `import`, multi-file programs, a start on `std/`          |
 | 9  | defer, enums, errors   | `defer`, `enum`, `Enum::Value`, `T!E`, `?`, `??`          |
-| 10 | Classes                | fields, methods, `__construct`, `->`                      |
+| 10 | Classes                | fields, methods, `__construct`, `static`, `__toString`    |
 | 11 | GC                     | `new`, `.` concat, interpolation, mark-and-sweep          |
 | 12 | foreach, arrays        | `foreach (x as k => v)`, PHP-style `array`                |
 | 13 | Freestanding           | `--freestanding`, inline asm, `volatile`, `export`, packed/aligned structs |

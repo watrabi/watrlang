@@ -30,6 +30,10 @@ class Point {
     }
 
     private function secret() {}
+
+    public static function origin(): Point {
+        return new Point(0, 0);
+    }
 }
 
 enum Color { Red, Green, Blue }

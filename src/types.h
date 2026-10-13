@@ -27,6 +27,7 @@ typedef enum {
     TY_STRING,   /* immutable {const u8* ptr; usize len}, 16 bytes */
     TY_ENUM,     /* named integer constants; represented as its base int type */
     TY_ERRUNION, /* T!E: {bool is_err; E err; T value} */
+    TY_CLASS,    /* a reference (pointer) to a heap object; may be null */
 } TypeKind;
 
 typedef struct Type Type;
@@ -37,6 +38,8 @@ typedef struct {
     Loc loc;
     Type *type;
     uint32_t offset;
+    struct Expr *init;       /* class fields: the default value, or NULL for zero */
+    bool is_private;         /* class fields */
 } Field;
 
 typedef struct {
@@ -57,14 +60,18 @@ struct Type {
     bool base_volatile;      /* TY_PTR: `volatile T*` */
     uint64_t len;            /* TY_ARRAY */
 
-    const struct Decl *decl; /* TY_STRUCT, TY_ENUM */
-    Field *fields;           /* TY_STRUCT; TY_ERRUNION: is_err, err, value */
+    const struct Decl *decl; /* TY_STRUCT, TY_ENUM, TY_CLASS */
+    Field *fields;           /* TY_STRUCT, TY_CLASS; TY_ERRUNION: is_err, err, value */
     size_t nfields;
     Type *err;               /* TY_ERRUNION: the error enum (base is the value type) */
     EnumVariant *variants;   /* TY_ENUM */
     size_t nvariants;
     struct Symbol *name_fn;  /* TY_ENUM: generated function returning a variant's name */
     int layout_state;        /* TY_STRUCT: 0 = not started, 1 = in progress, 2 = done */
+    uint32_t obj_size;       /* TY_CLASS: the object's size and alignment (the value is a pointer) */
+    uint32_t obj_align;
+    struct Symbol **methods; /* TY_CLASS */
+    size_t nmethods;
 };
 
 extern Type *ty_error, *ty_void, *ty_bool, *ty_null;
@@ -80,6 +87,7 @@ Type *type_ptr(Type *base, bool base_const, bool base_volatile);
 Type *type_array(Type *elem, uint64_t len);
 Type *type_new_struct(const char *name, const struct Decl *decl);
 Type *type_new_enum(const char *name, const struct Decl *decl, Type *base);
+Type *type_new_class(const char *name, const struct Decl *decl);
 Type *type_errunion(Type *value, Type *err);
 
 /* "u8", "const u8*", "Vec2[4]" */
@@ -96,7 +104,8 @@ static inline bool type_in_memory(const Type *t) {
 }
 /* Lives in a general-purpose register: ints, enums, bools, pointers, null. */
 static inline bool type_in_gpr(const Type *t) {
-    return t->kind == TY_INT || t->kind == TY_ENUM || t->kind == TY_BOOL || t->kind == TY_PTR || t->kind == TY_NULL;
+    return t->kind == TY_INT || t->kind == TY_ENUM || t->kind == TY_BOOL || t->kind == TY_PTR || t->kind == TY_NULL ||
+           t->kind == TY_CLASS;
 }
 /* Integer representation with is_signed/size: ints and enums. */
 static inline bool type_is_intlike(const Type *t) { return t->kind == TY_INT || t->kind == TY_ENUM; }

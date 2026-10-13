@@ -157,6 +157,16 @@ Type *type_errunion(Type *value, Type *err) {
     return t;
 }
 
+Type *type_new_class(const char *name, const struct Decl *decl) {
+    Type *t = ARENA_NEW(&types_arena, Type);
+    t->kind = TY_CLASS;
+    t->name = name;
+    t->decl = decl;
+    t->size = t->align = 8;
+    t->obj_align = 1;
+    return t;
+}
+
 Type *type_new_struct(const char *name, const struct Decl *decl) {
     Type *t = ARENA_NEW(&types_arena, Type);
     t->kind = TY_STRUCT;
@@ -230,7 +240,7 @@ bool type_assignable(const Type *from, const Type *to) {
     if (type_equiv(from, to)) return true;
     if (from->kind == TY_INT && to->kind == TY_INT) return int_widens(from, to);
     if (from->kind == TY_FLOAT && to->kind == TY_FLOAT) return to->size >= from->size;
-    if (from->kind == TY_NULL && to->kind == TY_PTR) return true;
+    if (from->kind == TY_NULL && (to->kind == TY_PTR || to->kind == TY_CLASS)) return true;
     if (from->kind == TY_PTR && to->kind == TY_PTR) {
         /* Adding qualifiers is fine; dropping them needs a cast. */
         if (from->base_const && !to->base_const) return false;
@@ -253,6 +263,9 @@ bool type_castable(const Type *from, const Type *to) {
     if (from->kind == TY_PTR && to->kind == TY_INT) return to->size == 8;
     if (from->kind == TY_INT && to->kind == TY_PTR) return from->size == 8;
     if (from->kind == TY_NULL && to->kind == TY_INT) return to->size == 8;
+    /* An object reference is an address: it converts to and from pointers. */
+    if (from->kind == TY_CLASS && (to->kind == TY_PTR || (to->kind == TY_INT && to->size == 8))) return true;
+    if (to->kind == TY_CLASS && from->kind == TY_PTR) return true;
     return false;
 }
 

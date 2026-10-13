@@ -1,0 +1,49 @@
+class Account {
+    public int balance;
+    private int pin = 1234;
+    public int balance;
+    static int count;
+
+    public function __construct(int start): int {
+        this->balance = start;
+    }
+
+    private function audit(): void {
+    }
+
+    public static function create(): Account {
+        return new Account(0);
+    }
+
+    public function deposit(int n): void {
+        this->balance += n;
+    }
+
+    public function __toString(int x): string {
+        return "acct";
+    }
+}
+
+struct Point { int x; }
+
+function helper(): int {
+    return this->balance;
+}
+
+function main(): int {
+    Account a = new Account(10);
+    a->pin = 5;
+    a->audit();
+    a->deposit();
+    a->depost(5);
+    Account::deposit(3);
+    a->create();
+    int b = a->deposit;
+    Account bad = new Account();
+    Point p = new Point();
+    Account c = Account { balance: 1 };
+    Point q = Point { x: 1 };
+    q->move();
+    echo a == q, "\n";
+    return helper();
+}

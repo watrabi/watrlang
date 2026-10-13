@@ -1,0 +1,176 @@
+error[E0360]: `balance` is declared twice in class `Account`
+ --> tests/run/err_classes.watr:4:16
+  |
+2 |     public int balance;
+  |                ------- first declared here
+3 |     private int pin = 1234;
+4 |     public int balance;
+  |                ^^^^^^^ declared again here
+  |
+  = note: a class's fields and methods share one namespace
+
+error[E0360]: static fields aren't supported
+ --> tests/run/err_classes.watr:5:5
+  |
+5 |     static int count;
+  |     ^^^^^^^^^^^^^^^^^ `static` field
+  |
+  = help: use a global variable next to the class instead
+
+error[E0360]: `__construct` can't return a value
+ --> tests/run/err_classes.watr:7:45
+  |
+7 |     public function __construct(int start): int {
+  |                                             ^^^ remove the return type
+  |
+  = note: `new Account(...)` always produces the new object
+
+error[E0360]: `__toString` must take no parameters and return `string`
+  --> tests/run/err_classes.watr:22:21
+   |
+22 |     public function __toString(int x): string {
+   |                     ^^^^^^^^^^ wrong signature
+   |
+   = note: echo and interpolation call `__toString()` to print an object
+
+warning[W0001]: unused parameter `x`
+  --> tests/run/err_classes.watr:22:36
+   |
+22 |     public function __toString(int x): string {
+   |                                    ^ never used
+   |
+help: if this is intentional, prefix it with an underscore
+   |
+22 |     public function __toString(int _x): string {
+   |                                    ~~
+
+error[E0361]: `this` can only be used inside a method
+  --> tests/run/err_classes.watr:30:12
+   |
+30 |     return this->balance;
+   |            ^^^^ not inside a class method
+
+error[E0362]: field `pin` of class `Account` is private
+  --> tests/run/err_classes.watr:35:8
+   |
+ 3 |     private int pin = 1234;
+   |                 --- declared `private` here
+...
+35 |     a->pin = 5;
+   |        ^^^ private field
+   |
+   = note: private members can only be used by the class's own methods
+
+error[E0362]: method `audit` of class `Account` is private
+  --> tests/run/err_classes.watr:36:8
+   |
+11 |     private function audit(): void {
+   |                      ----- declared `private` here
+...
+36 |     a->audit();
+   |        ^^^^^ private method
+   |
+   = note: private members can only be used by the class's own methods
+
+error[E0206]: method `deposit` takes 1 argument but 0 were supplied
+  --> tests/run/err_classes.watr:37:8
+   |
+18 |     public function deposit(int n): void {
+   |                     ------- `deposit` is defined here
+...
+37 |     a->deposit();
+   |        ^^^^^^^ expected 1 argument, found 0
+   |
+   = note: missing: `n: int`
+
+error[E0364]: class `Account` has no method named `depost`
+  --> tests/run/err_classes.watr:38:8
+   |
+ 1 | class Account {
+   |       ------- `Account` is declared here
+...
+38 |     a->depost(5);
+   |        ^^^^^^ unknown method
+   |
+help: a method with a similar name exists
+   |
+38 |     a->deposit(5);
+   |        ~~~~~~~
+
+error[E0364]: `Account::deposit` needs an object
+  --> tests/run/err_classes.watr:39:5
+   |
+18 |     public function deposit(int n): void {
+   |                     ------- `deposit` is declared here, without `static`
+...
+39 |     Account::deposit(3);
+   |     ^^^^^^^^^^^^^^^^ not a static method
+   |
+   = help: call it on an object: `obj->deposit(...)`
+
+error[E0364]: `create` is a static method, so it isn't called on an object
+  --> tests/run/err_classes.watr:40:8
+   |
+14 |     public static function create(): Account {
+   |                            ------ declared `static` here
+...
+40 |     a->create();
+   |        ^^^^^^ static method
+   |
+   = help: call it on the class: `Account::create(...)`
+
+error[E0205]: `deposit` is a method, not a field
+  --> tests/run/err_classes.watr:41:16
+   |
+41 |     int b = a->deposit;
+   |                ^^^^^^^ method used without calling it
+
+error[E0206]: `new Account(...)` takes 1 argument but 0 were supplied
+  --> tests/run/err_classes.watr:42:23
+   |
+ 7 |     public function __construct(int start): int {
+   |                     ----------- `__construct` is defined here
+...
+42 |     Account bad = new Account();
+   |                       ^^^^^^^ expected 1 argument, found 0
+   |
+   = note: missing: `start: int`
+
+error[E0363]: `new` needs a class, found `Point`
+  --> tests/run/err_classes.watr:43:19
+   |
+43 |     Point p = new Point();
+   |                   ^^^^^ not a class
+   |
+   = help: structs are values: write `Point { field: value, ... }`, or use `alloc(Point)` for heap memory
+
+error[E0363]: `Account` is a class, not a struct
+  --> tests/run/err_classes.watr:44:17
+   |
+44 |     Account c = Account { balance: 1 };
+   |                 ^^^^^^^^^^^^^^^^^^^^^^ can't be built with `{ ... }`
+   |
+   = help: create objects with `new Account(...)`
+
+error[E0364]: `->move(...)` calls a method, but `Point` has no methods
+  --> tests/run/err_classes.watr:46:8
+   |
+46 |     q->move();
+   |     -  ^^^^ not an object
+   |     |
+   |     this is `Point`
+   |
+   = help: structs only hold data; use a `class` for methods, or call a function
+
+error[E0310]: can't compare `Account` with `Point`
+  --> tests/run/err_classes.watr:47:10
+   |
+47 |     echo a == q, "\n";
+   |          ^^^^^^
+   |          - `Account`
+   |               - `Point`
+
+error: could not compile `tests/run/err_classes.watr` due to 17 previous errors; 1 warning emitted
+Some errors have detailed explanations: E0360, W0001, E0361, E0362, E0206, E0364, E0205, E0363, E0310.
+For more information about an error, try `watrc --explain E0360`.
+compile failed: 1
