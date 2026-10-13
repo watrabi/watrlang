@@ -1,0 +1,150 @@
+error[E0381]: extern function `cfun` can't be generic
+ --> tests/run/err_generics.watr:7:17
+  |
+7 | extern function cfun<T>(T x): void;
+  |                 ^^^^ has type parameters
+  |
+  = note: a generic function is compiled once for each set of types it's used with; C can't do that
+
+error[E0375]: `Box` is generic, so it needs type arguments
+  --> tests/run/err_generics.watr:11:5
+   |
+ 1 | struct Box<T> { T v; }
+   |        --- `Box<T>` is declared here
+...
+11 |     Box b;
+   |     ^^^ missing `<...>`
+   |
+help: say what it holds
+   |
+11 |     Box<int> b;
+   |     ~~~~~~~~
+
+error[E0376]: `Box` takes 1 type argument but 2 were supplied
+  --> tests/run/err_generics.watr:12:5
+   |
+ 1 | struct Box<T> { T v; }
+   |        --- `Box<T>` is declared here
+...
+12 |     Box<int, int> c;
+   |     ^^^^^^^^^^^^^ expected 1 type argument
+
+error[E0377]: `Plain` isn't generic
+  --> tests/run/err_generics.watr:13:5
+   |
+ 2 | struct Plain { int x; }
+   |        ----- `Plain` is declared here
+...
+13 |     Plain<int> d;
+   |     ^^^^^^^^^^ takes no type arguments
+   |
+   = help: write just `Plain`
+
+error[E0378]: can't tell what `T` is in this call to `make`
+  --> tests/run/err_generics.watr:14:13
+   |
+ 4 | function make<T>(): T { T x; return x; }
+   |               - `T` is declared here
+...
+14 |     int x = make();
+   |             ^^^^ type parameter `T` unknown
+   |
+   = note: type parameters are learned from the arguments; none of them decides `T`
+   = help: write the type arguments, like `make<int>(...)`
+
+error[E0379]: `T` can't be both `i32` and `i64` in this call to `both`
+  --> tests/run/err_generics.watr:16:21
+   |
+ 5 | function both<T>(T a, T b): T { return a; }
+   |          ---- `both<T>` is declared here
+...
+16 |     int w = both(z, 7 as i64);
+   |                  -  ^^^^^^^^ this makes `T` = `i64`
+   |                  |
+   |                  this makes `T` = `i32`
+   |
+   = help: convert one of them with `as`, or say which type you mean: `both<i32>(...)`
+
+error[E0377]: `plain` isn't a generic function
+  --> tests/run/err_generics.watr:17:13
+   |
+ 8 | function plain(int x): int { return x; }
+   |          ----- `plain` is declared here
+...
+17 |     int v = plain<int>(3);
+   |             ^^^^^^^^^^ takes no type arguments
+
+error[E0322]: cannot find type `Nope`
+  --> tests/run/err_generics.watr:18:9
+   |
+18 |     Box<Nope> n;
+   |         ^^^^ not a known type
+
+error[E0380]: generic `Grow` keeps instantiating itself with bigger types
+ --> tests/run/err_generics.watr:6:18
+  |
+6 | struct Grow<T> { Grow<Grow<T>>* next; }
+  |                  ^^^^^^^^^^^^^ each instance of `Grow` needs a new, bigger one
+  |
+  = note: a generic declaration that uses itself with bigger type arguments, like `Node<Node<T>>`, never ends
+  = note: in `Grow<Grow<Grow<Grow<Grow<Grow<Grow<Grow<Grow<Grow<Grow<Grow<Grow<Grow<Grow<Grow<int>>>>>>>>>>>>>>>>`, used at tests/run/err_generics.watr:6:18
+  = note: in `Grow<Grow<Grow<Grow<Grow<Grow<Grow<Grow<Grow<Grow<Grow<Grow<Grow<Grow<Grow<int>>>>>>>>>>>>>>>`, used at tests/run/err_generics.watr:6:18
+  = note: ... and 13 more instantiations, inside
+  = note: in `Grow<int>`, used at tests/run/err_generics.watr:19:5
+
+error[E0376]: `id` takes 1 type argument but 2 were supplied
+  --> tests/run/err_generics.watr:20:13
+   |
+ 3 | function id<T>(T x): T { return x; }
+   |          -- `id<T>` is declared here
+...
+20 |     int u = id<int, int>(1);
+   |             ^^^^^^^^^^^^ expected 1 type argument
+
+error[E0375]: `Box` is generic, so it needs type arguments
+  --> tests/run/err_generics.watr:21:18
+   |
+ 1 | struct Box<T> { T v; }
+   |        --- `Box<T>` is declared here
+...
+21 |     Box<int> k = Box { v: 1 };
+   |                  ^^^ missing `<...>`
+   |
+help: say what it holds
+   |
+21 |     Box<int> k = Box<int> { v: 1 };
+   |                  ~~~~~~~~
+
+error[E0310]: `+` needs numbers, found `string`
+ --> tests/run/err_generics.watr:9:39
+  |
+9 | function add<T>(T a, T b): T { return a + b; }
+  |                                       ^ not a number
+  |
+  = note: in `add<string>`, used at tests/run/err_generics.watr:22:36
+
+error[E0310]: `+` needs numbers, found `bool`
+ --> tests/run/err_generics.watr:9:39
+  |
+9 | function add<T>(T a, T b): T { return a + b; }
+  |                                       ^ not a number
+  |
+  = help: to count `true` as 1, convert with `as int`
+  = note: in `add<bool>`, used at tests/run/err_generics.watr:22:51
+
+warning[W0001]: unused parameter `b`
+ --> tests/run/err_generics.watr:5:25
+  |
+5 | function both<T>(T a, T b): T { return a; }
+  |                         ^ never used
+  |
+  = note: in `both<f64>`, used at tests/run/err_generics.watr:23:13
+help: if this is intentional, prefix it with an underscore
+  |
+5 | function both<T>(T a, T _b): T { return a; }
+  |                         ~~
+
+error: could not compile `tests/run/err_generics.watr` due to 13 previous errors; 1 warning emitted
+Some errors have detailed explanations: E0381, E0375, E0376, E0377, E0378, E0379, E0322, E0380, E0310, W0001.
+For more information about an error, try `watrc --explain E0381`.
+compile failed: 1

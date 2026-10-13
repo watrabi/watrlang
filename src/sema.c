@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "clone.h"
 #include "vec.h"
 
 /*
@@ -41,7 +42,23 @@ typedef struct {
     PtrVec vsites;      /* VSite*: virtual calls, for reachability */
     Loc cur_loc;        /* the expression being checked, for the call graph */
     uint32_t classes;   /* class ids handed out */
+    PtrVec templates;   /* Decl*: generic functions, structs and classes */
+    PtrVec instances;   /* Instance* */
+    int phase;          /* PH_*: the declaration passes finished so far */
+    int inst_depth;     /* nested instantiations, to stop runaway recursion */
 } Sema;
+
+/* Declaration passes, in order. A generic type instantiated late catches
+ * up on the passes already finished. */
+enum { PH_TYPES, PH_STRUCTS, PH_HIERARCHY, PH_CLASS_LAYOUT, PH_METHODS, PH_DEFAULTS, PH_INHERIT };
+
+/* One use of a generic declaration with particular type arguments. */
+typedef struct {
+    const Decl *tmpl;
+    Type **targs;
+    Type *type;         /* structs and classes */
+    Symbol *fn;         /* functions */
+} Instance;
 
 /* A virtual call: fn calls `name` on a receiver of static type `t`. */
 typedef struct {
@@ -66,6 +83,10 @@ static const char *closest(const char *name, const char **candidates, size_t n);
 static Expr *to_mixed(Sema *S, Expr *e);
 static Expr *desc_addr(Sema *S, Type *ct, Loc loc);
 static Expr *bool_const(Sema *S, Loc loc, bool v);
+static Type *resolve_generic(Sema *S, const char *name, TypeExpr *const *targs, size_t n, Loc loc);
+static void report_missing_targs(Sema *S, Loc loc, const char *name);
+static void check_args_only(Sema *S, Expr *e);
+static bool is_literal(const Expr *e);
 
 /* ---- small helpers ------------------------------------------------------- */
 
@@ -462,7 +483,8 @@ static void report_unknown_type(Sema *S, Loc loc, const char *name) {
     const char *names[64];
     size_t n = 0;
     for (size_t i = 0; i < sizeof builtin_type_names / sizeof *builtin_type_names; i++) names[n++] = builtin_type_names[i];
-    for (size_t i = 0; i < S->structs.len && n < 64; i++) names[n++] = ((Type *)S->structs.items[i])->name;
+    for (size_t i = 0; i < S->structs.len && n < 64; i++)
+        if (!strchr(((Type *)S->structs.items[i])->name, '<')) names[n++] = ((Type *)S->structs.items[i])->name;
     const char *guess = closest(name, names, n);
     if (guess) diag_fix(d, loc, guess, "a type with a similar name exists");
     else if (strcmp(name, "char") == 0) diag_fix(d, loc, "u8", "watrlang's byte type is `u8`");
@@ -486,9 +508,10 @@ static Type *resolve_type(Sema *S, const TypeExpr *te, bool allow_void) {
         }
         break;
     case TYPEX_NAMED:
+        if (te->ntargs) return resolve_generic(S, te->u.name, te->targs, te->ntargs, te->loc);
         t = find_struct(S, te->u.name);
         if (!t) {
-            report_unknown_type(S, te->loc, te->u.name);
+            report_missing_targs(S, te->loc, te->u.name);
             return ty_error;
         }
         break;
@@ -2079,6 +2102,424 @@ static Type *check_static_call(Sema *S, Expr *e, Type *ct) {
     return check_args(S, e, m, 0);
 }
 
+
+/* ---- generics ------------------------------------------------------------------- */
+
+static void layout_struct(Sema *S, Type *st);
+static void resolve_hierarchy(Sema *S, Type *ct);
+static void layout_class(Sema *S, Type *ct);
+static void declare_methods(Sema *S, Type *ct);
+static void check_field_defaults(Sema *S, Type *ct);
+static void inherit_defaults(Type *ct);
+static void declare_function(Sema *S, Decl *d);
+
+/* Generic declarations follow the same visibility rules as the rest;
+ * `types` picks structs and classes, else functions. */
+static const Decl *find_template(Sema *S, const char *name, bool types) {
+    const char *sep = strstr(name, "::");
+    int want = -1;
+    if (sep) {
+        char alias[128];
+        snprintf(alias, sizeof alias, "%.*s", (int)(sep - name), name);
+        want = module_by_alias(S, alias);
+        if (want < 0) return NULL;
+        name = sep + 2;
+    }
+    const Decl *found = NULL;
+    for (size_t i = 0; i < S->templates.len; i++) {
+        const Decl *d = S->templates.items[i];
+        if ((d->kind != DECL_FUNC) != types || strcmp(d->name, name) != 0) continue;
+        int mod = module_of(S, d->loc.file);
+        if (want >= 0) {
+            if (mod == want && d->vis != VIS_PRIVATE) return d;
+            continue;
+        }
+        if (!visible(S, S->cur, mod, d->vis == VIS_PRIVATE)) continue;
+        if (mod == S->cur) return d;
+        if (!found) found = d;
+    }
+    return found;
+}
+
+/* "Box<int, u8*>" */
+static const char *instance_name(Sema *S, const char *base, Type **types, size_t n) {
+    char buf[512];
+    size_t len = (size_t)snprintf(buf, sizeof buf, "%s<", base);
+    for (size_t i = 0; i < n && len < sizeof buf; i++)
+        len += (size_t)snprintf(buf + len, sizeof buf - len, "%s%s", i ? ", " : "", type_name(types[i]));
+    if (len < sizeof buf) len += (size_t)snprintf(buf + len, sizeof buf - len, ">");
+    if (len >= sizeof buf) len = sizeof buf - 1;
+    return arena_strndup(S->arena, buf, len);
+}
+
+/* An assembler-friendly spelling of a name: `max<int*>` -> `max$Lint$P$G`. */
+static const char *mangle(Sema *S, const char *name) {
+    if (!strpbrk(name, "<>, *[]:!")) return name;
+    size_t n = strlen(name);
+    char *out = arena_alloc(S->arena, n * 2 + 1);
+    size_t j = 0;
+    for (size_t i = 0; i < n; i++) {
+        char c = name[i];
+        const char *r = c == '<' ? "$L" : c == '>' ? "$G" : c == ',' ? "$C" : c == '*' ? "$P" : c == '[' ? "$A"
+                      : c == ']' ? "$E" : c == ':' ? "$S" : c == '!' ? "$X" : c == ' ' ? "" : NULL;
+        if (!r) {
+            out[j++] = c;
+            continue;
+        }
+        while (*r) out[j++] = *r++;
+    }
+    out[j] = '\0';
+    return out;
+}
+
+static bool same_targs(Type **a, Type **b, size_t n) {
+    for (size_t i = 0; i < n; i++)
+        if (!type_equiv(a[i], b[i])) return false;
+    return true;
+}
+
+/* "<T, U>" for messages */
+static const char *tparams_text(Sema *S, const Decl *d) {
+    char buf[256];
+    size_t len = 1;
+    buf[0] = '<';
+    for (size_t i = 0; i < d->ntparams && len < sizeof buf; i++)
+        len += (size_t)snprintf(buf + len, sizeof buf - len, "%s%s", i ? ", " : "", d->tparams[i]);
+    if (len < sizeof buf) len += (size_t)snprintf(buf + len, sizeof buf - len, ">");
+    if (len >= sizeof buf) len = sizeof buf - 1;
+    return arena_strndup(S->arena, buf, len);
+}
+
+static bool too_deep(Sema *S, Loc loc, const Decl *tmpl) {
+    if (S->inst_depth < 32) return false;
+    Diag *d = diag_start(DIAG_ERROR, "E0380", loc, "generic `%s` keeps instantiating itself with bigger types", tmpl->name);
+    diag_label(d, "each instance of `%s` needs a new, bigger one", tmpl->name);
+    diag_note(d, "a generic declaration that uses itself with bigger type arguments, like `Node<Node<T>>`, never ends");
+    diag_end(d);
+    return true;
+}
+
+/* E0376 */
+static bool check_targ_count(Sema *S, const Decl *tmpl, size_t n, Loc loc) {
+    if (n == tmpl->ntparams) return true;
+    Diag *d = diag_start(DIAG_ERROR, "E0376", loc, "`%s` takes %zu type argument%s but %zu %s supplied", tmpl->name,
+                         tmpl->ntparams, tmpl->ntparams == 1 ? "" : "s", n, n == 1 ? "was" : "were");
+    diag_label(d, "expected %zu type argument%s", tmpl->ntparams, tmpl->ntparams == 1 ? "" : "s");
+    diag_span(d, tmpl->name_loc, "`%s%s` is declared here", tmpl->name, tparams_text(S, tmpl));
+    diag_end(d);
+    return false;
+}
+
+static Type *type_instance(Sema *S, const Decl *tmpl, Type **types, Loc loc) {
+    size_t n = tmpl->ntparams;
+    for (size_t i = 0; i < S->instances.len; i++) {
+        Instance *in = S->instances.items[i];
+        if (in->tmpl == tmpl && same_targs(in->targs, types, n)) return in->type;
+    }
+    const char *name = instance_name(S, tmpl->name, types, n);
+    if (too_deep(S, loc, tmpl)) return ty_error;
+    Decl *d = clone_instance(S->arena, tmpl, types);
+    d->name = name;
+    Type *t;
+    if (tmpl->kind == DECL_STRUCT) {
+        t = type_new_struct(name, d);
+    } else {
+        t = type_new_class(name, d);
+        t->class_id = S->classes++;
+    }
+    t->tmpl = tmpl;
+    t->targs = types;
+    t->ntargs = n;
+    t->inst_loc = loc;
+    d->type = t;
+    Instance *in = ARENA_NEW(S->arena, Instance);
+    in->tmpl = tmpl;
+    in->targs = types;
+    in->type = t;
+    ptrvec_push(&S->instances, in);
+    ptrvec_push(&S->structs, t);
+
+    /* Catch up on the passes that already ran. */
+    int saved_cur = S->cur;
+    S->cur = module_of(S, d->loc.file);
+    S->inst_depth++;
+    diag_push_context(loc, "in `%s`", name);
+    if (t->kind == TY_STRUCT) {
+        if (S->phase >= PH_STRUCTS) layout_struct(S, t);
+    } else {
+        if (S->phase >= PH_HIERARCHY) resolve_hierarchy(S, t);
+        if (S->phase >= PH_CLASS_LAYOUT) layout_class(S, t);
+        if (S->phase >= PH_METHODS) declare_methods(S, t);
+        if (S->phase >= PH_DEFAULTS) check_field_defaults(S, t);
+        if (S->phase >= PH_INHERIT) inherit_defaults(t);
+    }
+    diag_pop_context();
+    S->inst_depth--;
+    S->cur = saved_cur;
+    return t;
+}
+
+/* `Box<int>` as written: name plus type arguments. */
+static Type *resolve_generic(Sema *S, const char *name, TypeExpr *const *targs, size_t n, Loc loc) {
+    const Decl *tmpl = find_template(S, name, true);
+    if (!tmpl) {
+        Type *t = find_struct(S, name);
+        if (!t) {
+            report_unknown_type(S, loc, name);
+            return ty_error;
+        }
+        Diag *d = diag_start(DIAG_ERROR, "E0377", loc, "`%s` isn't generic", name);
+        diag_label(d, "takes no type arguments");
+        if (t->decl) diag_span(d, t->decl->name_loc, "`%s` is declared here", name);
+        diag_help(d, "write just `%s`", name);
+        diag_end(d);
+        return ty_error;
+    }
+    if (!check_targ_count(S, tmpl, n, loc)) return ty_error;
+    Type **types = arena_alloc(S->arena, n * sizeof *types);
+    bool ok = true;
+    for (size_t i = 0; i < n; i++) {
+        types[i] = resolve_type(S, targs[i], false);
+        ok &= !is_err(types[i]);
+    }
+    return ok ? type_instance(S, tmpl, types, loc) : ty_error;
+}
+
+/* E0375, or E0322 */
+static void report_missing_targs(Sema *S, Loc loc, const char *name) {
+    const Decl *tmpl = find_template(S, name, true);
+    if (!tmpl) {
+        report_unknown_type(S, loc, name);
+        return;
+    }
+    Diag *d = diag_start(DIAG_ERROR, "E0375", loc, "`%s` is generic, so it needs type arguments", name);
+    diag_label(d, "missing `<...>`");
+    diag_span(d, tmpl->name_loc, "`%s%s` is declared here", tmpl->name, tparams_text(S, tmpl));
+    char fixed[160];
+    snprintf(fixed, sizeof fixed, "%s<%s>", name, tmpl->ntparams == 1 ? "int" : "int, ...");
+    diag_fix(d, loc, fixed, "say what it holds");
+    diag_end(d);
+}
+
+static Symbol *func_instance(Sema *S, const Decl *tmpl, Type **types, Loc loc) {
+    size_t n = tmpl->ntparams;
+    for (size_t i = 0; i < S->instances.len; i++) {
+        Instance *in = S->instances.items[i];
+        if (in->tmpl == tmpl && same_targs(in->targs, types, n)) return in->fn;
+    }
+    const char *name = instance_name(S, tmpl->name, types, n);
+    if (too_deep(S, loc, tmpl)) return NULL;
+    Decl *d = clone_instance(S->arena, tmpl, types);
+    d->name = name;
+    int saved_cur = S->cur;
+    S->cur = module_of(S, d->loc.file);
+    diag_push_context(loc, "in `%s`", name);
+    S->inst_depth++;
+    declare_function(S, d);
+    S->inst_depth--;
+    diag_pop_context();
+    S->cur = saved_cur;
+    Symbol *fn = d->sym;
+    fn->is_instance = true;
+    fn->inst_loc = loc;
+    Instance *in = ARENA_NEW(S->arena, Instance);
+    in->tmpl = tmpl;
+    in->targs = types;
+    in->fn = fn;
+    ptrvec_push(&S->instances, in);
+    return fn;
+}
+
+static bool literal_is_float(const Expr *e) {
+    if (e->kind == EXPR_UNARY) e = e->u.unary.operand;
+    return e->kind == EXPR_FLOAT;
+}
+
+static int tparam_index(const Decl *tmpl, const char *name) {
+    for (size_t i = 0; i < tmpl->ntparams; i++)
+        if (strcmp(tmpl->tparams[i], name) == 0) return (int)i;
+    return -1;
+}
+
+typedef struct {
+    const Decl *tmpl;
+    Type **bound;
+    Loc *bound_at;      /* the argument each was learned from */
+    bool *from_literal; /* bound[k] came from a literal (and may still widen to float) */
+    int conflict;       /* the type parameter with two different types, or -1 */
+    Type *other;
+    Loc other_at;
+} Infer;
+
+/* Matches parameter type `te` against argument type `at`, learning what
+ * the type parameters must be. */
+static void unify(Sema *S, Infer *inf, const TypeExpr *te, Type *at, Loc arg_loc) {
+    if (is_err(at) || inf->conflict >= 0) return;
+    switch (te->kind) {
+    case TYPEX_NAMED: {
+        if (te->ntargs == 0) {
+            int k = tparam_index(inf->tmpl, te->u.name);
+            if (k < 0 || at->kind == TY_NULL) return;
+            if (!inf->bound[k]) {
+                inf->bound[k] = at;
+                inf->bound_at[k] = arg_loc;
+            } else if (!type_equiv(inf->bound[k], at)) {
+                inf->conflict = k;
+                inf->other = at;
+                inf->other_at = arg_loc;
+            }
+            return;
+        }
+        /* Box<T> against Box<int>, or against a class that extends it */
+        const Decl *want = find_template(S, te->u.name, true);
+        if (!want) return;
+        for (Type *c = at; c; c = c->kind == TY_CLASS ? c->base_class : NULL) {
+            Type *hit = c->tmpl == want ? c : NULL;
+            for (size_t i = 0; !hit && c->kind == TY_CLASS && i < c->nifaces; i++)
+                if (c->ifaces[i]->tmpl == want) hit = c->ifaces[i];
+            if (hit && hit->ntargs == te->ntargs) {
+                for (size_t i = 0; i < te->ntargs; i++) unify(S, inf, te->targs[i], hit->targs[i], arg_loc);
+                return;
+            }
+        }
+        return;
+    }
+    case TYPEX_PTR:
+        if (at->kind == TY_PTR) unify(S, inf, te->u.pointee, at->base, arg_loc);
+        return;
+    case TYPEX_ARRAY:
+        if (at->kind == TY_ARRAY) unify(S, inf, te->u.array.elem, at->base, arg_loc);
+        return;
+    case TYPEX_ERROR_UNION:
+        if (at->kind == TY_ERRUNION) {
+            unify(S, inf, te->u.error_union.value, at->base, arg_loc);
+            unify(S, inf, te->u.error_union.error, at->err, arg_loc);
+        }
+        return;
+    default:
+        return;
+    }
+}
+
+/* The instance a call to generic function `tmpl` uses: from explicit type
+ * arguments, `max<int>(a, b)`, or learned from the arguments. NULL after
+ * reporting an error. */
+static Symbol *instantiate_call(Sema *S, Expr *e, const Decl *tmpl) {
+    Expr *callee = e->u.call.callee;
+    size_t n = tmpl->ntparams;
+    Type **types = arena_alloc(S->arena, n * sizeof *types);
+    if (callee->ntargs) {
+        if (!check_targ_count(S, tmpl, callee->ntargs, callee->loc)) return NULL;
+        bool ok = true;
+        for (size_t i = 0; i < n; i++) {
+            types[i] = resolve_type(S, callee->targs[i], false);
+            ok &= !is_err(types[i]);
+        }
+        return ok ? func_instance(S, tmpl, types, e->loc) : NULL;
+    }
+
+    Infer inf = {tmpl, types, arena_alloc(S->arena, n * sizeof(Loc)), arena_alloc(S->arena, n * sizeof(bool)), -1, NULL,
+                 {0}};
+    size_t m = e->u.call.nargs < tmpl->u.func.nparams ? e->u.call.nargs : tmpl->u.func.nparams;
+    bool arg_error = false;
+    /* Literals adapt to their context, so they only decide a type parameter
+     * nothing else does: max(x, 1) with an i32 x is max<i32>. */
+    for (int pass = 0; pass < 2; pass++) {
+        for (size_t i = 0; i < m; i++) {
+            const TypeExpr *pt = tmpl->u.func.params[i]->type;
+            if (is_literal(e->u.call.args[i]) != (pass == 1)) continue;
+            int k = -1;
+            if (pass == 1) {
+                k = pt->kind == TYPEX_NAMED && !pt->ntargs ? tparam_index(tmpl, pt->u.name) : -1;
+                if (k < 0) continue;
+                if (types[k]) {   /* max(1, 2.5) is max<f64> */
+                    if (inf.from_literal[k] && type_is_int(types[k]) && literal_is_float(e->u.call.args[i])) {
+                        types[k] = ty_f64;
+                        inf.bound_at[k] = e->u.call.args[i]->loc;
+                    }
+                    continue;
+                }
+                Type *at = check(S, &e->u.call.args[i], NULL);
+                types[k] = at;
+                inf.bound_at[k] = e->u.call.args[i]->loc;
+                inf.from_literal[k] = true;
+                continue;
+            }
+            Type *at = check(S, &e->u.call.args[i], NULL);
+            e->u.call.args[i]->checked = true;
+            if (is_err(at)) arg_error = true;
+            unify(S, &inf, pt, at, e->u.call.args[i]->loc);
+        }
+    }
+    if (inf.conflict >= 0) {
+        const char *tp = tmpl->tparams[inf.conflict];
+        Diag *d = diag_start(DIAG_ERROR, "E0379", inf.other_at, "`%s` can't be both `%s` and `%s` in this call to `%s`",
+                             tp, type_name(types[inf.conflict]), type_name(inf.other), tmpl->name);
+        diag_label(d, "this makes `%s` = `%s`", tp, type_name(inf.other));
+        diag_span(d, inf.bound_at[inf.conflict], "this makes `%s` = `%s`", tp, type_name(types[inf.conflict]));
+        diag_span(d, tmpl->name_loc, "`%s%s` is declared here", tmpl->name, tparams_text(S, tmpl));
+        diag_help(d, "convert one of them with `as`, or say which type you mean: `%s<%s>(...)`", tmpl->name,
+                  type_name(types[inf.conflict]));
+        diag_end(d);
+        return NULL;
+    }
+    if (arg_error) return NULL;
+    for (size_t k = 0; k < n; k++) {
+        if (types[k]) continue;
+        Diag *d = diag_start(DIAG_ERROR, "E0378", callee->loc, "can't tell what `%s` is in this call to `%s`",
+                             tmpl->tparams[k], tmpl->name);
+        diag_label(d, "type parameter `%s` unknown", tmpl->tparams[k]);
+        diag_span(d, tmpl->tparam_locs[k], "`%s` is declared here", tmpl->tparams[k]);
+        diag_note(d, "type parameters are learned from the arguments; none of them decides `%s`", tmpl->tparams[k]);
+        char example[160];
+        size_t len = 0;
+        for (size_t j = 0; j < n && len < 100; j++) len += (size_t)snprintf(example + len, sizeof example - len, "%sint", j ? ", " : "");
+        diag_help(d, "write the type arguments, like `%s<%s>(...)`", tmpl->name, example);
+        diag_end(d);
+        return NULL;
+    }
+    return func_instance(S, tmpl, types, e->loc);
+}
+
+/* A call that names a generic function. Returns false if `e` isn't one. */
+static bool check_generic_call(Sema *S, Expr *e, Type **out) {
+    Expr *callee = e->u.call.callee;
+    const Decl *tmpl;
+    char full[256];
+    const char *name = callee->u.name;
+    if (callee->kind == EXPR_SCOPE) {
+        snprintf(full, sizeof full, "%s::%s", callee->u.scope.scope, callee->u.scope.member);
+        name = full;
+        tmpl = find_template(S, full, false);
+    } else {
+        Symbol *other = NULL;
+        tmpl = find_in(S, &S->funcs, name, &other) ? NULL : find_template(S, name, false);
+    }
+    if (!tmpl) {
+        if (!callee->ntargs) return false;
+        Symbol *plain = callee->kind == EXPR_SCOPE ? NULL : find_func(S, name);
+        if (!plain && callee->kind == EXPR_IDENT) return false;   /* reported as not found */
+        Diag *d = diag_start(DIAG_ERROR, "E0377", callee->loc, "`%s` isn't a generic function", name);
+        diag_label(d, "takes no type arguments");
+        if (plain) diag_span(d, plain->loc, "`%s` is declared here", name);
+        diag_end(d);
+        check_args_only(S, e);
+        *out = set_type(e, ty_error);
+        return true;
+    }
+    Symbol *fn = instantiate_call(S, e, tmpl);
+    if (!fn) {
+        check_args_only(S, e);
+        *out = set_type(e, ty_error);
+        return true;
+    }
+    callee->kind = EXPR_IDENT;
+    callee->u.name = fn->name;
+    callee->sym = fn;
+    *out = check_args(S, e, fn, 0);
+    return true;
+}
+
 static Type *check_call(Sema *S, Expr *e) {
     Expr *callee = e->u.call.callee;
     if (callee->kind == EXPR_MEMBER) return check_method_call(S, e);
@@ -2089,6 +2530,10 @@ static Type *check_call(Sema *S, Expr *e) {
         (strstr(callee->u.scope.scope, "::") || module_by_alias(S, callee->u.scope.scope) < 0)) {
         Type *ct = find_struct(S, callee->u.scope.scope);
         if (ct && ct->kind == TY_CLASS) return check_static_call(S, e, ct);
+    }
+    if (callee->kind == EXPR_IDENT || callee->kind == EXPR_SCOPE) {
+        Type *r;
+        if (check_generic_call(S, e, &r)) return r;
     }
     if (callee->kind == EXPR_SCOPE) {   /* module::function(...) */
         Symbol *qf = find_qualified(S, &S->funcs, callee->loc, callee->u.scope.scope, callee->u.scope.member, "function");
@@ -2514,7 +2959,16 @@ static Type *check_mixed_lit(Sema *S, Expr *e) {
 static Type *check_struct_lit(Sema *S, Expr *e) {
     if (strcmp(e->u.struct_lit.type_name, "string") == 0) return check_string_lit(S, e);
     if (strcmp(e->u.struct_lit.type_name, "mixed") == 0) return check_mixed_lit(S, e);
-    Type *st = find_struct(S, e->u.struct_lit.type_name);
+    Type *st;
+    if (e->ntargs) {
+        st = resolve_generic(S, e->u.struct_lit.type_name, e->targs, e->ntargs, e->loc);
+        if (is_err(st)) {
+            for (size_t i = 0; i < e->u.struct_lit.n; i++) check(S, &e->u.struct_lit.fields[i]->value, NULL);
+            return set_type(e, ty_error);
+        }
+    } else {
+        st = find_struct(S, e->u.struct_lit.type_name);
+    }
     if (st && st->kind == TY_CLASS) {
         Diag *d = diag_start(DIAG_ERROR, "E0363", e->loc, "`%s` is a class, not a struct", st->name);
         diag_label(d, "can't be built with `{ ... }`");
@@ -2529,8 +2983,11 @@ static Type *check_struct_lit(Sema *S, Expr *e) {
         st = NULL;
     }
     if (!st) {
-        if (!find_struct(S, e->u.struct_lit.type_name))
-            report_unknown_type(S, e->loc, e->u.struct_lit.type_name);
+        if (!find_struct(S, e->u.struct_lit.type_name)) {
+            Loc name_loc = e->loc;
+            name_loc.len = (uint32_t)strlen(e->u.struct_lit.type_name);
+            report_missing_targs(S, name_loc, e->u.struct_lit.type_name);
+        }
         for (size_t i = 0; i < e->u.struct_lit.n; i++) check(S, &e->u.struct_lit.fields[i]->value, NULL);
         return set_type(e, ty_error);
     }
@@ -3881,7 +4338,20 @@ static bool falls_through(Sema *S, const Stmt *s) {
 
 /* ---- declarations ------------------------------------------------------------ */
 
+static void check_function_body_inner(Sema *S, Symbol *fn);
+
 static void check_function_body(Sema *S, Symbol *fn) {
+    if (fn->is_instance) diag_push_context(fn->inst_loc, "in `%s`", fn->name);
+    else if (fn->owner && fn->owner->tmpl) diag_push_context(fn->owner->inst_loc, "in `%s`", fn->owner->name);
+    else {
+        check_function_body_inner(S, fn);
+        return;
+    }
+    check_function_body_inner(S, fn);
+    diag_pop_context();
+}
+
+static void check_function_body_inner(Sema *S, Symbol *fn) {
     const Decl *d = fn->decl;
     S->fn = fn;
     S->cur = fn->module;
@@ -3922,8 +4392,7 @@ static void check_function_body(Sema *S, Symbol *fn) {
 
 /* Structs can be passed and returned by value (System V rules); arrays
  * can't, as in C. */
-static bool passable(Sema *S, Type *t, Loc loc, const char *what) {
-    (void)S;
+static bool passable(Sema *S, Type *t, const TypeExpr *te, Loc loc, const char *what) {
     if (t->align > 16) {
         check_stack_align(t, loc, t->kind == TY_STRUCT ? "a struct" : "a value");
         return false;
@@ -3932,7 +4401,9 @@ static bool passable(Sema *S, Type *t, Loc loc, const char *what) {
     Diag *d = diag_start(DIAG_ERROR, "E0335", loc, "arrays can't be %s by value", what);
     diag_label(d, "`%s` is an array", type_name(t));
     char fixed[160];
-    snprintf(fixed, sizeof fixed, "%s*", type_name(t->base));
+    /* as written: in a generic function that's `T*`, not `int*` */
+    if (te && te->kind == TYPEX_ARRAY) snprintf(fixed, sizeof fixed, "%s*", loc_text(S, te->u.array.elem->loc));
+    else snprintf(fixed, sizeof fixed, "%s*", type_name(t->base));
     diag_fix(d, loc, fixed, "pass a pointer to the first element instead");
     diag_note(d, "the caller can pass `&arr[0]`, and the length alongside it");
     diag_end(d);
@@ -3963,9 +4434,10 @@ static void set_asm_name(Sema *S, Symbol *sym, const Decl *d) {
     sym->is_export = d->is_export;
     if (!d->is_extern && !d->is_export) {
         const char *prefix = S->mods[sym->module]->prefix;
-        size_t n = strlen(prefix) + strlen(sym->name) + 3;
+        const char *plain = mangle(S, sym->name);
+        size_t n = strlen(prefix) + strlen(plain) + 3;
         char *name = arena_alloc(S->arena, n);
-        snprintf(name, n, "w.%s%s", prefix, sym->name);
+        snprintf(name, n, "w.%s%s", prefix, plain);
         sym->asm_name = name;
         return;
     }
@@ -4015,14 +4487,14 @@ static void declare_function(Sema *S, Decl *d) {
     }
 
     fn->type = d->u.func.ret ? resolve_type(S, d->u.func.ret, true) : ty_void;
-    if (!is_err(fn->type) && !passable(S, fn->type, d->u.func.ret ? d->u.func.ret->loc : d->name_loc, "returned"))
+    if (!is_err(fn->type) && !passable(S, fn->type, d->u.func.ret, d->u.func.ret ? d->u.func.ret->loc : d->name_loc, "returned"))
         fn->type = ty_error;
     fn->nparams = d->u.func.nparams;
     fn->param_types = arena_alloc(S->arena, (fn->nparams ? fn->nparams : 1) * sizeof(Type *));
     for (size_t i = 0; i < fn->nparams; i++) {
         Param *p = d->u.func.params[i];
         Type *t = resolve_type(S, p->type, false);
-        if (!is_err(t) && !passable(S, t, p->type->loc, "passed")) t = ty_error;
+        if (!is_err(t) && !passable(S, t, p->type, p->type->loc, "passed")) t = ty_error;
         fn->param_types[i] = t;
     }
 }
@@ -4109,14 +4581,14 @@ static void resolve_hierarchy(Sema *S, Type *ct) {
     ct->is_abstract = d->is_abstract;
     size_t cap = 0;
     if (d->u.class_.base) {
-        Type *b = find_struct(S, d->u.class_.base);
-        Loc at = d->u.class_.base_loc;
-        if (!b) {
-            report_unknown_type(S, at, d->u.class_.base);
+        Type *b = resolve_type(S, d->u.class_.base, false);
+        Loc at = d->u.class_.base->loc;
+        if (is_err(b)) {
+            /* reported */
         } else if (b->kind != TY_CLASS || b->decl->u.class_.is_interface) {
-            Diag *e = diag_start(DIAG_ERROR, "E0372", at, "`%s` can't be extended: it isn't a class", d->u.class_.base);
+            Diag *e = diag_start(DIAG_ERROR, "E0372", at, "`%s` can't be extended: it isn't a class", type_name(b));
             diag_label(e, b->kind == TY_CLASS ? "an interface" : "not a class");
-            if (b->kind == TY_CLASS) diag_help(e, "implement interfaces with `implements %s`", d->u.class_.base);
+            if (b->kind == TY_CLASS) diag_help(e, "implement interfaces with `implements %s`", type_name(b));
             diag_end(e);
         } else {
             resolve_hierarchy(S, b);
@@ -4127,13 +4599,10 @@ static void resolve_hierarchy(Sema *S, Type *ct) {
         }
     }
     for (size_t k = 0; k < d->u.class_.nifaces; k++) {
-        const char *name = d->u.class_.ifaces[k];
-        Loc at = d->u.class_.iface_locs[k];
-        Type *it = find_struct(S, name);
-        if (!it) {
-            report_unknown_type(S, at, name);
-            continue;
-        }
+        Loc at = d->u.class_.ifaces[k]->loc;
+        Type *it = resolve_type(S, d->u.class_.ifaces[k], false);
+        if (is_err(it)) continue;
+        const char *name = type_name(it);
         if (it->kind != TY_CLASS || !it->decl->u.class_.is_interface) {
             Diag *e = diag_start(DIAG_ERROR, "E0372", at, "`%s` isn't an interface", name);
             diag_label(e, ct->is_interface ? "interfaces can only extend interfaces" : "`implements` takes interfaces");
@@ -4147,9 +4616,9 @@ static void resolve_hierarchy(Sema *S, Type *ct) {
         for (size_t i = 0; i < it->nifaces; i++) add_iface(S, ct, it->ifaces[i], &cap);
     }
     const char *prefix = S->mods[S->cur]->prefix;
-    size_t n = strlen(prefix) + strlen(ct->name) + 16;
+    size_t n = strlen(prefix) + strlen(mangle(S, ct->name)) + 16;
     char *desc = arena_alloc(S->arena, n);
-    snprintf(desc, n, "w.%s.%s%s", ct->is_interface ? "iface" : "class", prefix, ct->name);
+    snprintf(desc, n, "w.%s.%s%s", ct->is_interface ? "iface" : "class", prefix, mangle(S, ct->name));
     ct->desc_name = desc;
     S->cur = saved_cur;
     if (ct->class_state == 1) ct->class_state = 2;
@@ -4331,9 +4800,10 @@ static void declare_methods(Sema *S, Type *ct) {
         fn->vindex = -1;
         d->sym = fn;
         const char *prefix = S->mods[fn->module]->prefix;
-        size_t len = strlen(prefix) + strlen(ct->name) + strlen(d->name) + 4;
+        const char *cname = mangle(S, ct->name);
+        size_t len = strlen(prefix) + strlen(cname) + strlen(d->name) + 4;
         char *asm_name = arena_alloc(S->arena, len);
-        snprintf(asm_name, len, "w.%s%s.%s", prefix, ct->name, d->name);
+        snprintf(asm_name, len, "w.%s%s.%s", prefix, cname, d->name);
         fn->asm_name = asm_name;
         if (d->u.func.variadic) {
             Diag *e = diag_start(DIAG_ERROR, "E0334", d->name_loc, "only `extern` functions can be variadic");
@@ -4356,7 +4826,7 @@ static void declare_methods(Sema *S, Type *ct) {
         }
 
         fn->type = d->u.func.ret ? resolve_type(S, d->u.func.ret, true) : ty_void;
-        if (!is_err(fn->type) && !passable(S, fn->type, ret_type_loc(d), "returned")) fn->type = ty_error;
+        if (!is_err(fn->type) && !passable(S, fn->type, d->u.func.ret, ret_type_loc(d), "returned")) fn->type = ty_error;
         size_t skip = fn->is_static ? 0 : 1;
         fn->nparams = d->u.func.nparams + skip;
         fn->param_types = arena_alloc(S->arena, fn->nparams * sizeof(Type *) + sizeof(Type *));
@@ -4364,7 +4834,7 @@ static void declare_methods(Sema *S, Type *ct) {
         for (size_t j = 0; j < d->u.func.nparams; j++) {
             Param *p = d->u.func.params[j];
             Type *t = resolve_type(S, p->type, false);
-            if (!is_err(t) && !passable(S, t, p->type->loc, "passed")) t = ty_error;
+            if (!is_err(t) && !passable(S, t, p->type, p->type->loc, "passed")) t = ty_error;
             fn->param_types[j + skip] = t;
         }
 
@@ -4628,6 +5098,17 @@ bool sema_check(Arena *arena, Module **mods, size_t nmods, Program *prog) {
     for (size_t i = 0; i < m->n; i++) {
         Decl *d = m->decls[i];
         S.cur = module_of(&S, d->loc.file);
+        if (d->ntparams) {
+            if (d->is_extern) {
+                Diag *e = diag_start(DIAG_ERROR, "E0381", d->name_loc, "extern function `%s` can't be generic", d->name);
+                diag_label(e, "has type parameters");
+                diag_note(e, "a generic function is compiled once for each set of types it's used with; C can't do that");
+                diag_end(e);
+            } else {
+                ptrvec_push(&S.templates, d);
+            }
+            continue;
+        }
         switch (d->kind) {
         case DECL_STRUCT:
         case DECL_CLASS:
@@ -4668,22 +5149,31 @@ bool sema_check(Arena *arena, Module **mods, size_t nmods, Program *prog) {
         if (t->kind == TY_STRUCT) layout_struct(&S, t);
         else if (t->kind == TY_ENUM) check_enum_variants(&S, t);
     }
+    S.phase = PH_STRUCTS;
     for (size_t i = 0; i < S.structs.len; i++) {   /* extends / implements */
         Type *t = S.structs.items[i];
         if (t->kind == TY_CLASS) resolve_hierarchy(&S, t);
     }
+    S.phase = PH_HIERARCHY;
     for (size_t i = 0; i < S.structs.len; i++) {   /* classes may hold structs and enums */
         Type *t = S.structs.items[i];
         S.cur = module_of(&S, t->decl->loc.file);
         if (t->kind == TY_CLASS) layout_class(&S, t);
     }
+    S.phase = PH_CLASS_LAYOUT;
 
     for (size_t i = 0; i < m->n; i++) {
         Decl *d = m->decls[i];
         S.cur = module_of(&S, d->loc.file);
-        if (d->kind == DECL_FUNC && !find_in_module(&S.funcs, S.cur, d->name)) declare_function(&S, d);
+        if (d->kind == DECL_FUNC && !d->ntparams && !find_in_module(&S.funcs, S.cur, d->name)) declare_function(&S, d);
         if (d->kind == DECL_CLASS && d->type) declare_methods(&S, d->type);
     }
+    for (size_t i = 0; i < S.structs.len; i++) {   /* generic instances made so far */
+        Type *t = S.structs.items[i];
+        S.cur = module_of(&S, t->decl->loc.file);
+        if (t->kind == TY_CLASS) declare_methods(&S, t);
+    }
+    S.phase = PH_METHODS;
     for (size_t i = 0; i < m->n; i++) {
         if (m->decls[i]->kind != DECL_VAR) continue;
         S.cur = module_of(&S, m->decls[i]->loc.file);
@@ -4695,10 +5185,12 @@ bool sema_check(Arena *arena, Module **mods, size_t nmods, Program *prog) {
         S.cur = module_of(&S, t->decl->loc.file);
         if (t->kind == TY_CLASS) check_field_defaults(&S, t);
     }
+    S.phase = PH_DEFAULTS;
     for (size_t i = 0; i < S.structs.len; i++) {   /* subclasses take their base classes' defaults */
         Type *t = S.structs.items[i];
         if (t->kind == TY_CLASS) inherit_defaults(t);
     }
+    S.phase = PH_INHERIT;
 
     S.cur = 0;
     Symbol *main_fn = S.freestanding ? NULL : find_in_module(&S.funcs, 0, "main");
@@ -4783,6 +5275,7 @@ bool sema_check(Arena *arena, Module **mods, size_t nmods, Program *prog) {
         for (size_t i = 0; i < S.funcs.len; i++) {
             Symbol *fn = S.funcs.items[i];
             if (fn->reachable || fn->is_abstract || fn->is_runtime || fn->is_extern || fn->name[0] == '_') continue;
+            if (fn->is_instance || (fn->owner && fn->owner->tmpl)) continue;
             if (fn->module != 0) continue;   /* libraries may have functions a program doesn't use */
             Diag *d = fn->owner ? diag_start(DIAG_WARNING, "W0004", fn->loc, "method `%s::%s` is never used",
                                              fn->owner->name, fn->name)
@@ -4804,6 +5297,8 @@ bool sema_check(Arena *arena, Module **mods, size_t nmods, Program *prog) {
         if (((Type *)S.structs.items[i])->kind == TY_CLASS) ptrvec_push(&classes, S.structs.items[i]);
     prog->classes = (Type **)ptrvec_finish(&classes, arena, &prog->nclasses);
     free(S.vsites.items);
+    free(S.templates.items);
+    free(S.instances.items);
     free(S.structs.items);
     free(S.locals.items);
     free(S.marks);

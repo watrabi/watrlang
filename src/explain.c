@@ -316,6 +316,25 @@ static const Explanation explanations[] = {
      "    class Dog extends Animal implements Pet, Named { ... }\n"
      "    interface Pet { function name(): string; }"},
 
+    {"E0121",
+     "A generic declaration lists the same type parameter twice:\n"
+     "\n"
+     "    struct Pair<T, T> { ... }    // error\n"
+     "    struct Pair<A, B> { A first; B second; }\n"
+     "\n"
+     "Each type parameter needs its own name."},
+
+    {"E0122",
+     "Methods can't have type parameters of their own; only top-level\n"
+     "functions, structs, classes and interfaces can:\n"
+     "\n"
+     "    class List<T> {\n"
+     "        public function map<U>(...): List<U> { ... }   // error\n"
+     "    }\n"
+     "\n"
+     "Methods can use their class's type parameters (`T` above). For more,\n"
+     "write a generic function: `function map<T, U>(List<T> l): List<U>`."},
+
     {"E0200",
      "A variable name was used, but no variable with that name is in scope.\n"
      "\n"
@@ -1091,6 +1110,80 @@ static const Explanation explanations[] = {
      "\n"
      "It only works inside a (non-static) method of a class that extends\n"
      "another, and the base version must have a body."},
+
+    {"E0375",
+     "A generic struct or class was used without type arguments. A generic\n"
+     "type is a pattern; `Box<int>` and `Box<string>` are the real types:\n"
+     "\n"
+     "    class Box<T> { T value; ... }\n"
+     "\n"
+     "    Box b = new Box(1);                // error: Box of what?\n"
+     "    Box<int> b = new Box<int>(1);      // ok\n"
+     "\n"
+     "Generic functions can usually leave the types out (`max(1, 2)`), because\n"
+     "the arguments decide them; types and struct literals can't."},
+
+    {"E0376",
+     "The wrong number of type arguments was given to a generic struct,\n"
+     "class or function:\n"
+     "\n"
+     "    struct Pair<A, B> { A first; B second; }\n"
+     "\n"
+     "    Pair<int> p;           // error: Pair takes 2\n"
+     "    Pair<int, string> q;   // ok"},
+
+    {"E0377",
+     "Type arguments (`<...>`) were given to something that isn't generic:\n"
+     "\n"
+     "    struct Point { int x; int y; }\n"
+     "    Point<int> p;          // error\n"
+     "    Point p;               // ok\n"
+     "\n"
+     "Only declarations written with type parameters, like `struct Box<T>`\n"
+     "or `function max<T>(T a, T b): T`, take them."},
+
+    {"E0378",
+     "A call to a generic function didn't say what a type parameter is, and\n"
+     "the arguments don't decide it either:\n"
+     "\n"
+     "    function make<T>(): T { T x; return x; }\n"
+     "\n"
+     "    int a = make();        // error: T could be anything\n"
+     "    int b = make<int>();   // ok\n"
+     "\n"
+     "Type parameters are learned from the arguments only, never from where\n"
+     "the result goes."},
+
+    {"E0379",
+     "Two arguments of a generic function call give the same type parameter\n"
+     "different types:\n"
+     "\n"
+     "    function both<T>(T a, T b): T { ... }\n"
+     "\n"
+     "    i32 x = 1;\n"
+     "    i64 y = 2;\n"
+     "    both(x, y);            // error: T = i32 or i64?\n"
+     "    both<i64>(x, y);       // ok: x widens to i64\n"
+     "    both(x as i64, y);     // ok\n"
+     "\n"
+     "Literals adapt: `both(x, 5)` makes T = i32, and `max(1, 2.5)` is\n"
+     "`max<f64>`."},
+
+    {"E0380",
+     "A generic declaration uses itself with ever bigger type arguments, so\n"
+     "instantiating it never finishes:\n"
+     "\n"
+     "    struct Grow<T> { Grow<Grow<T>>* next; }   // Grow<int> needs\n"
+     "                                             // Grow<Grow<int>>, ...\n"
+     "\n"
+     "Each generic type is compiled separately for every set of type\n"
+     "arguments, so the set has to be finite. Use the same arguments\n"
+     "(`Grow<T>* next`) or a non-generic type."},
+
+    {"E0381",
+     "An `extern` function can't have type parameters. Generic functions\n"
+     "are compiled once per set of types they're used with, and functions\n"
+     "written in C can't be. Declare one extern function per type instead."},
 
     {"E0900",
      "This feature is part of watrlang's design but isn't implemented yet.\n"

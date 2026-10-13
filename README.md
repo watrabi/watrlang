@@ -44,7 +44,7 @@ The full plan is in [docs/DESIGN.md](docs/DESIGN.md).
 | 14. A kernel in watrlang that boots in QEMU ([examples/kernel](examples/kernel)) | done |
 | 15. Optimizer: an IR, linear-scan register allocation (`-O1`, the default) | done |
 | 16. Inheritance: `extends`, interfaces, `abstract`, `protected`, `instanceof` | done |
-| 17. Generics | next |
+| 17. Generics: `max<T>`, `Box<T>`, `Pair<A, B>`, inference for calls | done |
 | 18+. A bigger standard library, more optimizations | planned |
 | ∞. Self-hosting | someday |
 

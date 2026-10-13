@@ -79,6 +79,10 @@ void diag_help(Diag *d, const char *fmt, ...) WATR_PRINTF(2, 3);
 /* "help: ..." followed by the source line with `loc` replaced by
  * `replacement` (a zero-length loc means insertion). */
 void diag_fix(Diag *d, Loc loc, const char *replacement, const char *fmt, ...) WATR_PRINTF(4, 5);
+/* While checking a generic instantiation: every diagnostic gets a note
+ * "in `Box<int>`, used at file:line:col". Calls nest. */
+void diag_push_context(Loc used_at, const char *fmt, ...) WATR_PRINTF(2, 3);
+void diag_pop_context(void);
 /* Prints and frees the diagnostic. */
 void diag_end(Diag *d);
 

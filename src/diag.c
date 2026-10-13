@@ -63,6 +63,13 @@ static char *vformat(const char *fmt, va_list ap) {
     return s;
 }
 
+static char *vformat_copy(const char *s) {
+    size_t n = strlen(s) + 1;
+    char *c = xmalloc(n);
+    memcpy(c, s, n);
+    return c;
+}
+
 SrcFile *src_load(Arena *a, const char *path) {
     FILE *f = fopen(path, "rb");
     if (!f) {
@@ -207,6 +214,31 @@ void diag_note(Diag *d, const char *fmt, ...) {
     va_start(ap, fmt);
     add_note(d, false, fmt, ap);
     va_end(ap);
+}
+
+/* Generic instantiations being checked, innermost last. */
+#define MAX_CONTEXTS 16
+static char *contexts[MAX_CONTEXTS];
+static int ncontexts, context_depth;
+
+void diag_push_context(Loc used_at, const char *fmt, ...) {
+    if (context_depth++ >= MAX_CONTEXTS) return;
+    va_list ap;
+    va_start(ap, fmt);
+    char *what = vformat(fmt, ap);
+    va_end(ap);
+    size_t n = strlen(what) + (used_at.file ? strlen(used_at.file->path) : 0) + 64;
+    char *text = xmalloc(n);
+    if (used_at.file) snprintf(text, n, "%s, used at %s:%u:%u", what, used_at.file->path, used_at.line, used_at.col);
+    else snprintf(text, n, "%s", what);
+    free(what);
+    contexts[ncontexts++] = text;
+}
+
+void diag_pop_context(void) {
+    if (context_depth == 0) return;
+    if (context_depth-- > MAX_CONTEXTS) return;
+    free(contexts[--ncontexts]);
 }
 
 void diag_help(Diag *d, const char *fmt, ...) {
@@ -503,12 +535,56 @@ static void remember_code(const char *code) {
     if (nseen_codes < MAX_SEEN_CODES) seen_codes[nseen_codes++] = code;
 }
 
+static void free_diag(Diag *d) {
+    free(d->message);
+    for (int i = 0; i < d->nlabels; i++) free(d->labels[i].text);
+    for (int i = 0; i < d->nnotes; i++) free(d->notes[i].text);
+    for (int i = 0; i < d->nfixes; i++) {
+        free(d->fixes[i].replacement);
+        free(d->fixes[i].text);
+    }
+    free(d);
+}
+
+/* A warning inside a generic instantiation is about the generic code, so
+ * it's shown once, not once per instance. */
+static bool seen_in_instance(const Diag *d) {
+    static struct { const SrcFile *file; uint32_t offset; const char *code; } seen[256];
+    static int nseen;
+    Loc at = d->labels[0].loc;
+    for (int i = 0; i < nseen; i++)
+        if (seen[i].file == at.file && seen[i].offset == at.offset && seen[i].code == d->code) return true;
+    if (nseen < 256) {
+        seen[nseen].file = at.file;
+        seen[nseen].offset = at.offset;
+        seen[nseen].code = d->code;
+        nseen++;
+    }
+    return false;
+}
+
 void diag_end(Diag *d) {
     if (!d) return;
     bool is_error = d->level == DIAG_ERROR;
+    if (!is_error && ncontexts > 0 && d->nlabels > 0 && seen_in_instance(d)) {
+        free_diag(d);
+        return;
+    }
     if (is_error) error_count++;
     else warning_count++;
     remember_code(d->code);
+    /* The instantiations being checked: the innermost two and the
+     * outermost one (where the user's code started it). */
+    for (int i = ncontexts - 1; i >= 0 && d->nnotes < MAX_NOTES - 1; i--) {
+        d->notes[d->nnotes].is_help = false;
+        if (ncontexts > 4 && i == ncontexts - 3) {
+            char buf[64];
+            snprintf(buf, sizeof buf, "... and %d more instantiations, inside", ncontexts - 3);
+            d->notes[d->nnotes++].text = vformat_copy(buf);
+            i = 0;
+        }
+        d->notes[d->nnotes++].text = vformat_copy(contexts[i]);
+    }
 
     /* Header */
     const char *color = is_error ? C_RED : C_YELLOW;
@@ -562,14 +638,7 @@ void diag_end(Diag *d) {
     for (int i = 0; i < d->nfixes; i++) print_fix(&d->fixes[i], width);
     fputc('\n', stderr);
 
-    free(d->message);
-    for (int i = 0; i < d->nlabels; i++) free(d->labels[i].text);
-    for (int i = 0; i < d->nnotes; i++) free(d->notes[i].text);
-    for (int i = 0; i < d->nfixes; i++) {
-        free(d->fixes[i].replacement);
-        free(d->fixes[i].text);
-    }
-    free(d);
+    free_diag(d);
 }
 
 void diag_error(Loc loc, const char *fmt, ...) {

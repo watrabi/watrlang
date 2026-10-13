@@ -1,0 +1,24 @@
+interface Iter<T> {
+    function has_next(): bool;
+    function next(): T;
+}
+
+class List<T> {
+    protected T* items;
+    protected int n;
+    public function __construct() { this->items = alloc(T, 64); }
+    public function add(T v): List<T> { this->items[this->n] = v; this->n++; return this; }
+    public function len(): int { return this->n; }
+    public function at(int i): T { return this->items[i]; }
+    public function iter(): ListIter<T> { return new ListIter<T>(this); }
+}
+
+class ListIter<T> implements Iter<T> {
+    private List<T> list;
+    private int i;
+    public function __construct(List<T> l) { this->list = l; }
+    public function has_next(): bool { return this->i < this->list->len(); }
+    public function next(): T { this->i++; return this->list->at(this->i - 1); }
+}
+
+function first<T>(List<T> l): T { return l->at(0); }

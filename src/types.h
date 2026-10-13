@@ -88,6 +88,10 @@ struct Type {
     const char *desc_name;   /* the runtime descriptor (vtable, parent, interfaces) */
     struct Symbol *desc_sym; /* a pseudo-global for taking the descriptor's address */
     int class_state;         /* hierarchy/layout progress: 0 none, 1 in progress, 2 done */
+    const struct Decl *tmpl; /* generic instances (`Box<int>`): the generic declaration */
+    Type **targs;            /* ...and its type arguments */
+    size_t ntargs;
+    Loc inst_loc;            /* where it was first used */
 };
 
 extern Type *ty_error, *ty_void, *ty_bool, *ty_null;

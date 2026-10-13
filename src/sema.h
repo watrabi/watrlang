@@ -51,6 +51,8 @@ typedef struct Symbol {
     bool is_protected;
     bool is_static;             /* methods without `this` */
     struct Symbol *this_param;  /* methods: the implicit first parameter */
+    bool is_instance;           /* a generic function's instance, `max<int>` */
+    Loc inst_loc;               /* ...first used here */
 
     /* globals */
     unsigned char *init;        /* initial bytes (type->size of them); NULL = all zero */

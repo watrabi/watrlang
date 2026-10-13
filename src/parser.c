@@ -501,7 +501,92 @@ static bool can_start_expr(TokenKind k) {
     }
 }
 
-/* Base type plus qualifiers: `int`, `Point`, `const volatile u8`. */
+/* Lookahead for type arguments: if the tokens from `i` (a `<`) look like
+ * `<Type, ...>`, returns the index just past the closing `>`, else 0.
+ * `a < b > c` stays a comparison unless what follows suits the caller. */
+static size_t scan_type_args(Parser *p, size_t i) {
+    int depth = 0;
+    for (;; i++) {
+        TokenKind k = peek_at(p, i)->kind;
+        if (k == TOK_LT) depth++;
+        else if (k == TOK_GT) depth--;
+        else if (k == TOK_SHR) depth -= 2;
+        else if (!(k == TOK_IDENT || is_builtin_type(k) || k == TOK_KW_CONST || k == TOK_KW_VOLATILE ||
+                   k == TOK_COLONCOLON || k == TOK_STAR || k == TOK_LBRACKET || k == TOK_RBRACKET ||
+                   k == TOK_INT || k == TOK_BANG || k == TOK_COMMA))
+            return 0;
+        if (depth <= 0) return i + 1;
+    }
+}
+
+/* Closes a type argument list. In `Box<Box<int>>` the lexer saw `>>`;
+ * the first `>` closes the inner list and leaves a `>` for the outer one. */
+static bool expect_close_angle(Parser *p) {
+    Token *t = cur(p);
+    if (t->kind == TOK_SHR) {
+        t->kind = TOK_GT;
+        t->start++;
+        t->loc.offset++;
+        t->loc.col++;
+        t->loc.len = 1;
+        return true;
+    }
+    return expect(p, TOK_GT, "to close the type arguments");
+}
+
+/* `<int, Box<u8>>`: the caller checked the lookahead (scan_type_args). */
+static bool parse_type_args(Parser *p, TypeExpr ***out, size_t *n) {
+    advance(p); /* < */
+    PtrVec args = {0};
+    do {
+        TypeExpr *t = parse_type(p, false);
+        if (!t) {
+            free(args.items);
+            return false;
+        }
+        ptrvec_push(&args, t);
+    } while (accept(p, TOK_COMMA));
+    *out = (TypeExpr **)ptrvec_finish(&args, p->arena, n);
+    return expect_close_angle(p);
+}
+
+/* Type parameters of a generic declaration: `<T, U>`. */
+static bool parse_type_params(Parser *p, Decl *d) {
+    if (!check(p, TOK_LT)) return true;
+    advance(p);
+    PtrVec names = {0};
+    size_t n = 0, cap = 4;
+    Loc *locs = arena_alloc(p->arena, cap * sizeof *locs);
+    do {
+        Token *t = expect_ident(p, "a type parameter name");
+        if (!t) {
+            free(names.items);
+            return false;
+        }
+        const char *name = tok_name(p, t);
+        for (size_t i = 0; i < n; i++) {
+            if (strcmp(names.items[i], name) == 0) {
+                Diag *e = perr(p, "E0121", t->loc, "type parameter `%s` is declared twice", name);
+                diag_label(e, "declared again here");
+                diag_span(e, locs[i], "first declared here");
+                diag_end(e);
+            }
+        }
+        if (n == cap) {
+            Loc *grown = arena_alloc(p->arena, cap * 2 * sizeof *grown);
+            memcpy(grown, locs, cap * sizeof *grown);
+            locs = grown;
+            cap *= 2;
+        }
+        locs[n++] = t->loc;
+        ptrvec_push(&names, (void *)name);
+    } while (accept(p, TOK_COMMA));
+    d->tparams = (const char **)ptrvec_finish(&names, p->arena, &d->ntparams);
+    d->tparam_locs = locs;
+    return expect(p, TOK_GT, "to close the type parameters");
+}
+
+/* Base type plus qualifiers: `int`, `Point`, `Box<int>`, `const volatile u8`. */
 static TypeExpr *parse_base_type(Parser *p) {
     Loc start = cur(p)->loc;
     bool is_const = false, is_volatile = false;
@@ -529,6 +614,7 @@ static TypeExpr *parse_base_type(Parser *p) {
             snprintf(full, n, "%s::%.*s", ty->u.name, (int)member->loc.len, member->start);
             ty->u.name = full;
         }
+        if (check(p, TOK_LT) && scan_type_args(p, 0) && !parse_type_args(p, &ty->targs, &ty->ntargs)) return NULL;
     } else {
         Diag *d = perr_tok(p, "E0100", t, "expected a type, found %s", describe(p, t));
         diag_label(d, "expected a type");
@@ -600,6 +686,11 @@ static bool looks_like_decl(Parser *p) {
 
     size_t i = 1;
     if (peek_at(p, 1)->kind == TOK_COLONCOLON && peek_at(p, 2)->kind == TOK_IDENT) i = 3;   /* module::Type */
+    if (peek_at(p, i)->kind == TOK_LT) {   /* Box<int> */
+        size_t end = scan_type_args(p, i);
+        if (!end) return false;
+        i = end;
+    }
     for (;;) {
         k = peek_at(p, i)->kind;
         if (k == TOK_STAR) {
@@ -681,8 +772,13 @@ static Expr *parse_array_lit(Parser *p) {
 /* Vec2 { x: 1.0, y: 2.0 } -- the caller checked the lookahead. */
 static Expr *parse_struct_lit(Parser *p) {
     Token *name = advance(p);
+    TypeExpr **targs = NULL;
+    size_t ntargs = 0;
+    if (check(p, TOK_LT) && !parse_type_args(p, &targs, &ntargs)) return NULL;
     advance(p); /* { */
     Expr *e = new_expr(p, EXPR_STRUCT_LIT, name->loc);
+    e->targs = targs;
+    e->ntargs = ntargs;
     e->u.struct_lit.type_name = tok_name(p, name);
     PtrVec fields = {0};
     while (!check(p, TOK_RBRACE) && !check(p, TOK_EOF)) {
@@ -740,10 +836,22 @@ static Expr *parse_primary(Parser *p) {
 
     case TOK_IDENT: {
         TokenKind next = peek_at(p, 1)->kind;
+        /* After `name` or `module::name`: `<...>` that are type arguments
+         * (followed by `(` or a struct literal's `{`), or 0. */
+        size_t qual = next == TOK_COLONCOLON && peek_at(p, 2)->kind == TOK_IDENT ? 2 : 0;
+        size_t targs_end = peek_at(p, qual + 1)->kind == TOK_LT ? scan_type_args(p, qual + 1) : 0;
+        if (targs_end) {
+            TokenKind after = peek_at(p, targs_end)->kind;
+            bool lit = after == TOK_LBRACE && (peek_at(p, targs_end + 1)->kind == TOK_RBRACE ||
+                                               (peek_at(p, targs_end + 1)->kind == TOK_IDENT &&
+                                                peek_at(p, targs_end + 2)->kind == TOK_COLON));
+            if (!lit && after != TOK_LPAREN) targs_end = 0;
+        }
+        size_t brace = targs_end ? targs_end : 3;
         /* module::Type { field: value } */
-        if (next == TOK_COLONCOLON && peek_at(p, 2)->kind == TOK_IDENT && peek_at(p, 3)->kind == TOK_LBRACE &&
-            (peek_at(p, 4)->kind == TOK_RBRACE ||
-             (peek_at(p, 4)->kind == TOK_IDENT && peek_at(p, 5)->kind == TOK_COLON))) {
+        if (next == TOK_COLONCOLON && peek_at(p, 2)->kind == TOK_IDENT && peek_at(p, brace)->kind == TOK_LBRACE &&
+            (peek_at(p, brace + 1)->kind == TOK_RBRACE ||
+             (peek_at(p, brace + 1)->kind == TOK_IDENT && peek_at(p, brace + 2)->kind == TOK_COLON))) {
             advance(p);
             advance(p);
             Expr *lit = parse_struct_lit(p);
@@ -764,6 +872,11 @@ static Expr *parse_primary(Parser *p) {
             e = new_expr(p, EXPR_SCOPE, span_to_prev(p, t->loc));
             e->u.scope.scope = tok_name(p, t);
             e->u.scope.member = tok_name(p, member);
+            if (targs_end) {   /* module::func<T>(...) */
+                if (!parse_type_args(p, &e->targs, &e->ntargs)) return NULL;
+                e->loc = span_to_prev(p, t->loc);
+                return e;
+            }
             if (check(p, TOK_COLONCOLON) && peek_at(p, 1)->kind == TOK_IDENT) {
                 /* module::Enum::Variant */
                 advance(p);
@@ -781,9 +894,14 @@ static Expr *parse_primary(Parser *p) {
             (peek_at(p, 2)->kind == TOK_RBRACE ||
              (peek_at(p, 2)->kind == TOK_IDENT && peek_at(p, 3)->kind == TOK_COLON)))
             return parse_struct_lit(p);
+        if (targs_end && peek_at(p, targs_end)->kind == TOK_LBRACE) return parse_struct_lit(p);
         advance(p);
         e = new_expr(p, EXPR_IDENT, t->loc);
         e->u.name = tok_name(p, t);
+        if (targs_end) {   /* func<T>(...) */
+            if (!parse_type_args(p, &e->targs, &e->ntargs)) return NULL;
+            e->loc = span_to_prev(p, t->loc);
+        }
         return e;
     }
 
@@ -1473,6 +1591,7 @@ static Decl *parse_function(Parser *p, Loc start, bool is_export, bool is_extern
     d->name_loc = name->loc;
     d->is_export = is_export;
     d->is_extern = is_extern;
+    if (!parse_type_params(p, d)) return NULL;
 
     if (!expect(p, TOK_LPAREN, "after function name")) return NULL;
     PtrVec params = {0};
@@ -1544,10 +1663,11 @@ static Decl *parse_function(Parser *p, Loc start, bool is_export, bool is_extern
 static Decl *parse_struct(Parser *p, Loc start) {
     advance(p); /* struct */
     Token *name = expect_ident(p, "a struct name");
-    if (!name || !expect(p, TOK_LBRACE, "after struct name")) return NULL;
+    if (!name) return NULL;
     Decl *d = new_decl(p, DECL_STRUCT, start);
     d->name = tok_name(p, name);
     d->name_loc = name->loc;
+    if (!parse_type_params(p, d) || !expect(p, TOK_LBRACE, "after struct name")) return NULL;
 
     PtrVec fields = {0};
     while (!check(p, TOK_RBRACE) && !check(p, TOK_EOF)) {
@@ -1582,26 +1702,18 @@ static Decl *parse_struct(Parser *p, Loc start) {
     return d;
 }
 
-/* A list of names after `extends` / `implements`, possibly qualified (geo::Shape). */
-static bool parse_type_names(Parser *p, PtrVec *names, PtrVec *locs) {
+/* Types after `extends` / `implements`: `Shape`, `geo::Shape`, `Cmp<T>`. */
+static bool parse_type_list(Parser *p, PtrVec *types) {
     do {
-        Token *t = expect_ident(p, "a class or interface name");
-        if (!t) return false;
-        const char *name = tok_name(p, t);
-        Loc loc = t->loc;
-        if (check(p, TOK_COLONCOLON) && peek_at(p, 1)->kind == TOK_IDENT) {
-            advance(p);
-            Token *m = advance(p);
-            size_t n = strlen(name) + m->loc.len + 3;
-            char *full = arena_alloc(p->arena, n);
-            snprintf(full, n, "%s::%.*s", name, (int)m->loc.len, m->start);
-            name = full;
-            loc = span_to_prev(p, t->loc);
+        if (!check(p, TOK_IDENT)) {
+            Diag *e = perr_tok(p, "E0100", cur(p), "expected a class or interface name, found %s", describe(p, cur(p)));
+            diag_label(e, "expected a name");
+            diag_end(e);
+            return false;
         }
-        ptrvec_push(names, (void *)name);
-        Loc *lp = ARENA_NEW(p->arena, Loc);
-        *lp = loc;
-        ptrvec_push(locs, lp);
+        TypeExpr *t = parse_base_type(p);
+        if (!t) return false;
+        ptrvec_push(types, t);
     } while (accept(p, TOK_COMMA));
     return true;
 }
@@ -1618,32 +1730,27 @@ static Decl *parse_class(Parser *p, Loc start, bool is_abstract) {
     d->name_loc = name->loc;
     d->is_abstract = is_abstract || is_interface;
     d->u.class_.is_interface = is_interface;
-    PtrVec ifaces = {0}, iface_locs = {0};
+    if (!parse_type_params(p, d)) return NULL;
+    PtrVec ifaces = {0};
     if (accept(p, TOK_KW_EXTENDS)) {
         if (is_interface) {
-            if (!parse_type_names(p, &ifaces, &iface_locs)) return NULL;
+            if (!parse_type_list(p, &ifaces)) return NULL;
         } else {
-            PtrVec one = {0}, one_loc = {0};
-            if (!parse_type_names(p, &one, &one_loc)) return NULL;
+            PtrVec one = {0};
+            if (!parse_type_list(p, &one)) return NULL;
             d->u.class_.base = one.items[0];
-            d->u.class_.base_loc = *(Loc *)one_loc.items[0];
             if (one.len > 1) {
-                Diag *e = perr(p, "E0120", *(Loc *)one_loc.items[1], "a class can extend only one class");
+                Diag *e = perr(p, "E0120", ((TypeExpr *)one.items[1])->loc, "a class can extend only one class");
                 diag_label(e, "second base class");
                 diag_help(e, "use `implements` for interfaces; a class can implement any number of them");
                 diag_end(e);
             }
             free(one.items);
-            free(one_loc.items);
             if (p->panic) return NULL;
         }
     }
-    if (!is_interface && accept(p, TOK_KW_IMPLEMENTS) && !parse_type_names(p, &ifaces, &iface_locs)) return NULL;
-    d->u.class_.ifaces = (const char **)ptrvec_finish(&ifaces, p->arena, &d->u.class_.nifaces);
-    size_t nl;
-    Loc **locs = (Loc **)ptrvec_finish(&iface_locs, p->arena, &nl);
-    d->u.class_.iface_locs = arena_alloc(p->arena, (nl ? nl : 1) * sizeof(Loc));
-    for (size_t i = 0; i < nl; i++) d->u.class_.iface_locs[i] = *locs[i];
+    if (!is_interface && accept(p, TOK_KW_IMPLEMENTS) && !parse_type_list(p, &ifaces)) return NULL;
+    d->u.class_.ifaces = (TypeExpr **)ptrvec_finish(&ifaces, p->arena, &d->u.class_.nifaces);
     if (!expect(p, TOK_LBRACE, is_interface ? "after interface name" : "after class name")) return NULL;
 
     PtrVec members = {0};
@@ -1667,6 +1774,14 @@ static Decl *parse_class(Parser *p, Loc start, bool is_abstract) {
             p->no_body_ok = m_abstract || is_interface;
             m = parse_function(p, mstart, false, false);
             p->no_body_ok = saved;
+            if (m && m->ntparams) {
+                Diag *e = perr(p, "E0122", m->tparam_locs[0], "method `%s` can't have its own type parameters", m->name);
+                diag_label(e, "type parameters on a method");
+                diag_help(e, "give them to the %s (`%s %s<...>`), or write a generic function outside it",
+                          is_interface ? "interface" : "class", is_interface ? "interface" : "class", d->name);
+                diag_end(e);
+                m->ntparams = 0;
+            }
             if (m) {
                 m->is_abstract = m_abstract || is_interface;
                 if (m->is_abstract && m->u.func.body) {

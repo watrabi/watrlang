@@ -1,0 +1,17 @@
+function max<T>(T a, T b): T { return a > b ? a : b; }
+struct Pair<A, B> { A first; B second; }
+interface Cmp<T> { function cmp(T other): int; }
+class Box<T> extends Base<T> implements Cmp<Box<T>>, geo::Shape {
+    T v;
+}
+function main(): int {
+    Box<Box<int>> bb = new Box<Box<int>>();
+    Pair<int, u8*> p = Pair<int, u8*> { first: 1, second: null };
+    int m = max<int>(1, 2) + max(3, 4);
+    bool lt = a < b;
+    bool both = a < b && c > (d);
+    int s = 1 >> 2;
+    io::print<string>("x");
+    x = y as Box<int>;
+    return 0;
+}

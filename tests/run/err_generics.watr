@@ -1,0 +1,25 @@
+struct Box<T> { T v; }
+struct Plain { int x; }
+function id<T>(T x): T { return x; }
+function make<T>(): T { T x; return x; }
+function both<T>(T a, T b): T { return a; }
+struct Grow<T> { Grow<Grow<T>>* next; }
+extern function cfun<T>(T x): void;
+function plain(int x): int { return x; }
+function add<T>(T a, T b): T { return a + b; }
+function main(): int {
+    Box b;
+    Box<int, int> c;
+    Plain<int> d;
+    int x = make();
+    i32 z = 3;
+    int w = both(z, 7 as i64);
+    int v = plain<int>(3);
+    Box<Nope> n;
+    Grow<int> g;
+    int u = id<int, int>(1);
+    Box<int> k = Box { v: 1 };
+    echo add(1, 2), add(1.5, 2.5), add("a", "b"), add(true, false);
+    f64 m = both(1, 2.5);
+    return 0;
+}

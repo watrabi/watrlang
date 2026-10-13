@@ -34,6 +34,25 @@ static void print_escaped(FILE *out, const char *data, size_t len, char quote) {
     fputc(quote, out);
 }
 
+static void print_type(FILE *out, const TypeExpr *t);
+
+static void print_targs(FILE *out, TypeExpr *const *targs, size_t n) {
+    if (!n) return;
+    fputc('<', out);
+    for (size_t i = 0; i < n; i++) {
+        if (i) fputs(", ", out);
+        print_type(out, targs[i]);
+    }
+    fputc('>', out);
+}
+
+static void print_tparams(FILE *out, const Decl *d) {
+    if (!d->ntparams) return;
+    fputc('<', out);
+    for (size_t i = 0; i < d->ntparams; i++) fprintf(out, "%s%s", i ? ", " : "", d->tparams[i]);
+    fputc('>', out);
+}
+
 static void print_type(FILE *out, const TypeExpr *t) {
     if (!t) {
         fputs("<?>", out);
@@ -45,6 +64,7 @@ static void print_type(FILE *out, const TypeExpr *t) {
         if (t->is_const) fputs("const ", out);
         if (t->is_volatile) fputs("volatile ", out);
         fputs(t->kind == TYPEX_BUILTIN ? token_kind_spelling(t->u.builtin) : t->u.name, out);
+        print_targs(out, t->targs, t->ntargs);
         break;
     case TYPEX_PTR:
         print_type(out, t->u.pointee);
@@ -122,9 +142,11 @@ static void print_expr(FILE *out, const Expr *e) {
         break;
     case EXPR_IDENT:
         fputs(e->u.name, out);
+        print_targs(out, e->targs, e->ntargs);
         break;
     case EXPR_SCOPE:
         fprintf(out, "%s::%s", e->u.scope.scope, e->u.scope.member);
+        print_targs(out, e->targs, e->ntargs);
         break;
     case EXPR_UNARY:
     case EXPR_POSTFIX: {
@@ -228,6 +250,7 @@ static void print_expr(FILE *out, const Expr *e) {
         break;
     case EXPR_STRUCT_LIT:
         fprintf(out, "(struct %s", e->u.struct_lit.type_name);
+        print_targs(out, e->targs, e->ntargs);
         for (size_t i = 0; i < e->u.struct_lit.n; i++) {
             fprintf(out, " (%s ", e->u.struct_lit.fields[i]->name);
             print_expr(out, e->u.struct_lit.fields[i]->value);
@@ -401,7 +424,9 @@ static void print_decl(FILE *out, const Decl *d, int indent) {
         fputc('\n', out);
         break;
     case DECL_FUNC:
-        fprintf(out, "function %s(", d->name);
+        fprintf(out, "function %s", d->name);
+        print_tparams(out, d);
+        fputc('(', out);
         for (size_t i = 0; i < d->u.func.nparams; i++) {
             if (i) fputs(", ", out);
             print_type(out, d->u.func.params[i]->type);
@@ -415,7 +440,9 @@ static void print_decl(FILE *out, const Decl *d, int indent) {
         if (d->u.func.body) print_body(out, d->u.func.body, indent + 1);
         break;
     case DECL_STRUCT:
-        fprintf(out, "struct %s\n", d->name);
+        fprintf(out, "struct %s", d->name);
+        print_tparams(out, d);
+        fputc('\n', out);
         for (size_t i = 0; i < d->u.struct_.n; i++) {
             indent_to(out, indent + 1);
             fputs("field ", out);
@@ -426,9 +453,15 @@ static void print_decl(FILE *out, const Decl *d, int indent) {
     case DECL_CLASS:
         fprintf(out, "%s%s %s", d->is_abstract && !d->u.class_.is_interface ? "abstract " : "",
                 d->u.class_.is_interface ? "interface" : "class", d->name);
-        if (d->u.class_.base) fprintf(out, " extends %s", d->u.class_.base);
-        for (size_t i = 0; i < d->u.class_.nifaces; i++)
-            fprintf(out, "%s%s", i ? ", " : d->u.class_.is_interface ? " extends " : " implements ", d->u.class_.ifaces[i]);
+        print_tparams(out, d);
+        if (d->u.class_.base) {
+            fputs(" extends ", out);
+            print_type(out, d->u.class_.base);
+        }
+        for (size_t i = 0; i < d->u.class_.nifaces; i++) {
+            fputs(i ? ", " : d->u.class_.is_interface ? " extends " : " implements ", out);
+            print_type(out, d->u.class_.ifaces[i]);
+        }
         fputc('\n', out);
         for (size_t i = 0; i < d->u.class_.n; i++) print_decl(out, d->u.class_.members[i], indent + 1);
         break;

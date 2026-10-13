@@ -43,6 +43,8 @@ struct TypeExpr {
     Loc loc;
     bool is_const;      /* `const T` */
     bool is_volatile;   /* `volatile T` (usually seen as `volatile T*`) */
+    TypeExpr **targs;   /* TYPEX_NAMED: type arguments, `Box<int>` */
+    size_t ntargs;
     union {
         TokenKind builtin;
         const char *name;
@@ -112,6 +114,8 @@ struct Expr {
     uint8_t builtin;         /* EXPR_CALL, EXPR_MEMBER: BUILTIN_* */
     bool via_pointer;        /* EXPR_MEMBER: obj is a pointer to the struct */
     bool checked;            /* already checked; check() returns its type (for nodes sema reuses) */
+    TypeExpr **targs;        /* EXPR_IDENT (a callee) and EXPR_STRUCT_LIT: explicit type arguments */
+    size_t ntargs;
     int vslot;               /* EXPR_CALL: 0 = direct; k = virtual call through vtable slot k - 1 */
     struct Type *viface;     /* EXPR_CALL with vslot: dispatch through this interface's table */
 
@@ -242,6 +246,9 @@ struct Decl {
     bool is_extern;
     bool is_static;        /* class methods only */
     bool is_abstract;      /* classes, and their methods (interface methods too) */
+    const char **tparams;  /* generic functions, structs and classes: `<T, U>` */
+    Loc *tparam_locs;
+    size_t ntparams;
     bool packed;           /* #[packed] (structs) */
     uint32_t align;        /* #[align(N)] (structs, globals); 0 = natural */
     Loc attr_loc;          /* the attributes, for messages */
@@ -261,10 +268,8 @@ struct Decl {
         struct {
             Decl **members;         /* DECL_VAR fields, DECL_FUNC methods */
             size_t n;
-            const char *base;       /* `extends`, or NULL */
-            Loc base_loc;
-            const char **ifaces;    /* `implements` (for interfaces: the ones they extend) */
-            Loc *iface_locs;
+            TypeExpr *base;         /* `extends`, or NULL */
+            TypeExpr **ifaces;      /* `implements` (for interfaces: the ones they extend) */
             size_t nifaces;
             bool is_interface;
         } class_;

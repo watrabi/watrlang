@@ -357,6 +357,32 @@ function outb(u16 port, u8 val): void {
     loads the method from the vtable; an interface call finds the
     interface's table in the list first. Sema records every virtual call,
     so each override that could run is compiled.
+- **Generics (milestone 17):** functions, structs, classes and interfaces
+  take type parameters: `function max<T>(T a, T b): T`, `struct Pair<A, B>`,
+  `class Box<T> extends Base<T> implements Cmp<T>`, `interface Iter<T>`.
+  - Uses spell the types out, `Box<int>`, `new List<string>()`,
+    `Pair<int, u8*> { first: 1, second: p }`, and nest (`Box<Box<int>>`;
+    the `>>` is split). Calls can too, `max<u8>(a, b)`, but usually the
+    arguments decide: `max(x, y)`. Literals adapt, so `max(x, 1)` with an
+    `i32` x is `max<i32>`, and `max(1, 2.5)` is `max<f64>`. Two arguments
+    that disagree are an error (E0379); so is a type parameter nothing
+    decides (E0378).
+  - Each use is compiled separately for its types (monomorphization, like
+    C++ templates and Rust): sema copies the declaration with the type
+    parameters replaced, then checks the copy like ordinary code. So there
+    are no constraints to write: `a > b` works for any `T` that has `>`,
+    and an error in the copy is reported at the generic code with a note
+    naming the instance and where it was used. Uses with the same types
+    share one copy; generic code that's never used is never checked.
+  - `Box<int>` and `Box<string>` are unrelated types. A class may extend
+    an instance (`class Dog extends Animal<int>`), and generic code can
+    take a base-class instance: `function f<T>(Animal<T> a)` accepts a
+    `Dog` with `T = int`.
+  - In `a < b > (c)` the `<...>` are type arguments; elsewhere `<` is
+    always less-than. Methods can't have their own type parameters
+    (E0122), extern functions can't be generic (E0381), and a type that
+    needs ever bigger copies of itself (`Grow<Grow<T>>` inside `Grow<T>`)
+    is stopped (E0380).
 - **Arrays and `mixed` (milestone 12):**
   - `mixed` (PHP's name for "any type") holds null, a bool, an int, a
     float, a string, an array or an object, with a tag saying which. It's
@@ -432,7 +458,7 @@ function outb(u16 port, u8 val): void {
 - **Arrays:** `int[5]` is fixed and lives on the stack. `int[]` is a slice
   (ptr+len). `len(x)` works on both.
 - **Classes v1:** fields + methods + `__construct`, `public`/`private`.
-  No inheritance yet (needs vtables, planned for later).
+  Inheritance came in M16 and generic classes in M17.
 - **Integer overflow:** wraps (two's complement), defined behavior. No UB games.
 
 ## 4. Compiler architecture (C)
@@ -574,11 +600,12 @@ Each milestone ends with tests passing and something you can run.
 | 14 | **Boot a kernel**      | multiboot kernel in QEMU prints to VGA, written in watrlang (`examples/kernel`) |
 | 15 | Optimizer              | IR + register allocation (`-O1`, the default)             |
 | 16 | Inheritance            | `extends`, interfaces, `abstract`, `protected`, `parent::`, `instanceof` |
+| 17 | Generics               | `max<T>`, `Box<T>`, `Pair<A, B>`, generic interfaces; type inference for calls |
 | ∞  | Self-hosting           | watrc rewritten in watrlang                               |
 
 ## 6. Settled after the first pass
 
-- **Generics:** not in v1. Revisit after M12.
+- **Generics:** monomorphized, without constraints, in M17.
 - **Inheritance / interfaces:** single inheritance and interfaces, in M16.
 - **Integer division:** C-style. `/` on two ints truncates toward zero;
   `%` takes the sign of the left operand. Dividing by zero is a CPU fault

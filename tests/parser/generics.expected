@@ -1,0 +1,20 @@
+function max<T>(T a, T b) -> T
+  return (?: (> a b) a b)
+struct Pair<A, B>
+  field A first
+  field B second
+interface Cmp<T>
+  public abstract function cmp(T other) -> int
+class Box<T> extends Base<T> implements Cmp<Box<T>>, geo::Shape
+  field T v
+function main() -> int
+  var Box<Box<int>> bb = (new Box<Box<int>>)
+  var Pair<int, u8*> p = (struct Pair<int, u8*> (first 1) (second null))
+  var int m = (+ (call max<int> 1 2) (call max 3 4))
+  var bool lt = (< a b)
+  var bool both = (&& (< a b) (> c d))
+  var int s = (>> 1 2)
+  (call io::print<string> "x")
+  (= x (as y Box<int>))
+  return 0
+exit: 0

@@ -1,0 +1,79 @@
+// Generics: functions, structs, classes and interfaces, compiled once per set of types.
+function max<T>(T a, T b): T {
+    if (a > b) { return a; }
+    return b;
+}
+
+struct Pair<A, B> {
+    A first;
+    B second;
+}
+
+function swap<A, B>(Pair<A, B> p): Pair<B, A> {
+    return Pair<B, A> { first: p->second, second: p->first };
+}
+
+interface Shape { function area(): float; }
+
+class Box<T> {
+    T value;
+    public function __construct(T v) { this->value = v; }
+    public function get(): T { return this->value; }
+    public function set(T v): void { this->value = v; }
+}
+
+class Stack<T> {
+    T* items;
+    int n;
+    int cap;
+    public function __construct() { this->cap = 4; this->items = alloc(T, 4); }
+    public function push(T v): void {
+        if (this->n == this->cap) {
+            T* bigger = alloc(T, this->cap * 2);
+            for (int i = 0; i < this->n; i++) { bigger[i] = this->items[i]; }
+            free(this->items);
+            this->items = bigger;
+            this->cap = this->cap * 2;
+        }
+        this->items[this->n] = v;
+        this->n++;
+    }
+    public function pop(): T { this->n--; return this->items[this->n]; }
+    public function size(): int { return this->n; }
+}
+
+struct Node<T> { T value; Node<T>* next; }
+
+function sum_list<T>(Node<T>* head): T {
+    T total = head->value;
+    Node<T>* n = head->next;
+    while (n != null) { total = total + n->value; n = n->next; }
+    return total;
+}
+
+function main(): int {
+    echo max(3, 7), "\n";
+    echo max(2.5, 1.5), "\n";
+    echo max<u8>(200, 100), "\n";
+    i32 small = 5;
+    echo max(small, 9), "\n";
+    echo max("apple", "banana"), "\n";
+    Pair<int, string> p = Pair<int, string> { first: 1, second: "one" };
+    Pair<string, int> q = swap(p);
+    echo q->first, " ", q->second, "\n";
+    Box<int> b = new Box<int>(41);
+    b->set(b->get() + 1);
+    echo b->get(), "\n";
+    Box<string> bs = new Box<string>("hi");
+    echo bs->get(), "\n";
+    Stack<float> s = new Stack<float>();
+    for (int i = 0; i < 10; i++) { s->push(i as float * 1.5); }
+    echo s->size(), " ", s->pop(), " ", s->pop(), "\n";
+    Box<Box<int>> bb = new Box<Box<int>>(b);
+    echo bb->get()->get(), "\n";
+    Node<int> c = Node<int> { value: 3, next: null };
+    Node<int> bn = Node<int> { value: 2, next: &c };
+    Node<int> a = Node<int> { value: 1, next: &bn };
+    echo sum_list(&a), "\n";
+    return 0;
+}

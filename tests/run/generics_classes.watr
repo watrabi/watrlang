@@ -1,0 +1,42 @@
+import "mods/coll";
+
+abstract class Animal<F> {
+    abstract public function eat(F food): string;
+    public function feed(F food): string { return "fed: " . this->eat(food); }
+}
+class Dog extends Animal<int> {
+    public function eat(int bones): string { return "{bones} bones"; }
+}
+class SortedList<T> extends coll::List<T> {
+    public function add(T v): coll::List<T> {
+        int i = this->n;
+        while (i > 0 && this->items[i - 1] > v) { this->items[i] = this->items[i - 1]; i--; }
+        this->items[i] = v;
+        this->n++;
+        return this;
+    }
+}
+function drain<T>(coll::Iter<T> it): T {
+    T total;
+    while (it->has_next()) { total = total + it->next(); }
+    return total;
+}
+function second<T>(T* xs): T { return xs[1]; }
+function main(): int {
+    Dog d = new Dog();
+    echo d->feed(3), "\n";
+    Animal<int> a = d;
+    echo a->feed(5), "\n";
+    coll::List<int> l = new SortedList<int>();
+    l->add(5)->add(1)->add(3)->add(2);
+    for (int i = 0; i < l->len(); i++) { echo l->at(i), " "; }
+    echo "\n", drain(l->iter()), "\n";
+    echo coll::first(l), " ", coll::first<int>(l), "\n";
+    echo l instanceof SortedList<int>, "\n";
+    int[4] xs = [1, 2, 3, 4];
+    echo second(&xs[0]), "\n";
+    coll::List<string> words = new coll::List<string>();
+    words->add("a")->add("b");
+    echo words->at(1), "\n";
+    return 0;
+}

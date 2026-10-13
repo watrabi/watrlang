@@ -1,0 +1,41 @@
+enum Err { Empty, Bad }
+function first_or<T>(T* xs, usize n): T!Err {
+    if (n == 0) { return Err::Empty; }
+    return xs[0];
+}
+function size_of<T>(): usize { return sizeof(T); }
+function conv<A, B>(A x): B { return x as B; }
+function show<T>(T x): string { return "<{x}>"; }
+function total<T>(T* xs, usize n): T { T s; for (usize i = 0; i < n; i++) { s += xs[i]; } return s; }
+function apply<T>(T x, int times): T { if (times == 0) { return x; } return apply(x + x, times - 1); }
+class Base<T> {
+    protected T v;
+    public function __construct(T v) { this->v = v; }
+    public function describe(): string { return "base {this->v}"; }
+}
+class Derived<T> extends Base<T> {
+    public function __construct(T v) { parent::__construct(v); }
+    public function describe(): string { return "derived " . parent::describe(); }
+}
+struct Wrap<T> { T inner; }
+function unwrap<T>(Wrap<T> w): T { return w->inner; }
+function wrap_ptr<T>(Wrap<T>* w): T { return w->inner; }
+function main(): int {
+    int[2] xs = [9, 8];
+    int!Err r = first_or(&xs[0], 2);
+    echo r ?? -1, " ", first_or(&xs[0], 0) ?? -1, "\n";
+    echo size_of<Wrap<u8>>(), " ", size_of<f32>(), "\n";
+    echo conv<float, int>(3.9), "\n";
+    echo show(5), show("s"), show(true), "\n";
+    int[3] t = [1, 2, 3];
+    echo total(&t[0], 3), "\n";
+    echo apply(1, 10), " ", apply(0.5, 2), "\n";
+    Base<int> b = new Derived<int>(7);
+    echo b->describe(), "\n";
+    echo b instanceof Derived<int>, " ", b instanceof Derived<string>, "\n";
+    Wrap<string> w = Wrap<string> { inner: "in" };
+    echo unwrap(w), wrap_ptr(&w), "\n";
+    mixed m = new Base<float>(1.5);
+    echo (m as Base<float>)->describe(), "\n";
+    return 0;
+}
