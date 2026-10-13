@@ -1,0 +1,6 @@
+function v(): void {}
+function f(): int { return 1; }
+function f(): int { return 2; }
+function main(): int {
+    return v() + nope() + f + 18446744073709551615;
+}

@@ -1,0 +1,5 @@
+tests/run/err_no_main.watr:1:1: error: there is no main function; a program starts at: function main(): int { ... }
+ 1 | function helper(): int { return 1; }
+   | ^
+1 error
+compile failed: 1

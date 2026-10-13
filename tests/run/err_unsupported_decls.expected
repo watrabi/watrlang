@@ -1,0 +1,17 @@
+tests/run/err_unsupported_decls.watr:1:1: error: not supported yet: imports (planned for milestone 8)
+ 1 | import "std/io";
+   | ^~~~~~~~~~~~~~~~
+tests/run/err_unsupported_decls.watr:2:1: error: not supported yet: structs (planned for milestone 5)
+ 2 | struct S { int x; }
+   | ^~~~~~~~~~~~~~~~~~~
+tests/run/err_unsupported_decls.watr:3:1: error: not supported yet: global variables (planned for milestone 4)
+ 3 | int g = 1;
+   | ^~~~~~~~~~
+tests/run/err_unsupported_decls.watr:4:16: error: not supported yet: function parameters (planned for milestone 4)
+ 4 | function p(int a): int { return a; }
+   |                ^
+tests/run/err_unsupported_decls.watr:5:15: error: not supported yet: return types other than int and void (planned for milestone 5)
+ 5 | function u(): u8 { return 1; }
+   |               ^~
+5 errors
+compile failed: 1

@@ -259,6 +259,13 @@ That way the codegen doesn't have to emit precise stack maps. Objects from
 `new` carry a small header. Memory from `alloc` is never scanned or
 collected.
 
+**Symbols:** watrlang functions are emitted as `w.<name>` (e.g. `w.main`).
+That stops a function called `rax` from assembling as `call rax`, and keeps
+watrlang names apart from C names once we link against libc. `export` and
+`extern` functions keep their plain names so C and linker scripts can find
+them. A hosted program starts at our own `_start`, which calls `w.main`
+and passes its return value to the `exit` syscall.
+
 **The runtime is written in C** at first and linked in through our own FFI.
 Later it can be rewritten in watrlang itself.
 
@@ -292,7 +299,10 @@ Each milestone ends with tests passing and something you can run.
 - **Inheritance / interfaces:** not in v1. Revisit after M12.
 - **Integer division:** C-style. `/` on two ints truncates toward zero;
   `%` takes the sign of the left operand. Dividing by zero is a CPU fault
-  (`#DE`), same as C on x86.
+  (`#DE`), same as C on x86. So is the one overflowing division,
+  `-9223372036854775808 / -1`.
+- **Shifts:** the shift count is taken mod 64 (what x86 does), so
+  `1 << 65 == 2`. `>>` on signed ints is arithmetic, keeping the sign.
 - **Null:** C-style. `null` is the zero pointer, assignable to any `T*`.
   Dereferencing it is not checked by the compiler.
 - **Floats:** in v1, built in M5 alongside the integer types (`f32`, `f64`,

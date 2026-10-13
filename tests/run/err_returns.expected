@@ -1,0 +1,11 @@
+tests/run/err_returns.watr:1:10: error: function 'f' can reach its end without returning a value
+ 1 | function f(): int {}
+   |          ^
+tests/run/err_returns.watr:2:29: error: function 'g' returns void, so 'return' can't have a value
+ 2 | function g(): void { return 5; }
+   |                             ^
+tests/run/err_returns.watr:3:21: error: function 'h' must return an int value
+ 3 | function h(): int { return; }
+   |                     ^~~~~~~
+3 errors
+compile failed: 1

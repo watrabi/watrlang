@@ -1,0 +1,4 @@
+function f(): int {}
+function g(): void { return 5; }
+function h(): int { return; }
+function main(): int { return f(); }

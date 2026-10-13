@@ -5,18 +5,36 @@
 #include "diag.h"
 #include "lexer.h"
 #include "parser.h"
+#include "codegen.h"
+#include "toolchain.h"
 
 #define WATRC_VERSION "0.0.1"
 
 static void usage(FILE *out) {
     fputs("usage: watrc [options] file.watr\n"
           "\n"
+          "Compiles file.watr into a native executable (file, without .watr).\n"
+          "\n"
           "options:\n"
+          "  -o <path>    write the output here\n"
+          "  -S           write assembly (.s) instead of an executable\n"
+          "  -v           show the assembler and linker commands\n"
           "  --tokens     print the token stream and exit\n"
           "  --ast        print the syntax tree and exit\n"
           "  --version    print the compiler version\n"
           "  -h, --help   show this help\n",
           out);
+}
+
+/* "dir/hello.watr" -> "dir/hello" + suffix */
+static char *default_output(const char *path, const char *suffix) {
+    size_t n = strlen(path);
+    if (n > 5 && strcmp(path + n - 5, ".watr") == 0) n -= 5;
+    else if (!suffix[0]) suffix = ".out";   /* don't overwrite the source file */
+    char *out = xmalloc(n + strlen(suffix) + 1);
+    memcpy(out, path, n);
+    strcpy(out + n, suffix);
+    return out;
 }
 
 static void dump_token(const Token *t) {
@@ -55,6 +73,9 @@ int main(int argc, char **argv) {
     const char *path = NULL;
     int dump_tokens = 0;
     int dump_ast = 0;
+    int emit_asm = 0;
+    int verbose = 0;
+    const char *out_path = NULL;
 
     for (int i = 1; i < argc; i++) {
         const char *arg = argv[i];
@@ -68,6 +89,16 @@ int main(int argc, char **argv) {
             dump_tokens = 1;
         } else if (strcmp(arg, "--ast") == 0) {
             dump_ast = 1;
+        } else if (strcmp(arg, "-S") == 0) {
+            emit_asm = 1;
+        } else if (strcmp(arg, "-v") == 0) {
+            verbose = 1;
+        } else if (strcmp(arg, "-o") == 0) {
+            if (i + 1 >= argc) {
+                fprintf(stderr, "watrc: '-o' needs a path\n");
+                return 2;
+            }
+            out_path = argv[++i];
         } else if (arg[0] == '-' && arg[1] != '\0') {
             fprintf(stderr, "watrc: unknown option '%s'\n", arg);
             usage(stderr);
@@ -104,14 +135,33 @@ int main(int argc, char **argv) {
         /* The tree is printed even after errors, to show how the parser recovered. */
         Module *m = parse_file(&arena, file);
         if (dump_ast) ast_print_module(stdout, m);
+
+        if (!dump_ast && diag_error_count() == 0) {
+            char *asm_text = NULL;
+            size_t asm_len = 0;
+            FILE *asm_out = open_memstream(&asm_text, &asm_len);
+            if (!asm_out) fatal("open_memstream failed");
+            bool ok = codegen_x64(m, asm_out);
+            fclose(asm_out);
+
+            if (ok) {
+                char *def = default_output(path, emit_asm ? ".s" : "");
+                const char *dest = out_path ? out_path : def;
+                bool built = emit_asm ? write_file(dest, asm_text, asm_len)
+                                      : toolchain_build_executable(asm_text, asm_len, dest, verbose);
+                free(def);
+                if (!built) {
+                    free(asm_text);
+                    arena_free(&arena);
+                    return 2;
+                }
+            }
+            free(asm_text);
+        }
     }
 
     int errors = diag_error_count();
-    if (errors) {
-        fprintf(stderr, "%d error%s\n", errors, errors == 1 ? "" : "s");
-    } else if (!dump_tokens && !dump_ast) {
-        fprintf(stderr, "watrc: parsing succeeded; type checking and code generation are not implemented yet\n");
-    }
+    if (errors) fprintf(stderr, "%d error%s\n", errors, errors == 1 ? "" : "s");
     fflush(stdout);
     arena_free(&arena);
     return errors ? 1 : 0;

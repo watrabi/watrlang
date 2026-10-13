@@ -1,0 +1,5 @@
+tests/run/err_main_void.watr:1:10: error: main must return int (its value is the program's exit code)
+ 1 | function main(): void {}
+   |          ^~~~
+1 error
+compile failed: 1

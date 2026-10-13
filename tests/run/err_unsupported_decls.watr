@@ -1,0 +1,6 @@
+import "std/io";
+struct S { int x; }
+int g = 1;
+function p(int a): int { return a; }
+function u(): u8 { return 1; }
+function main(): int { return 0; }

@@ -1,0 +1,11 @@
+function six(): int { return 6; }
+function seven(): int { return 7; }
+function nothing(): void { return; }
+function also_nothing() {}
+
+function main(): int {
+    nothing();
+    also_nothing();
+    // the pending push of six() leaves the stack misaligned for seven()
+    return six() * seven();
+}

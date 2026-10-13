@@ -1,0 +1,8 @@
+function boom(): int {
+    return 1 / 0;   // would crash if it ran
+}
+
+function main(): int {
+    // && and || short-circuit, so boom() never runs
+    return (0 && boom()) + (1 || boom()) * 2 + !0 * 4 + !5 * 8 + (3 > 2 ? 16 : 99);
+}

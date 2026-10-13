@@ -1,0 +1,10 @@
+// Exit codes are 8 bits, so each check folds into a small result.
+function main(): int {
+    return (7 * 6 == 42)
+         + (100 / 7 == 14) * 2
+         + (-7 / 2 == -3) * 4        // division truncates toward zero
+         + (-7 % 2 == -1) * 8        // % takes the sign of the left side
+         + (7 % -2 == 1) * 16
+         + ((1 << 62) * 4 == 0) * 32 // wraps at 64 bits
+         + (-16 >> 2 == -4) * 64;    // >> on int is arithmetic
+}
