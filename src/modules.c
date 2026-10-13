@@ -1,3 +1,6 @@
+/* realpath() is an XSI extension. */
+#define _XOPEN_SOURCE 700
+
 #include "modules.h"
 
 #include <limits.h>
