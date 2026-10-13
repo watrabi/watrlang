@@ -4,5 +4,6 @@ function boom(): int {
 
 function main(): int {
     // && and || short-circuit, so boom() never runs
-    return (0 && boom()) + (1 || boom()) * 2 + !0 * 4 + !5 * 8 + (3 > 2 ? 16 : 99);
+    return (false && boom() == 1) as int + (true || boom() == 1) as int * 2 + (!false) as int * 4
+         + (!true) as int * 8 + (3 > 2 ? 16 : 99);
 }

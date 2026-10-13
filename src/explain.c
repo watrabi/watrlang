@@ -422,10 +422,14 @@ static const Explanation explanations[] = {
      "Call it as a statement on its own, or give the function a return type."},
 
     {"E0301",
-     "An integer literal is too large for int, which is 64-bit signed\n"
-     "(maximum 9223372036854775807).\n"
+     "An integer literal doesn't fit in the type it's used as.\n"
      "\n"
-     "Larger values will fit in u64 once sized integer types land."},
+     "    u8 x = 256;      // error: u8 holds 0 to 255\n"
+     "    i8 y = -129;     // error: i8 holds -128 to 127\n"
+     "    int z = 9223372036854775808;  // error: use u64\n"
+     "\n"
+     "Literals take the type their context expects. To wrap a value on\n"
+     "purpose, use a cast: `300 as u8` is 44."},
 
     {"E0302",
      "A void function returns a value.\n"
@@ -489,6 +493,217 @@ static const Explanation explanations[] = {
      "A constant expression divides by zero or overflows a division\n"
      "(-9223372036854775808 / -1). At run time this would crash, so it's\n"
      "reported at compile time when the values are known."},
+
+    {"E0309",
+     "A value of one type was used where another type is expected.\n"
+     "\n"
+     "    u8 small = 300;          // error: 300 doesn't fit in u8 (see E0301)\n"
+     "    int n = 1.5;             // error: expected int, found f64\n"
+     "    bool b = count;          // error: expected bool, found int\n"
+     "\n"
+     "watrlang converts automatically only when nothing can be lost: a\n"
+     "smaller integer into a larger one that holds all its values (u8 into\n"
+     "int, i16 into i32), f32 into f64, T* into void*, and null into any\n"
+     "pointer. Everything else needs `as`:\n"
+     "\n"
+     "    int n = 1.5 as int;      // 1 (truncates)\n"
+     "    bool b = count != 0;     // compare to get a bool"},
+
+    {"E0310",
+     "An operator was used with operand types it doesn't support, or with\n"
+     "two types that don't mix.\n"
+     "\n"
+     "    i32 a = 1;\n"
+     "    u32 b = 2;\n"
+     "    a + b;           // error: signed and unsigned don't mix\n"
+     "    a + (b as i32);  // ok\n"
+     "\n"
+     "Arithmetic needs numbers of compatible types: the smaller side widens\n"
+     "if every value fits (u8 + int is int), but signed and unsigned of the\n"
+     "same size, or ints and floats, need an explicit `as`. `%`, `&`, `|`\n"
+     "and `^` don't work on floats."},
+
+    {"E0311",
+     "A unary operator was applied to a type it doesn't support.\n"
+     "\n"
+     "    !count      // error: `!` needs a bool; write count == 0\n"
+     "    ~flag       // error: `~` needs an integer; use `!` for bools\n"
+     "    ++ratio     // error if ratio is a float"},
+
+    {"E0312",
+     "A condition isn't a bool.\n"
+     "\n"
+     "    while (1) { ... }        // error\n"
+     "    while (true) { ... }     // ok\n"
+     "    if (count) { ... }       // error\n"
+     "    if (count != 0) { ... }  // ok\n"
+     "    if (ptr != null) { ... } // ok\n"
+     "\n"
+     "Unlike C and PHP, watrlang doesn't treat numbers or pointers as\n"
+     "true/false. Saying what you mean prevents mix-ups like testing a\n"
+     "pointer when you meant the value it points to."},
+
+    {"E0313",
+     "An `as` conversion isn't allowed between these two types.\n"
+     "\n"
+     "`as` converts between any numeric types, from bool to an integer,\n"
+     "between pointer types, and between pointers and 64-bit integers\n"
+     "(usize, u64, i64, int). It can't turn numbers into bools (compare\n"
+     "instead) or convert structs and arrays."},
+
+    {"E0315",
+     "Something that isn't a pointer was dereferenced with `*`, or a void*\n"
+     "was dereferenced.\n"
+     "\n"
+     "    void* raw = get();\n"
+     "    u8 b = *raw;              // error: what size is it?\n"
+     "    u8 b = *(raw as u8*);     // ok"},
+
+    {"E0316",
+     "`&` was applied to something that isn't stored in memory, like a\n"
+     "literal or the result of arithmetic.\n"
+     "\n"
+     "    int* p = &(a + b);   // error\n"
+     "    int sum = a + b;\n"
+     "    int* p = &sum;       // ok\n"
+     "\n"
+     "You can take the address of variables, fields, array elements and\n"
+     "`*pointer`."},
+
+    {"E0317",
+     "A struct doesn't have a field with this name.\n"
+     "\n"
+     "    struct Vec2 { f64 x; f64 y; }\n"
+     "    v->z = 1.0;   // error\n"
+     "\n"
+     "Check the spelling against the struct's declaration."},
+
+    {"E0318",
+     "`->` was used on something that isn't a struct or a pointer to one.\n"
+     "\n"
+     "`->` works on struct values and on pointers to structs (it follows\n"
+     "the pointer for you). For a pointer to a pointer, dereference once\n"
+     "first: `(*pp)->field`."},
+
+    {"E0319",
+     "`[...]` was used on something that isn't an array or a pointer.\n"
+     "\n"
+     "Indexing works on fixed arrays (`int[4]`) and on typed pointers\n"
+     "(`int*`). A void* has to be cast first, since its element size is\n"
+     "unknown."},
+
+    {"E0320",
+     "A constant index is outside the array.\n"
+     "\n"
+     "    int[4] xs;\n"
+     "    xs[4] = 1;    // error: valid indexes are 0 to 3\n"
+     "\n"
+     "Indexes that aren't constant are checked when the program runs; an\n"
+     "out-of-bounds index stops the program with a message saying where."},
+
+    {"E0321",
+     "An array length isn't a positive compile-time constant.\n"
+     "\n"
+     "    int[n] xs;          // error if n is a variable\n"
+     "    const int N = 16;\n"
+     "    int[N] xs;          // ok\n"
+     "\n"
+     "Fixed arrays have their size decided at compile time. Arrays sized at\n"
+     "run time will come with allocation (milestone 6) and slices."},
+
+    {"E0322",
+     "A type name isn't known.\n"
+     "\n"
+     "The built-in types are int, i8, i16, i32, i64, u8, u16, u32, u64,\n"
+     "usize, float, f32, f64, bool and void. Struct names can be used\n"
+     "anywhere in the file, before or after the struct is declared.\n"
+     "watrlang has no `char` (use u8) or `long` (use i64)."},
+
+    {"E0323",
+     "A struct contains itself, directly or through other structs, which\n"
+     "would make it infinitely large.\n"
+     "\n"
+     "    struct Node { int value; Node next; }    // error\n"
+     "    struct Node { int value; Node* next; }   // ok: a pointer has a fixed size"},
+
+    {"E0324",
+     "A struct literal sets the same field twice.\n"
+     "\n"
+     "    Vec2 { x: 1.0, x: 2.0 }   // error\n"
+     "\n"
+     "Fields that aren't listed start at zero."},
+
+    {"E0325",
+     "An array literal can't be given a type, or has the wrong number of\n"
+     "elements.\n"
+     "\n"
+     "    int[3] xs = [1, 2, 3];   // ok\n"
+     "    int[3] ys = [1, 2];      // error: every element must be listed\n"
+     "    f([1, 2]);               // error unless f's parameter gives a type\n"
+     "\n"
+     "To start with all zeros, declare the array without a value:\n"
+     "`int[256] buffer;`."},
+
+    {"E0326",
+     "A pointer conversion would drop a `const` or `volatile` qualifier.\n"
+     "\n"
+     "    const u8* text = ...;\n"
+     "    u8* p = text;            // error: would allow writing through p\n"
+     "\n"
+     "Adding a qualifier is always fine (u8* into const u8*). Removing one\n"
+     "needs an explicit cast, which says you know it's safe."},
+
+    {"E0327",
+     "Something was written through a `const` pointer.\n"
+     "\n"
+     "    function f(const int* p): void {\n"
+     "        *p = 5;   // error\n"
+     "    }\n"
+     "\n"
+     "A `const T*` promises not to modify what it points to. Take a plain\n"
+     "`T*` if the function needs to write."},
+
+    {"E0328",
+     "A negative value was used with an unsigned type, or an unsigned value\n"
+     "was negated.\n"
+     "\n"
+     "    u8 x = -1;        // error\n"
+     "    u8 y = 255;       // ok\n"
+     "    u8 z = 0 - x;     // ok: wrapping subtraction\n"
+     "    u32 all = -1 as u32;  // ok: casts wrap, giving 4294967295"},
+
+    {"E0330",
+     "`void` was used where a real type is needed: as a variable type, or\n"
+     "as the target of pointer arithmetic.\n"
+     "\n"
+     "`void` only appears as a function's return type and in `void*`, a\n"
+     "pointer to memory of unknown type. To move a void* by bytes, cast it\n"
+     "to `u8*` first."},
+
+    {"E0331",
+     "A struct declares two fields with the same name."},
+
+    {"E0332",
+     "`len` was called on something that isn't a fixed array.\n"
+     "\n"
+     "    int[8] xs;\n"
+     "    len(xs);    // 8, known at compile time\n"
+     "\n"
+     "A pointer doesn't know how many elements it points to, so pass the\n"
+     "length alongside it."},
+
+    {"E0333",
+     "A function returns the address of one of its own local variables or\n"
+     "parameters.\n"
+     "\n"
+     "    function make(): int* {\n"
+     "        int x = 5;\n"
+     "        return &x;   // error: x is gone once make() returns\n"
+     "    }\n"
+     "\n"
+     "The memory is reused by the next function call, so the pointer would\n"
+     "point at garbage. Return the value itself, or have the caller pass in\n"
+     "a pointer to fill."},
 
     {"E0900",
      "This feature is part of watrlang's design but isn't implemented yet.\n"

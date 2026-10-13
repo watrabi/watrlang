@@ -23,7 +23,7 @@ function main(): int {
         break;
     } while (true_ish());
 
-    return (total == 49) + (pairs == 15) * 2 + (n == 3) * 4;
+    return (total == 49) as int + (pairs == 15) as int * 2 + (n == 3) as int * 4;
 }
 
-function true_ish(): int { return 1; }
+function true_ish(): bool { return true; }

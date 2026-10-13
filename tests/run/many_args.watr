@@ -13,5 +13,5 @@ function main(): int {
     int x = 1 + weigh(1, 1, 1, 1, 1, 1, 1, 1);               // 37
     int y = weigh(8, 7, 6, 5, 4, 3, 2, 1) - 100;             // 20
     int z = seven(1, 2, 3, 4, 5, 6, weigh(0,0,0,0,0,0,0,1)); // 7
-    return (x == 37) + (y == 20) * 2 + (z == 7) * 4;
+    return (x == 37) as int + (y == 20) as int * 2 + (z == 7) as int * 4;
 }

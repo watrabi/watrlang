@@ -1,4 +1,4 @@
-error[E0900]: not supported yet: 'echo'
+error[E0900]: not supported yet: `echo`
  --> tests/run/err_not_yet.watr:4:5
   |
 4 |     echo "hi";

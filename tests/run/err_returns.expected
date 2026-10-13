@@ -22,7 +22,7 @@ error[E0303]: missing return value in function `h`
  --> tests/run/err_returns.watr:3:21
   |
 3 | function h(): int { return; }
-  |               ---   ^^^^^^^ expected an `int` value
+  |               ---   ^^^^^^^ expected a `int` value
   |               |
   |               `h` is declared to return `int`
 

@@ -7,10 +7,10 @@ error[E0212]: `break` outside of a loop
   = help: to leave the function early, use `return`
 
 error[E0212]: `continue` outside of a loop
- --> tests/run/err_flow.watr:3:14
+ --> tests/run/err_flow.watr:3:17
   |
-3 |     if (1) { continue; }
-  |              ^^^^^^^^ can only be used inside a loop
+3 |     if (true) { continue; }
+  |                 ^^^^^^^^ can only be used inside a loop
 
 error[E0200]: cannot find variable `nope` in this scope
  --> tests/run/err_flow.watr:4:12

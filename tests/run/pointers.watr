@@ -1,0 +1,42 @@
+function swap(int* a, int* b): void {
+    int t = *a;
+    *a = *b;
+    *b = t;
+}
+
+function fill(u8* buf, usize n, u8 value): void {
+    for (usize i = 0; i < n; i++) {
+        buf[i] = value;
+    }
+}
+
+function main(): int {
+    int x = 1;
+    int y = 2;
+    swap(&x, &y);
+
+    u8[8] bytes;
+    fill(&bytes[0], 8, 7);
+    u8* p = &bytes[2];
+    p++;                        // moves by one u8
+    *p = 99;
+
+    int[4] nums = [10, 20, 30, 40];
+    int* q = &nums[0];
+    int* r = q + 3;
+    int distance = r - q;       // 3 elements
+    int** pp = &q;
+    **pp = 11;
+
+    i64[2] wide = [5, 6];
+    i64* w = &wide[0];
+    w += 1;                     // moves by 8 bytes
+
+    int* nothing = null;
+    void* raw = &x;
+    int* typed = raw as int*;
+    u64 addr = typed as u64;
+    bool ok = x == 2 && y == 1 && bytes[3] == 99 && bytes[0] == 7 && *r == 40 && distance == 3
+           && nums[0] == 11 && *w == 6 && nothing == null && typed == &x && addr != 0 && q < r;
+    return ok as int;
+}

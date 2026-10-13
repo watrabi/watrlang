@@ -6,6 +6,8 @@
 #include "lexer.h"
 #include "parser.h"
 #include "codegen.h"
+#include "sema.h"
+#include "types.h"
 #include "toolchain.h"
 
 #define WATRC_VERSION "0.0.1"
@@ -133,6 +135,7 @@ int main(int argc, char **argv) {
     /* Keep token dumps and error messages in order when both go to a pipe. */
     if (dump_tokens || dump_ast) setvbuf(stdout, NULL, _IOLBF, 0);
 
+    types_init();
     Arena arena = {0};
     SrcFile *file = src_load(&arena, path);
     if (!file) return 2;
@@ -150,27 +153,27 @@ int main(int argc, char **argv) {
         Module *m = parse_file(&arena, file);
         if (dump_ast) ast_print_module(stdout, m);
 
-        if (!dump_ast && diag_error_count() == 0) {
+        Program prog = {0};
+        bool ok = !dump_ast && diag_error_count() == 0 && sema_check(&arena, m, &prog);
+        if (ok) {
             char *asm_text = NULL;
             size_t asm_len = 0;
             FILE *asm_out = open_memstream(&asm_text, &asm_len);
             if (!asm_out) fatal("open_memstream failed");
-            bool ok = codegen_x64(m, asm_out);
+            codegen_x64(m, &prog, asm_out);
             fclose(asm_out);
 
-            if (ok) {
-                char *def = default_output(path, emit_asm ? ".s" : "");
-                const char *dest = out_path ? out_path : def;
-                bool built = emit_asm ? write_file(dest, asm_text, asm_len)
-                                      : toolchain_build_executable(asm_text, asm_len, dest, verbose);
-                free(def);
-                if (!built) {
-                    free(asm_text);
-                    arena_free(&arena);
-                    return 2;
-                }
-            }
+            char *def = default_output(path, emit_asm ? ".s" : "");
+            const char *dest = out_path ? out_path : def;
+            bool built = emit_asm ? write_file(dest, asm_text, asm_len)
+                                  : toolchain_build_executable(asm_text, asm_len, dest, verbose);
+            free(def);
             free(asm_text);
+            if (!built) {
+                arena_free(&arena);
+                types_free();
+                return 2;
+            }
         }
     }
 
@@ -178,5 +181,6 @@ int main(int argc, char **argv) {
     diag_print_summary(path);
     fflush(stdout);
     arena_free(&arena);
+    types_free();
     return errors ? 1 : 0;
 }

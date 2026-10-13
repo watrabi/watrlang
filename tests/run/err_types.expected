@@ -1,0 +1,138 @@
+error[E0301]: literal `300` doesn't fit in `u8`
+ --> tests/run/err_types.watr:6:16
+  |
+6 |     u8 small = 300;
+  |                ^^^ out of range for `u8`
+  |
+  = note: `u8` holds 0 to 255
+
+error[E0310]: mismatched types: can't use `+` with `i32` and `u32`
+ --> tests/run/err_types.watr:9:17
+  |
+9 |     int mixed = a + b;
+  |                 ^^^^^
+  |                 - `i32`
+  |                     - `u32`
+  |
+  = note: watrlang never mixes signed and unsigned integers implicitly
+help: convert one side with `as`
+  |
+9 |     int mixed = a + b as i32;
+  |                     ~~~~~~~~
+
+error[E0309]: mismatched types: expected `int`, found `f64`
+  --> tests/run/err_types.watr:10:13
+   |
+10 |     int f = 1.5;
+   |     ---     ^^^ expected `int`, found `f64`
+   |     |
+   |     expected because of this type
+   |
+help: convert with `as`
+   |
+10 |     int f = 1.5 as int;
+   |             ~~~~~~~~~~
+
+error[E0309]: mismatched types: expected `bool`, found `int`
+  --> tests/run/err_types.watr:11:17
+   |
+11 |     bool flag = 5;
+   |     ----        ^ expected `bool`, found `int`
+   |     |
+   |     expected because of this type
+   |
+help: compare explicitly to get a `bool`
+   |
+11 |     bool flag = 5 != 0;
+   |                 ~~~~~~
+
+error[E0312]: an `if` condition must be a `bool`, found `i32`
+  --> tests/run/err_types.watr:12:9
+   |
+12 |     if (a) { }
+   |         ^ expected `bool`
+   |
+   = note: watrlang doesn't treat numbers or pointers as true/false
+help: compare explicitly
+   |
+12 |     if (a != 0) { }
+   |         ~~~~~~
+
+error[E0309]: mismatched types: expected `u8`, found `i32`
+  --> tests/run/err_types.watr:13:14
+   |
+ 3 | function takes_u8(u8 v): u8 { return v; }
+   |                   -- parameter `v` is declared as `u8`
+...
+13 |     takes_u8(a);
+   |              ^ expected `u8`, found `i32`
+   |
+help: convert with `as`, which wraps values that don't fit
+   |
+13 |     takes_u8(a as u8);
+   |              ~~~~~~~
+
+error[E0317]: struct `Vec2` has no field named `z`
+  --> tests/run/err_types.watr:14:29
+   |
+ 1 | struct Vec2 { f64 x; f64 y; }
+   |        ---- `Vec2` is declared here
+...
+14 |     Vec2 v = Vec2 { x: 1.0, z: 2.0 };
+   |                             ^ unknown field
+   |
+help: a field with a similar name exists
+   |
+14 |     Vec2 v = Vec2 { x: 1.0, x: 2.0 };
+   |                             ~
+
+error[E0317]: struct `Vec2` has no field named `q`
+  --> tests/run/err_types.watr:15:16
+   |
+ 1 | struct Vec2 { f64 x; f64 y; }
+   |        ---- `Vec2` is declared here
+...
+15 |     f64 w = v->q;
+   |                ^ unknown field
+   |
+help: a field with a similar name exists
+   |
+15 |     f64 w = v->x;
+   |                ~
+
+error[E0309]: mismatched types: expected `int*`, found `i32*`
+  --> tests/run/err_types.watr:16:14
+   |
+16 |     int* p = &a;
+   |     ----     ^^ expected `int*`, found `i32*`
+   |     |
+   |     expected because of this type
+
+error[E0328]: `u8` can't hold negative numbers
+  --> tests/run/err_types.watr:17:15
+   |
+17 |     u8 neg = -1;
+   |               ^ negative value for an unsigned type
+
+error[E0315]: can't dereference a value of type `i32`
+  --> tests/run/err_types.watr:18:21
+   |
+18 |     int not_a_ptr = *a;
+   |                     ^^ not a pointer
+
+error[E0311]: `!` needs a `bool`, found `i32`
+  --> tests/run/err_types.watr:19:15
+   |
+19 |     int bad = !a;
+   |               ^^ expected `bool`
+   |
+   = help: for bitwise not, use `~`
+help: to test for zero, compare explicitly
+   |
+19 |     int bad = a == 0;
+   |               ~~~~~~
+
+error: could not compile `tests/run/err_types.watr` due to 12 previous errors
+Some errors have detailed explanations: E0301, E0310, E0309, E0312, E0317, E0328, E0315, E0311.
+For more information about an error, try `watrc --explain E0301`.
+compile failed: 1

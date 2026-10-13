@@ -1,0 +1,24 @@
+function main(): int {
+    int big = 300;
+    u8 low = big as u8;                  // 44: casts wrap
+    i8 minus = 255 as i8;                // -1
+    u32 all = -1 as u32;                 // 4294967295
+    i64 back = all as i64;               // 4294967295 (zero-extended)
+    f64 f = 7.9;
+    int t = f as int;                    // 7: truncates toward zero
+    int nt = -7.9 as int;                // -7
+    f64 from_int = 3 as f64;
+    f32 narrow = 0.1 as f32;
+    f64 wide = narrow;                   // f32 -> f64 is automatic
+    u64 max = 18446744073709551615;
+    f64 maxf = max as f64;               // 1.8446744073709552e19
+    u64 mid = 10000000000000000000;
+    f64 midf = mid as f64;
+    bool yes = true;
+
+    bool ok = low == 44 && minus == -1 && all == 4294967295 && back == 4294967295
+           && t == 7 && nt == -7 && from_int == 3.0 && wide > 0.1 && wide < 0.10001
+           && maxf == 18446744073709551616.0 && midf as u64 == 10000000000000000000
+           && yes as int == 1 && (false as u8) == 0;
+    return ok as int;
+}

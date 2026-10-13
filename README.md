@@ -24,8 +24,9 @@ The full plan is in [docs/DESIGN.md](docs/DESIGN.md).
 | 2. Parser | done |
 | 3. First binary: int math, calls, return | done |
 | 4. Variables, if/while/for, parameters, globals | done |
-| 5. Type system (sized ints, bool, pointers, structs, floats) | next |
-| 6+. FFI, strings, modules, ... | planned |
+| 5. Type system: sized ints, bool, floats, pointers, structs, arrays | done |
+| 6. C interop (`extern`, libc, `alloc`) | next |
+| 7+. Strings, modules, classes, ... | planned |
 
 ## Error messages
 
@@ -74,7 +75,8 @@ holding the output, error messages and exit code.
 Two differential testers compile random code and check every result
 against a Python model of watrlang:
 
-- `tests/expr_fuzz.py`: integer expressions
+- `tests/expr_fuzz.py`: expressions over every integer type, bool, f32
+  and f64, with casts between them
 - `tests/prog_fuzz.py`: whole programs with variables, if/else, loops,
   break/continue and calls with up to 8 arguments
 

@@ -1,0 +1,21 @@
+struct Color {
+    u8 r;
+    u8 g;
+    u8 b;
+}
+
+const Color RED = Color { r: 255 };
+const u16[4] PALETTE = [0x0F00, 0x1F00, 0x2F00, 0x3F00];
+volatile u16* VGA = 0xB8000 as volatile u16*;
+f64 scale = 2.5;
+const f32 HALF = 0.5;
+const int SIZE = 4 * 1024;
+i8 neg = -128;
+bool enabled = true;
+int[3] zeros;
+
+function main(): int {
+    bool ok = RED->r == 255 && RED->g == 0 && PALETTE[2] == 0x2F00 && VGA as u64 == 753664
+           && scale * 2.0 == 5.0 && HALF == 0.5 && SIZE == 4096 && neg == -128 && enabled && zeros[2] == 0;
+    return ok as int;
+}

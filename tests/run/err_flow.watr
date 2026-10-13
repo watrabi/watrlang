@@ -1,5 +1,5 @@
 function main(): int {
     break;
-    if (1) { continue; }
+    if (true) { continue; }
     return nope + missing();
 }

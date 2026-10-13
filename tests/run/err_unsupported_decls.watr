@@ -1,6 +1,13 @@
 import "std/io";
-struct S { int x; }
-int g = 1;
-function p(int a): int { return a; }
-function u(): u8 { return 1; }
-function main(): int { return 0; }
+class Point { public int x; }
+enum Color { Red, Green }
+string name = "watr";
+
+function main(): int {
+    int* p = alloc(int, 4);
+    int[3] xs = [1, 2, 3];
+    foreach (xs as x) { }
+    defer p = null;
+    asm { "nop" }
+    return 0;
+}

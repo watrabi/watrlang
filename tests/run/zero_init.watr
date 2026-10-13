@@ -12,5 +12,5 @@ function clean(): int {
 
 function main(): int {
     dirty();
-    return clean() == 0;
+    return (clean() == 0) as int;
 }

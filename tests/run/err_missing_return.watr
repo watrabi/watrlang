@@ -5,9 +5,9 @@ function g(int x): int {
     while (x > 0) { return 1; }
 }
 function h(): int {
-    while (1) { break; }
+    while (true) { break; }
 }
 function ok(int x): int {
-    if (x) { return 1; } else { return 2; }
+    if (x > 0) { return 1; } else { return 2; }
 }
 function main(): int { return 0; }

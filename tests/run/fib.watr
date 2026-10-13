@@ -6,5 +6,5 @@ function fib(int n): int {
 }
 
 function main(): int {
-    return fib(30) == 832040;
+    return (fib(30) == 832040) as int;
 }

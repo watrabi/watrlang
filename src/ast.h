@@ -15,6 +15,8 @@
 
 typedef struct TypeExpr TypeExpr;
 typedef struct Expr Expr;
+struct Type;     /* types.h */
+struct Symbol;   /* sema.h */
 typedef struct Stmt Stmt;
 typedef struct Decl Decl;
 
@@ -94,6 +96,14 @@ struct Expr {
     ExprKind kind;
     Loc loc;
     bool parenthesized;   /* written as (expr); used to allow (a < b) == c */
+
+    /* Filled in by sema: */
+    struct Type *type;    /* the expression's type */
+    struct Symbol *sym;   /* EXPR_IDENT: the variable; EXPR_CALL: the function */
+    bool implicit;        /* EXPR_CAST inserted by sema (e.g. f32 -> f64) */
+    uint32_t field_offset;   /* EXPR_MEMBER */
+    bool via_pointer;        /* EXPR_MEMBER: obj is a pointer to the struct */
+
     union {
         uint64_t int_val;
         double float_val;
@@ -125,6 +135,7 @@ typedef struct {
     const char *name;
     Loc loc;          /* location of the name */
     Expr *init;       /* NULL if none */
+    struct Symbol *sym;   /* filled in by sema */
 } VarDecl;
 
 typedef enum { ASM_IN, ASM_OUT, ASM_INOUT } AsmDir;
@@ -178,6 +189,7 @@ typedef struct {
     TypeExpr *type;
     const char *name;
     Loc loc;
+    struct Symbol *sym;   /* filled in by sema */
 } Param;
 
 typedef struct {
@@ -203,6 +215,8 @@ struct Decl {
     bool is_export;
     bool is_extern;
     Visibility vis;        /* class members only */
+    struct Symbol *sym;    /* filled in by sema: functions and globals */
+    struct Type *type;     /* filled in by sema: structs */
     union {
         StrBuf import_path;
         struct {

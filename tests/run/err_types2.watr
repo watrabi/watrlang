@@ -1,0 +1,23 @@
+struct Node { int value; Node next; }
+struct Point { int x; }
+
+function dangling(): int* {
+    int local = 5;
+    return &local;
+}
+
+function main(): int {
+    int[3] xs = [1, 2];
+    int[4] ys;
+    ys[4] = 1;
+    const int* cp = &xs[0];
+    *cp = 5;
+    int* mutable = cp;
+    void* raw = null;
+    int r = *raw;
+    Pointt q;
+    bool b = 1.5 as bool;
+    int n = len(cp);
+    char c = 'a';
+    return 0;
+}

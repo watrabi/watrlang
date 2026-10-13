@@ -199,6 +199,44 @@ function outb(u16 port, u8 val): void {
   time; `const` globals can be used in later initializers.
 - **Return checking:** an `int` function must not be able to reach its end.
   `while (1) { ... }` with no `break` counts as never ending.
+- **Type rules (milestone 5):**
+  - `int` is `i64`, `float` is `f64`, and `usize` is `u64`; each pair is
+    interchangeable. There's no `char`; bytes are `u8`, and `'a'` is a `u8`.
+  - **Automatic conversions only when nothing can be lost:** a smaller
+    integer into a larger one that holds all its values (`u8` → `int`,
+    `i16` → `i32`, `u32` → `i64`), `f32` → `f64`, `T*` → `void*`,
+    `T*` → `const T*` / `volatile T*`, and `null` → any pointer. Everything
+    else needs `as`.
+  - **Signed and unsigned never mix implicitly.** `i32 + u32` is an error;
+    `u8 + int` is fine (the `u8` widens).
+  - **Literals adapt to their context:** `u8 x = 200;` types 200 as `u8`,
+    and `x + 1` does `u8` arithmetic. A literal that doesn't fit is an
+    error (`u8 x = 300;`).
+  - **Integer arithmetic wraps at the type's width**: `u8` 250 + 10 is 4.
+  - **`bool` is strict.** Conditions must be `bool` (`while (true)`,
+    `if (n != 0)`, `if (p != null)`), `!`/`&&`/`||` take bools, and
+    `b as int` converts to 0/1. Numbers don't convert to bool, not even
+    with `as`; compare instead.
+  - **`as` casts:** any numeric to any numeric (ints wrap, floats truncate
+    toward zero), `bool` → int, pointer ↔ pointer, and pointer ↔ 64-bit
+    int. Converting a float that's NaN or out of the target's range to an
+    integer gives an unspecified value (but never crashes).
+  - **Pointers:** `&x`, `*p`, `p[i]`, `p + n`, `p - q` (in elements),
+    `p->field` (follows the pointer), comparisons. `void*` can't be
+    dereferenced or used in arithmetic until cast.
+  - **Structs** use C layout (fields aligned, size rounded to the
+    alignment), copy by value on assignment, and can't be compared. In a
+    literal, fields that aren't listed are zero: `Color { r: 255 }`.
+  - **Fixed arrays** `T[N]` need a constant `N`, copy by value, and are
+    bounds-checked: a constant index is checked at compile time, others at
+    run time. An out-of-bounds index prints
+    `panic at file:line:col: index out of bounds` and exits with status 101.
+    Array literals must list every element.
+  - `sizeof(T)` and `len(array)` are compile-time `usize` constants.
+  - Structs and arrays can't be passed to or returned from functions by
+    value yet (it needs the full System V classification, milestone 6);
+    pass a pointer.
+  - Returning the address of a local variable is an error (E0333).
 - **Strings:** `string` is an immutable `{u8* ptr, usize len}` slice. Literals
   go in `.rodata`, so strings work even when freestanding. Only `.` and
   interpolation allocate, which means they need the runtime/GC (or a
@@ -228,9 +266,11 @@ source.watr
    ▼
    │  parser.c       recursive descent + Pratt for expressions → AST
    ▼
-   │  sema.c         name resolution, imports, type checking, layout (sizes/offsets)
+   │  sema.c         name resolution, type checking, struct layout, constant
+   │                 folding; annotates the AST with types and symbols and
+   │                 reports every "is this program valid" error
    ▼
-   │  codegen_x64.c  AST → x86-64 Intel-syntax asm (.s)
+   │  codegen_x64.c  annotated AST → x86-64 Intel-syntax asm (.s); reports nothing
    ▼
  as + ld             → ELF executable / kernel image
 ```
@@ -245,8 +285,9 @@ src/
   lexer.c/.h
   ast.h           node types (tagged unions)
   parser.c/.h
-  types.c/.h      type representation, sizes, alignment
+  types.c/.h      type representation, interning, conversion rules
   sema.c/.h       resolution + type checking
+  explain.c       long-form text for `watrc --explain CODE`
   codegen_x64.c   assembly emitter
 runtime/
   start.s         _start → main → exit syscall

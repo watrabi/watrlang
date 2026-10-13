@@ -1,0 +1,112 @@
+error[E0323]: struct `Node` contains itself
+ --> tests/run/err_types2.watr:1:26
+  |
+1 | struct Node { int value; Node next; }
+  |        ----              ^^^^ this would make `Node` infinitely large
+  |        |
+  |        `Node` is declared here
+  |
+help: use a pointer instead
+  |
+1 | struct Node { int value; Node* next; }
+  |                          ~~~~~
+
+error[E0333]: returns a pointer to local variable `local`
+ --> tests/run/err_types2.watr:6:12
+  |
+5 |     int local = 5;
+  |         ----- `local` stops existing when the function returns
+6 |     return &local;
+  |            ^^^^^^ this pointer would dangle
+  |
+  = help: return the value itself, or have the caller pass in a pointer to fill
+
+error[E0325]: expected 3 elements, found 2
+  --> tests/run/err_types2.watr:10:17
+   |
+10 |     int[3] xs = [1, 2];
+   |                 ^^^^^^ 2 elements
+   |
+   = note: the type is `int[3]`; every element must be listed
+
+error[E0320]: index 4 is out of bounds for `int[4]`
+  --> tests/run/err_types2.watr:12:8
+   |
+12 |     ys[4] = 1;
+   |     -- ^ out of bounds
+   |     |
+   |     this array has 4 elements
+   |
+   = note: valid indexes are 0 to 3
+
+error[E0327]: can't write through a `const` pointer
+  --> tests/run/err_types2.watr:14:5
+   |
+14 |     *cp = 5;
+   |     ^^^ this points to `const` data
+   |
+   = note: a `const T*` can be read through but not written through
+
+error[E0326]: mismatched types: expected `int*`, found `const int*`
+  --> tests/run/err_types2.watr:15:20
+   |
+15 |     int* mutable = cp;
+   |     ----           ^^ expected `int*`, found `const int*`
+   |     |
+   |     expected because of this type
+   |
+   = note: this would drop the `const` qualifier
+
+error[E0315]: can't dereference a value of type `void*`
+  --> tests/run/err_types2.watr:17:13
+   |
+17 |     int r = *raw;
+   |             ^^^^ `void*` doesn't say what it points to
+   |
+   = help: cast it to a typed pointer first, like `p as u8*`
+
+error[E0322]: cannot find type `Pointt`
+  --> tests/run/err_types2.watr:18:5
+   |
+18 |     Pointt q;
+   |     ^^^^^^ not a known type
+   |
+help: a type with a similar name exists
+   |
+18 |     Point q;
+   |     ~~~~~
+
+error[E0313]: can't cast `f64` to `bool`
+  --> tests/run/err_types2.watr:19:14
+   |
+19 |     bool b = 1.5 as bool;
+   |              ^^^^^^^^^^^ invalid cast
+   |
+help: to get a `bool`, compare instead
+   |
+19 |     bool b = 1.5 != 0 as bool;
+   |              ~~~~~~~~
+
+error[E0332]: `len` needs an array, found `const int*`
+  --> tests/run/err_types2.watr:20:17
+   |
+20 |     int n = len(cp);
+   |                 ^^ not an array
+   |
+   = note: a pointer doesn't know how many elements it points to
+
+error[E0322]: cannot find type `char`
+  --> tests/run/err_types2.watr:21:5
+   |
+21 |     char c = 'a';
+   |     ^^^^ not a known type
+   |
+help: watrlang's byte type is `u8`
+   |
+21 |     u8 c = 'a';
+   |     ~~
+
+error: could not compile `tests/run/err_types2.watr` due to 11 previous errors
+Some errors have detailed explanations: E0323, E0333, E0325, E0320, E0327, E0326, E0315, E0322, E0313, E0332.
+For more information about an error, try `watrc --explain E0323`.
+compile failed: 1

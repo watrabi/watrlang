@@ -3,79 +3,67 @@
 #include <stdarg.h>
 #include <string.h>
 
+#include "sema.h"
 #include "vec.h"
 
 /*
- * x86-64 code generator, stack-machine style: every expression leaves its
- * value in rax, and binary operators park the left operand on the stack
- * while the right one is computed. The output is slow but simple to get
- * right; a register allocator comes later (milestone 15).
+ * x86-64 code generator, stack-machine style. It works from the tree that
+ * sema checked and annotated, so it reports no errors of its own.
  *
- * Until the type checker exists (milestone 5) this file also does the
- * checking for the subset it supports: int variables, expressions,
- * control flow and functions. Everything else is reported as "not
- * supported yet" with the milestone that adds it.
+ * Where values live while an expression is computed:
+ *   ints, bools, pointers   rax, always sign/zero-extended to 64 bits for
+ *                           their type, so widening an int costs nothing
+ *   f32, f64                xmm0 (f32 stays single precision)
+ *   structs, arrays         rax holds their address
+ * Binary operators park the left operand on the stack while the right one
+ * is computed.
  *
  * Frame layout (System V ABI):
- *   [rbp + 16 + 8*k]  stack argument k (the 7th parameter and later)
+ *   [rbp + 16 + 8*k]  stack argument k (parameters that didn't fit in registers)
  *   [rbp + 8]         return address
  *   [rbp]             caller's rbp
- *   [rbp - 8*(i+1)]   local slot i (register parameters are spilled here first)
- * The frame size is rounded to 16 so rsp stays aligned for calls.
+ *   [rbp - n]         locals, spilled register parameters, temporaries
+ * The frame is a multiple of 16 bytes, so rsp is aligned at calls.
  *
- * Symbols: functions and globals are emitted as `w.<name>`. That keeps
- * them from clashing with register names (a function called `rax` would
- * otherwise assemble as `call rax`) and with C symbols once we link
- * against libc.
+ * Symbols: functions and globals are emitted as `w.<name>`, so a function
+ * called `rax` can't assemble as `call rax`, and names stay apart from C's.
  */
 
-typedef enum {
-    VT_ERROR,   /* already reported */
-    VT_VOID,
-    VT_INT,
-} ValType;
-
 typedef struct {
-    const char *name;
-    Loc loc;
-    const TypeExpr *type;  /* as written, for pointing at `const` in errors */
-    bool is_global;
-    bool is_param;
-    bool is_const;
-    int offset;          /* locals and params: rbp-relative */
-    bool has_value;      /* const globals: value known at compile time */
-    int64_t value;
-    int reads;           /* for the unused-variable warning */
-    int writes;          /* assignments after the declaration */
-} Var;
+    const char *q, *d, *w, *b;  /* 64/32/16/8-bit names */
+} Reg;
+
+static const Reg R_RAX = {"rax", "eax", "ax", "al"};
+static const Reg R_RDI = {"rdi", "edi", "di", "dil"};
+static const Reg R_RSI = {"rsi", "esi", "si", "sil"};
+static const Reg R_RDX = {"rdx", "edx", "dx", "dl"};
+static const Reg R_RCX = {"rcx", "ecx", "cx", "cl"};
+static const Reg R_R8 = {"r8", "r8d", "r8w", "r8b"};
+static const Reg R_R9 = {"r9", "r9d", "r9w", "r9b"};
+static const Reg *const arg_regs[6] = {&R_RDI, &R_RSI, &R_RDX, &R_RCX, &R_R8, &R_R9};
 
 typedef struct {
     int break_label;
     int continue_label;
 } Loop;
 
-static const char *const arg_regs[6] = {"rdi", "rsi", "rdx", "rcx", "r8", "r9"};
+typedef struct {
+    int label;
+    char *msg;
+} PanicSite;
 
 typedef struct {
-    FILE *out;              /* where emit() writes; a buffer while a function body is generated */
-    const Module *mod;
-    Arena arena;            /* Vars */
+    FILE *out;
     int labels;
 
-    PtrVec globals;         /* Var* */
-
     /* per function */
-    const Decl *fn;
-    ValType fn_ret;
     int ret_label;
     int depth;              /* 8-byte pushes since the frame was set up */
-    int slots;              /* local slots used so far */
-    int fn_errors_before;   /* error count when this function started */
-    PtrVec locals;          /* Var*, innermost last */
-    size_t *scope_marks;    /* locals.len at each open scope */
-    size_t nscopes, scopes_cap;
+    int frame;              /* bytes of locals/temporaries */
     Loop *loops;
     size_t nloops, loops_cap;
+
+    PtrVec panics;          /* PanicSite*: bounds-check failure messages */
 } Gen;
 
 static void emit(Gen *g, const char *fmt, ...) WATR_PRINTF(2, 3);
@@ -96,728 +84,656 @@ static void emit_label(Gen *g, int label) {
     fprintf(g->out, ".L%d:\n", label);
 }
 
-static void push_rax(Gen *g) {
-    emit(g, "push rax");
+/* ---- value classes ----------------------------------------------------------- */
+
+typedef enum { CLS_GPR, CLS_SSE, CLS_MEM, CLS_NONE } ValClass;
+
+static ValClass cls(const Type *t) {
+    switch (t->kind) {
+    case TY_FLOAT: return CLS_SSE;
+    case TY_ARRAY:
+    case TY_STRUCT: return CLS_MEM;
+    case TY_VOID: return CLS_NONE;
+    default: return CLS_GPR;
+    }
+}
+
+static const char *size_ptr(uint32_t size) {
+    switch (size) {
+    case 1: return "byte";
+    case 2: return "word";
+    case 4: return "dword";
+    default: return "qword";
+    }
+}
+
+static const char *reg_of_size(const Reg *r, uint32_t size) {
+    switch (size) {
+    case 1: return r->b;
+    case 2: return r->w;
+    case 4: return r->d;
+    default: return r->q;
+    }
+}
+
+static void push_value(Gen *g, const Type *t) {
+    if (cls(t) == CLS_SSE) {
+        emit(g, "sub rsp, 8");
+        emit(g, "movsd qword ptr [rsp], xmm0");
+    } else {
+        emit(g, "push rax");
+    }
     g->depth++;
 }
 
-static void pop_reg(Gen *g, const char *reg) {
-    emit(g, "pop %s", reg);
+/* Pops into xmm<n> for floats, or the named register otherwise. */
+static void pop_value(Gen *g, const Type *t, const char *reg, int xmm) {
+    if (cls(t) == CLS_SSE) {
+        emit(g, "movsd xmm%d, qword ptr [rsp]", xmm);
+        emit(g, "add rsp, 8");
+    } else {
+        emit(g, "pop %s", reg);
+    }
     g->depth--;
 }
 
-static void not_yet(Loc loc, const char *what, int milestone) {
-    Diag *d = diag_start(DIAG_ERROR, "E0900", loc, "not supported yet: %s", what);
-    diag_label(d, "planned for milestone %d", milestone);
-    diag_note(d, "watrlang is still being built; docs/DESIGN.md has the roadmap");
-    diag_end(d);
-}
-
-/* Where a function's return type is written, or its name if there's none. */
-static Loc ret_type_loc(const Decl *fn) {
-    return fn->u.func.ret ? fn->u.func.ret->loc : fn->name_loc;
-}
-
-/* The `const ` at the start of a type, for "remove `const`" fixes. */
-static bool const_keyword_loc(const TypeExpr *t, Loc *out) {
-    if (!t || !t->is_const || !t->loc.file) return false;
-    const char *src = t->loc.file->text + t->loc.offset;
-    if (strncmp(src, "const", 5) != 0) return false;
-    uint32_t len = 5;
-    while (src[len] == ' ') len++;
-    *out = t->loc;
-    out->len = len;
-    return true;
-}
-
-/* ---- types (int and void only, until milestone 5) ------------------------- */
-
-static bool is_int_type(const TypeExpr *t) {
-    return t && t->kind == TYPEX_BUILTIN && t->u.builtin == TOK_KW_INT_T && !t->is_volatile;
-}
-
-static bool is_void_type(const TypeExpr *t) {
-    return t && t->kind == TYPEX_BUILTIN && t->u.builtin == TOK_KW_VOID && !t->is_const && !t->is_volatile;
-}
-
-/* Checks a variable/parameter type is (const) int. */
-static bool check_var_type(const TypeExpr *t) {
-    if (is_int_type(t)) return true;
-    not_yet(t->loc, "types other than int", 5);
-    return false;
-}
-
-static ValType ret_type_of(const Decl *fn) {
-    const TypeExpr *t = fn->u.func.ret;
-    if (!t || is_void_type(t)) return VT_VOID;
-    if (is_int_type(t) && !t->is_const) return VT_INT;
-    return VT_ERROR;  /* reported once, at the definition */
-}
-
-static const Decl *find_function(const Module *m, const char *name) {
-    for (size_t i = 0; i < m->n; i++) {
-        const Decl *d = m->decls[i];
-        if (d->kind == DECL_FUNC && strcmp(d->name, name) == 0) return d;
+/* Re-establishes the invariant that rax holds `t` sign/zero-extended. */
+static void normalize(Gen *g, const Type *t) {
+    if (t->kind != TY_INT) return;
+    switch (t->size) {
+    case 1: emit(g, t->is_signed ? "movsx rax, al" : "movzx eax, al"); break;
+    case 2: emit(g, t->is_signed ? "movsx rax, ax" : "movzx eax, ax"); break;
+    case 4: emit(g, t->is_signed ? "movsxd rax, eax" : "mov eax, eax"); break;
+    default: break;
     }
-    return NULL;
 }
 
-/* ---- scopes ---------------------------------------------------------------- */
-
-static void push_scope(Gen *g) {
-    if (g->nscopes == g->scopes_cap) {
-        g->scopes_cap = g->scopes_cap ? g->scopes_cap * 2 : 16;
-        size_t *grown = realloc(g->scope_marks, g->scopes_cap * sizeof *grown);
-        if (!grown) fatal("out of memory");
-        g->scope_marks = grown;
+/* Loads a value of type `t` from [addr] into rax/xmm0 (for aggregates:
+ * puts the address in rax). */
+static void emit_load(Gen *g, const Type *t, const char *addr) {
+    switch (cls(t)) {
+    case CLS_SSE:
+        emit(g, "%s xmm0, %s ptr [%s]", t->size == 4 ? "movss" : "movsd", size_ptr(t->size), addr);
+        return;
+    case CLS_MEM:
+        emit(g, "lea rax, [%s]", addr);
+        return;
+    case CLS_NONE:
+        return;
+    case CLS_GPR:
+        break;
     }
-    g->scope_marks[g->nscopes++] = g->locals.len;
-}
-
-static void warn_if_unused(const Var *v);
-
-static void pop_scope(Gen *g) {
-    size_t mark = g->scope_marks[--g->nscopes];
-    /* After an error, "unused" is often wrong: the broken code may be
-     * the use. Stay quiet until the function compiles. */
-    if (diag_error_count() == g->fn_errors_before)
-        for (size_t i = mark; i < g->locals.len; i++) warn_if_unused(g->locals.items[i]);
-    g->locals.len = mark;
-}
-
-static Var *find_local(Gen *g, const char *name) {
-    for (size_t i = g->locals.len; i-- > 0;) {
-        Var *v = g->locals.items[i];
-        if (strcmp(v->name, name) == 0) return v;
+    bool sgn = t->kind == TY_INT && t->is_signed;
+    switch (t->size) {
+    case 1: emit(g, "%s %s, byte ptr [%s]", sgn ? "movsx" : "movzx", sgn ? "rax" : "eax", addr); break;
+    case 2: emit(g, "%s %s, word ptr [%s]", sgn ? "movsx" : "movzx", sgn ? "rax" : "eax", addr); break;
+    case 4:
+        if (sgn) emit(g, "movsxd rax, dword ptr [%s]", addr);
+        else emit(g, "mov eax, dword ptr [%s]", addr);
+        break;
+    default: emit(g, "mov rax, qword ptr [%s]", addr); break;
     }
-    return NULL;
 }
 
-static Var *find_global(Gen *g, const char *name) {
-    for (size_t i = 0; i < g->globals.len; i++) {
-        Var *v = g->globals.items[i];
-        if (strcmp(v->name, name) == 0) return v;
+/* Stores rax/xmm0 to [addr]; for aggregates, copies from the address in
+ * rax. `addr` must not be based on rsi or rdi. */
+static void emit_store(Gen *g, const Type *t, const char *addr) {
+    switch (cls(t)) {
+    case CLS_SSE:
+        emit(g, "%s %s ptr [%s], xmm0", t->size == 4 ? "movss" : "movsd", size_ptr(t->size), addr);
+        return;
+    case CLS_MEM:
+        emit(g, "lea rdi, [%s]", addr);
+        emit(g, "mov rsi, rax");
+        emit(g, "mov ecx, %u", t->size);
+        emit(g, "rep movsb");
+        return;
+    case CLS_NONE:
+        return;
+    case CLS_GPR:
+        emit(g, "mov %s ptr [%s], %s", size_ptr(t->size), addr, reg_of_size(&R_RAX, t->size));
+        return;
     }
-    return NULL;
 }
 
-static Var *find_var(Gen *g, const char *name) {
-    Var *v = find_local(g, name);
-    return v ? v : find_global(g, name);
+/* Where a variable lives, as an addressing expression. */
+static const char *var_addr(char *buf, size_t cap, const Symbol *s) {
+    if (s->kind == SYM_GLOBAL) snprintf(buf, cap, "rip + w.%s", s->name);
+    else snprintf(buf, cap, "rbp %c %d", s->offset < 0 ? '-' : '+', s->offset < 0 ? -s->offset : s->offset);
+    return buf;
 }
 
-/* Declares a local in the current scope. Locals can't shadow other locals
- * or parameters of the same function (a classic source of bugs); they may
- * shadow globals. */
-static Var *declare_local_at(Gen *g, const char *name, Loc loc, const TypeExpr *type, bool is_param, int offset) {
-    Var *prev = find_local(g, name);
-    if (prev) {
-        Diag *d = diag_start(DIAG_ERROR, "E0203", loc, "`%s` is already declared in this function", name);
-        diag_label(d, "declared again here");
-        diag_span(d, prev->loc, "first declared here%s", prev->is_param ? ", as a parameter" : "");
-        diag_help(d, "give it a different name; watrlang doesn't allow shadowing inside a function");
-        diag_end(d);
-        prev->reads++;  /* don't also warn that the first one is unused */
+static int alloc_slot(Gen *g, uint32_t size, uint32_t align) {
+    if (size < 8) size = 8;
+    if (align < 8) align = 8;
+    g->frame = (int)(((uint32_t)g->frame + size + align - 1) & ~(align - 1));
+    return -g->frame;
+}
+
+static void zero_memory(Gen *g, int offset, uint32_t size) {
+    if (size <= 8) {
+        emit(g, "mov qword ptr [rbp - %d], 0", -offset);
+        return;
     }
-    Var *v = ARENA_NEW(&g->arena, Var);
-    v->name = name;
-    v->loc = loc;
-    v->type = type;
-    v->is_param = is_param;
-    v->is_const = type->is_const;
-    v->offset = offset;
-    ptrvec_push(&g->locals, v);
-    return v;
+    emit(g, "lea rdi, [rbp - %d]", -offset);
+    emit(g, "xor eax, eax");
+    emit(g, "mov ecx, %u", size);
+    emit(g, "rep stosb");
 }
 
-static Var *declare_local(Gen *g, const char *name, Loc loc, const TypeExpr *type, bool is_param) {
-    return declare_local_at(g, name, loc, type, is_param, -8 * (++g->slots));
-}
-
-/* W0001: called for each local as its scope closes. */
-static void warn_if_unused(const Var *v) {
-    if (v->reads > 0 || v->name[0] == '_') return;
-    Diag *d;
-    if (v->writes > 0) {
-        d = diag_start(DIAG_WARNING, "W0001", v->loc, "variable `%s` is assigned to, but never read", v->name);
-        diag_label(d, "its value is never used");
+static void emit_float_const(Gen *g, const Type *t, double v) {
+    if (t->size == 4) {
+        float f = (float)v;
+        uint32_t bits;
+        memcpy(&bits, &f, 4);
+        emit(g, "mov eax, %u", bits);
+        emit(g, "movd xmm0, eax");
     } else {
-        d = diag_start(DIAG_WARNING, "W0001", v->loc, "unused %s `%s`", v->is_param ? "parameter" : "variable",
-                       v->name);
-        diag_label(d, "never used");
+        uint64_t bits;
+        memcpy(&bits, &v, 8);
+        emit(g, "movabs rax, %llu", (unsigned long long)bits);
+        emit(g, "movq xmm0, rax");
     }
-    char renamed[128];
-    snprintf(renamed, sizeof renamed, "_%s", v->name);
-    diag_fix(d, v->loc, renamed, "if this is intentional, prefix it with an underscore");
-    diag_end(d);
 }
 
-/* Best "did you mean" candidate among visible variables, or NULL. */
-static const char *similar_var(Gen *g, const char *name) {
-    const char *best = NULL;
-    size_t best_dist = (size_t)-1;
-    for (size_t pass = 0; pass < 2; pass++) {
-        PtrVec *vars = pass == 0 ? &g->locals : &g->globals;
-        for (size_t i = 0; i < vars->len; i++) {
-            const Var *v = vars->items[i];
-            if (!diag_similar(name, v->name)) continue;
-            size_t dist = diag_edit_distance(name, v->name);
-            if (dist < best_dist) {
-                best = v->name;
-                best_dist = dist;
-            }
-        }
-    }
-    return best;
-}
-
-static const char *similar_function(Gen *g, const char *name) {
-    const char *best = NULL;
-    size_t best_dist = (size_t)-1;
-    for (size_t i = 0; i < g->mod->n; i++) {
-        const Decl *d = g->mod->decls[i];
-        if (d->kind != DECL_FUNC || !diag_similar(name, d->name)) continue;
-        size_t dist = diag_edit_distance(name, d->name);
-        if (dist < best_dist) {
-            best = d->name;
-            best_dist = dist;
-        }
-    }
-    return best;
-}
-
-/* E0200 */
-static void report_unknown_var(Gen *g, const Expr *e) {
-    Diag *d = diag_start(DIAG_ERROR, "E0200", e->loc, "cannot find variable `%s` in this scope", e->u.name);
-    diag_label(d, "not found in this scope");
-    const char *guess = similar_var(g, e->u.name);
-    if (guess) {
-        Var *v = find_var(g, guess);
-        diag_span(d, v->loc, "a %s with a similar name is declared here",
-                  v->is_global ? "global" : v->is_param ? "parameter" : "variable");
-        diag_fix(d, e->loc, guess, "a %s with a similar name exists", v->is_global ? "global" : "variable");
-    }
-    diag_end(d);
-}
-
-static void load_var(Gen *g, const Var *v) {
-    if (v->is_global) emit(g, "mov rax, qword ptr [rip + w.%s]", v->name);
-    else emit(g, "mov rax, qword ptr [rbp %+d]", v->offset);
-}
-
-static void store_var(Gen *g, const Var *v, const char *reg) {
-    if (v->is_global) emit(g, "mov qword ptr [rip + w.%s], %s", v->name, reg);
-    else emit(g, "mov qword ptr [rbp %+d], %s", v->offset, reg);
-}
-
-/* ---- constant evaluation --------------------------------------------------- */
-
-/* Evaluates an int expression at compile time (global initializers, and
- * spotting `while (1)` for return analysis). With report=false it fails
- * silently. Arithmetic wraps exactly like the generated code. */
-static bool const_eval(Gen *g, const Expr *e, int64_t *out, bool report) {
-    switch (e->kind) {
-    case EXPR_INT:
-        if (e->u.int_val > (uint64_t)INT64_MAX) {
-            if (report) {
-                Diag *d = diag_start(DIAG_ERROR, "E0301", e->loc, "integer literal is too large for `int`");
-                diag_label(d, "doesn't fit in `int`");
-                diag_note(d, "`int` is 64-bit signed; the largest value is 9223372036854775807");
-                diag_end(d);
-            }
-            return false;
-        }
-        *out = (int64_t)e->u.int_val;
-        return true;
-    case EXPR_CHAR:
-        *out = (int64_t)e->u.int_val;
-        return true;
-    case EXPR_IDENT: {
-        /* Constant globals fold only at the top level. Inside a function a
-         * local could shadow the name, so `while (FLAG)` isn't treated as
-         * a constant there. */
-        Var *v = g->fn ? NULL : find_global(g, e->u.name);
-        if (v && v->has_value) {
-            *out = v->value;
-            return true;
-        }
-        if (report) {
-            Diag *d = diag_start(DIAG_ERROR, "E0307", e->loc, "`%s` isn't a constant", e->u.name);
-            diag_label(d, "not a compile-time constant");
-            Var *gv = find_global(g, e->u.name);
-            if (gv && !gv->is_const) {
-                diag_span(d, gv->loc, "`%s` is declared without `const`, so it can change", gv->name);
-                diag_help(d, "make `%s` const, or set this global at the start of `main` instead", gv->name);
-            } else if (!gv) {
-                diag_note(d, "global initializers can only use literals, operators and earlier `const` globals");
-            }
-            diag_end(d);
-        }
-        return false;
-    }
-    case EXPR_UNARY: {
-        const Expr *operand = e->u.unary.operand;
-        TokenKind op = e->u.unary.op;
-        if (op == TOK_MINUS && operand->kind == EXPR_INT && operand->u.int_val == (uint64_t)INT64_MAX + 1) {
-            *out = INT64_MIN;
-            return true;
-        }
-        int64_t v;
-        if (op != TOK_MINUS && op != TOK_TILDE && op != TOK_BANG) break;
-        if (!const_eval(g, operand, &v, report)) return false;
-        if (op == TOK_MINUS) *out = (int64_t)(0 - (uint64_t)v);
-        else if (op == TOK_TILDE) *out = ~v;
-        else *out = v == 0;
-        return true;
-    }
-    case EXPR_BINARY: {
-        TokenKind op = e->u.binary.op;
-        int64_t a, b;
-        if (!const_eval(g, e->u.binary.lhs, &a, report)) return false;
-        if (op == TOK_ANDAND || op == TOK_OROR) {
-            if ((op == TOK_ANDAND) == (a == 0)) {
-                *out = op == TOK_OROR;
-                return true;
-            }
-            if (!const_eval(g, e->u.binary.rhs, &b, report)) return false;
-            *out = b != 0;
-            return true;
-        }
-        if (!const_eval(g, e->u.binary.rhs, &b, report)) return false;
-        uint64_t ua = (uint64_t)a, ub = (uint64_t)b;
-        switch (op) {
-        case TOK_PLUS:  *out = (int64_t)(ua + ub); return true;
-        case TOK_MINUS: *out = (int64_t)(ua - ub); return true;
-        case TOK_STAR:  *out = (int64_t)(ua * ub); return true;
-        case TOK_SLASH:
-        case TOK_PERCENT:
-            if (b == 0 || (a == INT64_MIN && b == -1)) {
-                if (report) {
-                    Diag *d = diag_start(DIAG_ERROR, "E0308", e->loc, b == 0 ? "division by zero in a constant expression"
-                                                                       : "constant division overflows `int`");
-                    diag_label(d, b == 0 ? "dividing by zero" : "-9223372036854775808 / -1 doesn't fit in `int`");
-                    diag_span(d, e->u.binary.rhs->loc, "this is %lld", (long long)b);
-                    diag_end(d);
-                }
-                return false;
-            }
-            *out = op == TOK_SLASH ? a / b : a % b;
-            return true;
-        case TOK_AMP:   *out = a & b; return true;
-        case TOK_PIPE:  *out = a | b; return true;
-        case TOK_CARET: *out = a ^ b; return true;
-        case TOK_SHL:   *out = (int64_t)(ua << (ub & 63)); return true;
-        case TOK_SHR:   /* arithmetic shift without relying on implementation-defined >> */
-            *out = a < 0 ? (int64_t)~(~ua >> (ub & 63)) : (int64_t)(ua >> (ub & 63));
-            return true;
-        case TOK_EQ: *out = a == b; return true;
-        case TOK_NE: *out = a != b; return true;
-        case TOK_LT: *out = a < b; return true;
-        case TOK_GT: *out = a > b; return true;
-        case TOK_LE: *out = a <= b; return true;
-        case TOK_GE: *out = a >= b; return true;
-        default: break;
-        }
-        break;
-    }
-    case EXPR_TERNARY: {
-        int64_t c;
-        if (!const_eval(g, e->u.ternary.cond, &c, report)) return false;
-        return const_eval(g, c ? e->u.ternary.then_expr : e->u.ternary.else_expr, out, report);
-    }
-    default:
-        break;
-    }
-    if (report) {
-        Diag *d = diag_start(DIAG_ERROR, "E0307", e->loc, "global initializers must be constant expressions");
-        diag_label(d, "not a compile-time constant");
-        if (e->kind == EXPR_CALL) diag_note(d, "function calls aren't evaluated at compile time");
-        diag_help(d, "set this global at the start of `main` instead");
-        diag_end(d);
-    }
-    return false;
-}
-
-/* ---- expressions --------------------------------------------------------- */
-
-static ValType gen_expr(Gen *g, const Expr *e);
-static void gen_effect(Gen *g, const Expr *e);
-static void report_assign_as_value(const Expr *e);
-
-/* Generates `e` and requires it to produce an int. */
-static bool gen_int(Gen *g, const Expr *e) {
-    ValType t = gen_expr(g, e);
-    if (t == VT_VOID) {
-        Diag *d = diag_start(DIAG_ERROR, "E0300", e->loc, "expected a value, but this call returns nothing");
-        diag_label(d, "has no value");
-        if (e->kind == EXPR_CALL && e->u.call.callee->kind == EXPR_IDENT) {
-            const Decl *fn = find_function(g->mod, e->u.call.callee->u.name);
-            if (fn) diag_span(d, ret_type_loc(fn), fn->u.func.ret ? "`%s` is declared to return `void`"
-                                                                  : "`%s` has no return type, so it returns nothing",
-                              fn->name);
-        }
-        diag_end(d);
-        return false;
-    }
-    return t == VT_INT;
-}
-
-static void emit_mov_imm(Gen *g, int64_t v) {
+static void emit_int_const(Gen *g, uint64_t bits) {
+    int64_t v = (int64_t)bits;
     if (v == 0) emit(g, "xor eax, eax");
     else if (v >= INT32_MIN && v <= INT32_MAX) emit(g, "mov rax, %lld", (long long)v);
     else emit(g, "movabs rax, %lld", (long long)v);
 }
 
-/* rax = rax <op> rcx for every non-short-circuit binary operator. */
-static bool emit_arith(Gen *g, TokenKind op) {
-    switch (op) {
-    case TOK_PLUS:    emit(g, "add rax, rcx"); return true;
-    case TOK_MINUS:   emit(g, "sub rax, rcx"); return true;
-    case TOK_STAR:    emit(g, "imul rax, rcx"); return true;
-    case TOK_SLASH:   emit(g, "cqo"); emit(g, "idiv rcx"); return true;
-    case TOK_PERCENT: emit(g, "cqo"); emit(g, "idiv rcx"); emit(g, "mov rax, rdx"); return true;
-    case TOK_AMP:     emit(g, "and rax, rcx"); return true;
-    case TOK_PIPE:    emit(g, "or rax, rcx"); return true;
-    case TOK_CARET:   emit(g, "xor rax, rcx"); return true;
-    case TOK_SHL:     emit(g, "shl rax, cl"); return true;
-    case TOK_SHR:     emit(g, "sar rax, cl"); return true;  /* int is signed: arithmetic shift */
-    default: break;
+/* ---- expressions --------------------------------------------------------- */
+
+static void gen_value(Gen *g, const Expr *e);
+
+/* rcx = rcx * n, for pointer arithmetic and indexing. */
+static void emit_scale(Gen *g, const char *reg, uint32_t n) {
+    if (n == 1) return;
+    if ((n & (n - 1)) == 0) {
+        int shift = 0;
+        while ((1u << shift) < n) shift++;
+        emit(g, "shl %s, %d", reg, shift);
+    } else {
+        emit(g, "imul %s, %s, %u", reg, reg, n);
     }
-    const char *setcc = NULL;
-    switch (op) {
-    case TOK_EQ: setcc = "sete"; break;
-    case TOK_NE: setcc = "setne"; break;
-    case TOK_LT: setcc = "setl"; break;
-    case TOK_GT: setcc = "setg"; break;
-    case TOK_LE: setcc = "setle"; break;
-    case TOK_GE: setcc = "setge"; break;
-    default: return false;
-    }
-    emit(g, "cmp rax, rcx");
-    emit(g, "%s al", setcc);
-    emit(g, "movzx eax, al");
-    return true;
 }
 
-/* a && b, a || b: short-circuit, result is 0 or 1. */
-static ValType gen_logical(Gen *g, const Expr *e) {
+/* Index in rax: continue if it's below `len`, otherwise report where and
+ * exit with status 101. Negative indexes are huge when compared unsigned. */
+static void emit_bounds_check(Gen *g, const Expr *index, uint64_t len) {
+    PanicSite *site = xmalloc(sizeof *site);
+    site->label = new_label(g);
+    char msg[512];
+    snprintf(msg, sizeof msg, "panic at %s:%u:%u: index out of bounds (array length %llu)\n", index->loc.file->path,
+             index->loc.line, index->loc.col, (unsigned long long)len);
+    site->msg = xmalloc(strlen(msg) + 1);
+    strcpy(site->msg, msg);
+    ptrvec_push(&g->panics, site);
+
+    int ok = new_label(g);
+    emit(g, "cmp rax, %llu", (unsigned long long)len);
+    emit(g, "jb .L%d", ok);
+    emit(g, "lea rdi, [rip + .Lpanic%d]", site->label);
+    emit(g, "mov esi, %zu", strlen(msg));
+    emit(g, "call w.panic");
+    emit_label(g, ok);
+}
+
+/* Puts the address of an lvalue (or of an aggregate rvalue) in rax. */
+static void gen_addr(Gen *g, const Expr *e) {
+    char buf[96];
+    switch (e->kind) {
+    case EXPR_IDENT:
+        emit(g, "lea rax, [%s]", var_addr(buf, sizeof buf, e->sym));
+        return;
+    case EXPR_UNARY:  /* *p */
+        gen_value(g, e->u.unary.operand);
+        return;
+    case EXPR_MEMBER:
+        /* The pointer's value, or the struct's address: either way, rax. */
+        gen_value(g, e->u.member.object);
+        if (e->field_offset) emit(g, "add rax, %u", e->field_offset);
+        return;
+    case EXPR_INDEX: {
+        const Expr *base = e->u.index.base;
+        gen_value(g, base);   /* array address or pointer value */
+        emit(g, "push rax");
+        g->depth++;
+        gen_value(g, e->u.index.index);
+        if (base->type->kind == TY_ARRAY) emit_bounds_check(g, e->u.index.index, base->type->len);
+        emit(g, "mov rcx, rax");
+        emit(g, "pop rax");
+        g->depth--;
+        emit_scale(g, "rcx", e->type->size);
+        emit(g, "add rax, rcx");
+        return;
+    }
+    default:
+        gen_value(g, e);   /* struct/array literals: the value is an address */
+        return;
+    }
+}
+
+static void gen_logical(Gen *g, const Expr *e) {
     bool is_and = e->u.binary.op == TOK_ANDAND;
     int short_label = new_label(g), end_label = new_label(g);
-
-    bool ok = gen_int(g, e->u.binary.lhs);
+    gen_value(g, e->u.binary.lhs);
     emit(g, "test rax, rax");
     emit(g, "%s .L%d", is_and ? "je" : "jne", short_label);
-    ok = gen_int(g, e->u.binary.rhs) && ok;
-    emit(g, "test rax, rax");
-    emit(g, "setne al");
-    emit(g, "movzx eax, al");
+    gen_value(g, e->u.binary.rhs);
     emit(g, "jmp .L%d", end_label);
     emit_label(g, short_label);
     emit(g, "mov eax, %d", is_and ? 0 : 1);
     emit_label(g, end_label);
-    return ok ? VT_INT : VT_ERROR;
 }
 
-static ValType gen_binary(Gen *g, const Expr *e) {
-    TokenKind op = e->u.binary.op;
-    if (op == TOK_DOT) {
-        not_yet(e->loc, "string concatenation with `.`", 7);
-        return VT_ERROR;
-    }
-    if (op == TOK_ANDAND || op == TOK_OROR) return gen_logical(g, e);
-
-    bool ok = gen_int(g, e->u.binary.lhs);
-    push_rax(g);
-    ok = gen_int(g, e->u.binary.rhs) && ok;
-    emit(g, "mov rcx, rax");
-    pop_reg(g, "rax");
-    if (!emit_arith(g, op)) {
-        diag_error(e->loc, "internal error: unexpected binary operator '%s'", token_kind_spelling(op));
-        return VT_ERROR;
-    }
-    return ok ? VT_INT : VT_ERROR;
-}
-
-/* The variable an assignment or ++/-- writes to, or NULL after an error. */
-static Var *assign_target(Gen *g, const Expr *target, const char *action) {
-    if (target->kind != EXPR_IDENT) {
-        if (target->kind == EXPR_INDEX || target->kind == EXPR_MEMBER ||
-            (target->kind == EXPR_UNARY && target->u.unary.op == TOK_STAR)) {
-            not_yet(target->loc, "assigning through pointers, fields or indexes", 5);
-        } else {
-            Diag *d = diag_start(DIAG_ERROR, "E0209", target->loc, "invalid left-hand side: can't %s this", action);
-            diag_label(d, "not a variable");
-            diag_note(d, "only variables can be assigned to");
-            diag_end(d);
-        }
-        return NULL;
-    }
-    Var *v = find_var(g, target->u.name);
-    if (!v) {
-        const Decl *fn = find_function(g->mod, target->u.name);
-        if (fn) {
-            Diag *d = diag_start(DIAG_ERROR, "E0209", target->loc, "can't %s `%s` because it's a function", action,
-                                 target->u.name);
-            diag_label(d, "not a variable");
-            diag_span(d, fn->name_loc, "`%s` is defined here", fn->name);
-            diag_end(d);
-        } else {
-            report_unknown_var(g, target);
-        }
-        return NULL;
-    }
-    if (v->is_const) {
-        Diag *d = diag_start(DIAG_ERROR, "E0207", target->loc, "cannot %s `%s`, because it's a constant", action, v->name);
-        diag_label(d, "can't %s a constant", action);
-        diag_span(d, v->loc, "`%s` is declared `const` here", v->name);
-        Loc kw;
-        if (const_keyword_loc(v->type, &kw)) diag_fix(d, kw, "", "if `%s` needs to change, remove `const`", v->name);
-        diag_end(d);
-        return NULL;
-    }
-    v->writes++;
-    return v;
-}
-
-/* ++x --x x++ x-- */
-static ValType gen_incdec(Gen *g, const Expr *e, bool prefix) {
-    bool inc = e->u.unary.op == TOK_PLUSPLUS;
-    Var *v = assign_target(g, e->u.unary.operand, inc ? "increment" : "decrement");
-    if (!v) return VT_ERROR;
-    load_var(g, v);
-    if (prefix) {
-        emit(g, "%s rax, 1", inc ? "add" : "sub");
-        store_var(g, v, "rax");
-    } else {
-        emit(g, "lea rcx, [rax %s 1]", inc ? "+" : "-");
-        store_var(g, v, "rcx");
-    }
-    return VT_INT;
-}
-
-static ValType gen_unary(Gen *g, const Expr *e) {
-    TokenKind op = e->u.unary.op;
-    const Expr *operand = e->u.unary.operand;
-
-    /* -9223372036854775808: the literal alone doesn't fit in int, the negation does. */
-    if (op == TOK_MINUS && operand->kind == EXPR_INT && operand->u.int_val == (uint64_t)INT64_MAX + 1) {
-        emit(g, "movabs rax, %lld", (long long)INT64_MIN);
-        return VT_INT;
-    }
-
+/* rax = rax <op> rcx for integers (and bools) of type t, normalized. */
+static void emit_int_op(Gen *g, TokenKind op, const Type *t) {
+    bool sgn = t->kind == TY_INT && t->is_signed;
     switch (op) {
-    case TOK_MINUS: case TOK_TILDE: case TOK_BANG:
-        break;
-    case TOK_PLUSPLUS: case TOK_MINUSMINUS:
-        return gen_incdec(g, e, true);
-    default:
-        not_yet(e->loc, op == TOK_AMP ? "taking addresses with `&`" : "dereferencing with `*`", 5);
-        return VT_ERROR;
-    }
-
-    if (!gen_int(g, operand)) return VT_ERROR;
-    if (op == TOK_MINUS) {
-        emit(g, "neg rax");
-    } else if (op == TOK_TILDE) {
-        emit(g, "not rax");
-    } else {
-        emit(g, "test rax, rax");
-        emit(g, "sete al");
-        emit(g, "movzx eax, al");
-    }
-    return VT_INT;
-}
-
-static ValType gen_ternary(Gen *g, const Expr *e) {
-    int else_label = new_label(g), end_label = new_label(g);
-    bool ok = gen_int(g, e->u.ternary.cond);
-    emit(g, "test rax, rax");
-    emit(g, "je .L%d", else_label);
-    ok = gen_int(g, e->u.ternary.then_expr) && ok;
-    emit(g, "jmp .L%d", end_label);
-    emit_label(g, else_label);
-    ok = gen_int(g, e->u.ternary.else_expr) && ok;
-    emit_label(g, end_label);
-    return ok ? VT_INT : VT_ERROR;
-}
-
-/*
- * Arguments are evaluated left to right and pushed. Then the 7th and later
- * are copied down to where the ABI wants them ([rsp], [rsp+8], ...), the
- * first six are loaded into registers, and rsp is padded so it's 16-byte
- * aligned at the call.
- */
-static ValType gen_call(Gen *g, const Expr *e) {
-    const Expr *callee = e->u.call.callee;
-    if (callee->kind != EXPR_IDENT) {
-        not_yet(callee->loc, "calling anything but a named function", 10);
-        return VT_ERROR;
-    }
-    const Decl *fn = find_function(g->mod, callee->u.name);
-    if (!fn) {
-        Var *v = find_var(g, callee->u.name);
-        Diag *d;
-        if (v) {
-            v->reads++;
-            d = diag_start(DIAG_ERROR, "E0204", callee->loc, "`%s` is a variable, not a function", callee->u.name);
-            diag_label(d, "called like a function");
-            diag_span(d, v->loc, "`%s` is declared here", v->name);
-            diag_help(d, "to read the variable, remove the parentheses");
+    case TOK_PLUS:  emit(g, "add rax, rcx"); break;
+    case TOK_MINUS: emit(g, "sub rax, rcx"); break;
+    case TOK_STAR:  emit(g, "imul rax, rcx"); break;
+    case TOK_SLASH:
+    case TOK_PERCENT:
+        if (sgn) {
+            emit(g, "cqo");
+            emit(g, "idiv rcx");
         } else {
-            d = diag_start(DIAG_ERROR, "E0201", callee->loc, "cannot find function `%s`", callee->u.name);
-            diag_label(d, "not found");
-            const char *guess = similar_function(g, callee->u.name);
-            if (guess) {
-                diag_span(d, find_function(g->mod, guess)->name_loc, "a function with a similar name is defined here");
-                diag_fix(d, callee->loc, guess, "a function with a similar name exists");
+            emit(g, "xor edx, edx");
+            emit(g, "div rcx");
+        }
+        if (op == TOK_PERCENT) emit(g, "mov rax, rdx");
+        break;
+    case TOK_AMP:   emit(g, "and rax, rcx"); break;
+    case TOK_PIPE:  emit(g, "or rax, rcx"); break;
+    case TOK_CARET: emit(g, "xor rax, rcx"); break;
+    case TOK_SHL:   emit(g, "shl rax, cl"); break;
+    case TOK_SHR:   emit(g, sgn ? "sar rax, cl" : "shr rax, cl"); break;
+    default: break;
+    }
+    normalize(g, t);
+}
+
+static void emit_float_op(Gen *g, TokenKind op, const Type *t) {
+    const char *sfx = t->size == 4 ? "ss" : "sd";
+    switch (op) {
+    case TOK_PLUS:  emit(g, "add%s xmm0, xmm1", sfx); break;
+    case TOK_MINUS: emit(g, "sub%s xmm0, xmm1", sfx); break;
+    case TOK_STAR:  emit(g, "mul%s xmm0, xmm1", sfx); break;
+    case TOK_SLASH: emit(g, "div%s xmm0, xmm1", sfx); break;
+    default: break;
+    }
+}
+
+static void gen_compare(Gen *g, const Expr *e) {
+    TokenKind op = e->u.binary.op;
+    const Type *lt = e->u.binary.lhs->type, *rt = e->u.binary.rhs->type;
+    gen_value(g, e->u.binary.lhs);
+    push_value(g, lt);
+    gen_value(g, e->u.binary.rhs);
+
+    if (cls(lt) == CLS_SSE) {
+        /* lhs in xmm0, rhs in xmm1. ucomis sets the flags like an unsigned
+         * compare, plus PF for NaN; seta/setae are false for NaN. */
+        emit(g, "movaps xmm1, xmm0");
+        pop_value(g, lt, NULL, 0);
+        const char *ucom = lt->size == 4 ? "ucomiss" : "ucomisd";
+        switch (op) {
+        case TOK_EQ:
+            emit(g, "%s xmm0, xmm1", ucom);
+            emit(g, "sete al");
+            emit(g, "setnp cl");
+            emit(g, "and al, cl");
+            break;
+        case TOK_NE:
+            emit(g, "%s xmm0, xmm1", ucom);
+            emit(g, "setne al");
+            emit(g, "setp cl");
+            emit(g, "or al, cl");
+            break;
+        case TOK_LT: emit(g, "%s xmm1, xmm0", ucom); emit(g, "seta al"); break;
+        case TOK_LE: emit(g, "%s xmm1, xmm0", ucom); emit(g, "setae al"); break;
+        case TOK_GT: emit(g, "%s xmm0, xmm1", ucom); emit(g, "seta al"); break;
+        case TOK_GE: emit(g, "%s xmm0, xmm1", ucom); emit(g, "setae al"); break;
+        default: break;
+        }
+        emit(g, "movzx eax, al");
+        return;
+    }
+
+    emit(g, "mov rcx, rax");
+    pop_value(g, lt, "rax", 0);
+    /* Values are extended to 64 bits, so one 64-bit compare works for any
+     * width. If either side is signed, the common type is signed (sema only
+     * widens unsigned into a larger signed type); pointers compare unsigned. */
+    bool sgn = (lt->kind == TY_INT && lt->is_signed) || (rt->kind == TY_INT && rt->is_signed);
+    const char *setcc = "sete";
+    switch (op) {
+    case TOK_EQ: setcc = "sete"; break;
+    case TOK_NE: setcc = "setne"; break;
+    case TOK_LT: setcc = sgn ? "setl" : "setb"; break;
+    case TOK_GT: setcc = sgn ? "setg" : "seta"; break;
+    case TOK_LE: setcc = sgn ? "setle" : "setbe"; break;
+    case TOK_GE: setcc = sgn ? "setge" : "setae"; break;
+    default: break;
+    }
+    emit(g, "cmp rax, rcx");
+    emit(g, "%s al", setcc);
+    emit(g, "movzx eax, al");
+}
+
+static void gen_binary(Gen *g, const Expr *e) {
+    TokenKind op = e->u.binary.op;
+    const Expr *l = e->u.binary.lhs, *r = e->u.binary.rhs;
+    const Type *t = e->type;
+
+    if (op == TOK_ANDAND || op == TOK_OROR) {
+        gen_logical(g, e);
+        return;
+    }
+    if (op == TOK_EQ || op == TOK_NE || op == TOK_LT || op == TOK_GT || op == TOK_LE || op == TOK_GE) {
+        gen_compare(g, e);
+        return;
+    }
+
+    gen_value(g, l);
+    push_value(g, l->type);
+    gen_value(g, r);
+
+    if (cls(t) == CLS_SSE) {
+        emit(g, "movaps xmm1, xmm0");
+        pop_value(g, t, NULL, 0);
+        emit_float_op(g, op, t);
+        return;
+    }
+
+    emit(g, "mov rcx, rax");
+    pop_value(g, l->type, "rax", 0);
+
+    if (l->type->kind == TY_PTR && r->type->kind == TY_PTR) {   /* p - q, in elements */
+        emit(g, "sub rax, rcx");
+        uint32_t size = l->type->base->size;
+        if (size > 1) {
+            if ((size & (size - 1)) == 0) {
+                int shift = 0;
+                while ((1u << shift) < size) shift++;
+                emit(g, "sar rax, %d", shift);
+            } else {
+                emit(g, "cqo");
+                emit(g, "mov rcx, %u", size);
+                emit(g, "idiv rcx");
             }
         }
-        diag_end(d);
-        for (size_t i = 0; i < e->u.call.nargs; i++) gen_expr(g, e->u.call.args[i]);  /* still check them */
-        return VT_ERROR;
+        return;
     }
+    if (l->type->kind == TY_PTR) {   /* p + n, p - n */
+        emit_scale(g, "rcx", l->type->base->size);
+        emit(g, op == TOK_PLUS ? "add rax, rcx" : "sub rax, rcx");
+        return;
+    }
+    if (r->type->kind == TY_PTR) {   /* n + p */
+        emit_scale(g, "rax", r->type->base->size);
+        emit(g, "add rax, rcx");
+        return;
+    }
+    emit_int_op(g, op, t);
+}
 
-    size_t n = e->u.call.nargs;
-    size_t want = fn->u.func.nparams;
-    bool ok = true;
-    if (n != want) {
-        Diag *d = diag_start(DIAG_ERROR, "E0206", callee->loc, "function `%s` takes %zu argument%s but %zu %s supplied",
-                             fn->name, want, want == 1 ? "" : "s", n, n == 1 ? "was" : "were");
-        diag_label(d, "expected %zu argument%s, found %zu", want, want == 1 ? "" : "s", n);
-        diag_span(d, fn->name_loc, "`%s` is defined here", fn->name);
-        for (size_t i = want; i < n && i < want + 3; i++)
-            diag_span(d, e->u.call.args[i]->loc, "unexpected argument");
-        if (n < want) {
-            char missing[256] = "";
-            size_t used = 0;
-            for (size_t i = n; i < want && used < sizeof missing - 40; i++)
-                used += (size_t)snprintf(missing + used, sizeof missing - used, "%s`%s`", i > n ? ", " : "",
-                                         fn->u.func.params[i]->name);
-            diag_note(d, "missing: %s", missing);
-        }
-        diag_end(d);
-        ok = false;
+/* ++x, --x, x++, x-- on ints and pointers. */
+static void gen_incdec(Gen *g, const Expr *e, bool prefix) {
+    const Expr *target = e->u.unary.operand;
+    const Type *t = target->type;
+    uint32_t step = t->kind == TY_PTR ? t->base->size : 1;
+    bool inc = e->u.unary.op == TOK_PLUSPLUS;
+
+    gen_addr(g, target);
+    emit(g, "push rax");
+    g->depth++;
+    emit_load(g, t, "rax");
+    emit(g, "mov rsi, rax");   /* the old value, for x++ */
+    emit(g, "%s rax, %u", inc ? "add" : "sub", step);
+    normalize(g, t);
+    emit(g, "pop rdx");
+    g->depth--;
+    emit_store(g, t, "rdx");
+    if (!prefix) emit(g, "mov rax, rsi");
+}
+
+static void gen_cast(Gen *g, const Expr *e) {
+    const Expr *inner = e->u.cast.expr;
+    const Type *from = inner->type, *to = e->type;
+    gen_value(g, inner);
+
+    if (type_is_float(from) && type_is_float(to)) {
+        if (from->size != to->size) emit(g, from->size == 4 ? "cvtss2sd xmm0, xmm0" : "cvtsd2ss xmm0, xmm0");
+        return;
     }
+    if (type_is_float(to)) {   /* int or bool -> float */
+        const char *cvt = to->size == 4 ? "cvtsi2ss" : "cvtsi2sd";
+        if (type_is_int(from) && !from->is_signed && from->size == 8) {
+            /* A u64 above 2^63 doesn't fit cvtsi2sd's signed input: halve it,
+             * keeping the low bit so rounding stays right, convert, double. */
+            int big = new_label(g), done = new_label(g);
+            emit(g, "test rax, rax");
+            emit(g, "js .L%d", big);
+            emit(g, "%s xmm0, rax", cvt);
+            emit(g, "jmp .L%d", done);
+            emit_label(g, big);
+            emit(g, "mov rcx, rax");
+            emit(g, "shr rcx, 1");
+            emit(g, "and eax, 1");
+            emit(g, "or rcx, rax");
+            emit(g, "%s xmm0, rcx", cvt);
+            emit(g, to->size == 4 ? "addss xmm0, xmm0" : "addsd xmm0, xmm0");
+            emit_label(g, done);
+        } else {
+            emit(g, "%s xmm0, rax", cvt);
+        }
+        return;
+    }
+    if (type_is_float(from)) {   /* float -> int: truncates toward zero */
+        if (to->kind == TY_INT && !to->is_signed && to->size == 8) {
+            /* Values from 2^63 up need an unsigned conversion: subtract 2^63
+             * first and put the top bit back afterwards. */
+            if (from->size == 4) emit(g, "cvtss2sd xmm0, xmm0");
+            int big = new_label(g), done = new_label(g);
+            emit(g, "movabs rax, 4890909195324358656");  /* 2^63 as a double */
+            emit(g, "movq xmm1, rax");
+            emit(g, "ucomisd xmm0, xmm1");
+            emit(g, "jae .L%d", big);
+            emit(g, "cvttsd2si rax, xmm0");
+            emit(g, "jmp .L%d", done);
+            emit_label(g, big);
+            emit(g, "subsd xmm0, xmm1");
+            emit(g, "cvttsd2si rax, xmm0");
+            emit(g, "btc rax, 63");
+            emit_label(g, done);
+        } else {
+            emit(g, from->size == 4 ? "cvttss2si rax, xmm0" : "cvttsd2si rax, xmm0");
+            normalize(g, to);
+        }
+        return;
+    }
+    /* int <-> int, bool -> int, pointer <-> pointer/int: re-extend for the new type. */
+    normalize(g, to);
+}
+
+static void gen_call(Gen *g, const Expr *e) {
+    const Symbol *fn = e->sym;
+    size_t n = e->u.call.nargs;
 
     for (size_t i = 0; i < n; i++) {
-        ok = gen_int(g, e->u.call.args[i]) && ok;
-        push_rax(g);
+        gen_value(g, e->u.call.args[i]);
+        push_value(g, fn->param_types[i]);
     }
 
-    int nstack = n > 6 ? (int)n - 6 : 0;
+    /* System V: ints and pointers go in rdi, rsi, rdx, rcx, r8, r9; floats
+     * in xmm0-7; whatever doesn't fit goes on the stack, in order. */
+    int where[256];   /* >= 0: register index; < 0: -(stack slot + 1) */
+    int ngpr = 0, nsse = 0, nstack = 0;
+    for (size_t i = 0; i < n && i < 256; i++) {
+        bool sse = cls(fn->param_types[i]) == CLS_SSE;
+        if (sse && nsse < 8) where[i] = nsse++;
+        else if (!sse && ngpr < 6) where[i] = ngpr++;
+        else where[i] = -(++nstack);
+    }
+
     int pad = (g->depth + nstack) % 2 != 0;
     int extra = 8 * (nstack + pad);
     if (extra) emit(g, "sub rsp, %d", extra);
     /* With everything pushed, argument i sits at [rsp + extra + 8*(n-1-i)]. */
-    for (size_t i = 6; i < n; i++) {
+    for (size_t i = 0; i < n; i++) {
+        if (where[i] >= 0) continue;
         emit(g, "mov rax, qword ptr [rsp + %d]", extra + 8 * (int)(n - 1 - i));
-        emit(g, "mov qword ptr [rsp + %d], rax", 8 * (int)(i - 6));
+        emit(g, "mov qword ptr [rsp + %d], rax", 8 * (-where[i] - 1));
     }
-    for (size_t i = 0; i < n && i < 6; i++)
-        emit(g, "mov %s, qword ptr [rsp + %d]", arg_regs[i], extra + 8 * (int)(n - 1 - i));
+    for (size_t i = 0; i < n; i++) {
+        if (where[i] < 0) continue;
+        int src = extra + 8 * (int)(n - 1 - i);
+        if (cls(fn->param_types[i]) == CLS_SSE) emit(g, "movsd xmm%d, qword ptr [rsp + %d]", where[i], src);
+        else emit(g, "mov %s, qword ptr [rsp + %d]", arg_regs[where[i]]->q, src);
+    }
 
     emit(g, "call w.%s", fn->name);
     int cleanup = extra + 8 * (int)n;
     if (cleanup) emit(g, "add rsp, %d", cleanup);
     g->depth -= (int)n;
-
-    return ok ? ret_type_of(fn) : VT_ERROR;
 }
 
-static ValType gen_expr(Gen *g, const Expr *e) {
-    switch (e->kind) {
-    case EXPR_INT:
-        if (e->u.int_val > (uint64_t)INT64_MAX) {
-            Diag *d = diag_start(DIAG_ERROR, "E0301", e->loc, "integer literal is too large for `int`");
-            diag_label(d, "doesn't fit in `int`");
-            diag_note(d, "`int` is 64-bit signed; the largest value is 9223372036854775807");
-            diag_end(d);
-            return VT_ERROR;
-        }
-        emit_mov_imm(g, (int64_t)e->u.int_val);
-        return VT_INT;
-    case EXPR_CHAR:
-        emit_mov_imm(g, (int64_t)e->u.int_val);
-        return VT_INT;
-    case EXPR_IDENT: {
-        Var *v = find_var(g, e->u.name);
-        if (v) {
-            v->reads++;
-            load_var(g, v);
-            return VT_INT;
-        }
-        const Decl *fn = find_function(g->mod, e->u.name);
-        if (fn) {
-            Diag *d = diag_start(DIAG_ERROR, "E0205", e->loc, "`%s` is a function, not a value", e->u.name);
-            diag_label(d, "function used without calling it");
-            if (fn->u.func.nparams == 0) {
-                char call[128];
-                snprintf(call, sizeof call, "%s()", e->u.name);
-                diag_fix(d, e->loc, call, "call it");
-            } else {
-                diag_help(d, "call it with %zu argument%s: `%s(...)`", fn->u.func.nparams,
-                          fn->u.func.nparams == 1 ? "" : "s", e->u.name);
-            }
-            diag_end(d);
-        } else {
-            report_unknown_var(g, e);
-        }
-        return VT_ERROR;
-    }
-    case EXPR_UNARY:
-        return gen_unary(g, e);
-    case EXPR_POSTFIX:
-        return gen_incdec(g, e, false);
-    case EXPR_BINARY:
-        return gen_binary(g, e);
-    case EXPR_TERNARY:
-        return gen_ternary(g, e);
-    case EXPR_CALL:
-        return gen_call(g, e);
-    case EXPR_ASSIGN:
-        report_assign_as_value(e);
-        return VT_ERROR;
-
-    case EXPR_FLOAT:      not_yet(e->loc, "floats", 5); break;
-    case EXPR_STRING:
-    case EXPR_INTERP:     not_yet(e->loc, "strings", 7); break;
-    case EXPR_BOOL:       not_yet(e->loc, "true and false", 5); break;
-    case EXPR_NULL:       not_yet(e->loc, "null", 5); break;
-    case EXPR_THIS:       not_yet(e->loc, "classes", 10); break;
-    case EXPR_SCOPE:      not_yet(e->loc, "enums", 12); break;
-    case EXPR_INDEX:      not_yet(e->loc, "indexing", 5); break;
-    case EXPR_MEMBER:     not_yet(e->loc, "member access with '->'", 5); break;
-    case EXPR_CAST:       not_yet(e->loc, "casts with 'as'", 5); break;
-    case EXPR_NEW:        not_yet(e->loc, "'new'", 11); break;
-    case EXPR_ALLOC:      not_yet(e->loc, "'alloc'", 5); break;
-    case EXPR_SIZEOF:     not_yet(e->loc, "'sizeof'", 5); break;
-    case EXPR_TRY:        not_yet(e->loc, "error propagation with '?'", 9); break;
-    case EXPR_ARRAY_LIT:  not_yet(e->loc, "array literals", 5); break;
-    case EXPR_STRUCT_LIT: not_yet(e->loc, "struct literals", 5); break;
-    }
-    return VT_ERROR;
-}
-
-/* E0210. For `x = y` it suggests `x == y`. */
-static void report_assign_as_value(const Expr *e) {
-    Diag *d = diag_start(DIAG_ERROR, "E0210", e->loc, "an assignment can't be used as a value");
-    diag_label(d, "assignment used as a value");
-    diag_note(d, "in watrlang, assignment is a statement, not an expression");
-    if (e->u.binary.op == TOK_ASSIGN) {
-        /* Find the `=` between the two sides to suggest `==`. */
-        const SrcFile *f = e->loc.file;
-        uint32_t from = e->u.binary.lhs->loc.offset + e->u.binary.lhs->loc.len;
-        uint32_t to = e->u.binary.rhs->loc.offset;
-        for (uint32_t i = from; i < to && i < f->len; i++) {
-            if (f->text[i] == '=') {
-                diag_fix(d, loc_at(f, i, 1), "==", "if you meant to compare, use `==`");
-                break;
-            }
+static void gen_aggregate_lit(Gen *g, const Expr *e) {
+    const Type *t = e->type;
+    int slot = alloc_slot(g, t->size, t->align);
+    zero_memory(g, slot, t->size);   /* fields that aren't listed are zero */
+    char addr[64];
+    if (e->kind == EXPR_STRUCT_LIT) {
+        for (size_t i = 0; i < e->u.struct_lit.n; i++) {
+            const FieldInit *fi = e->u.struct_lit.fields[i];
+            const Field *f = NULL;
+            for (size_t j = 0; j < t->nfields; j++)
+                if (strcmp(t->fields[j].name, fi->name) == 0) f = &t->fields[j];
+            gen_value(g, fi->value);
+            snprintf(addr, sizeof addr, "rbp - %d", -slot - (int)f->offset);
+            emit_store(g, f->type, addr);
         }
     } else {
-        diag_help(d, "do the assignment on its own line, then use the variable");
+        for (size_t i = 0; i < e->u.array.n; i++) {
+            gen_value(g, e->u.array.entries[i]->value);
+            snprintf(addr, sizeof addr, "rbp - %d", -slot - (int)(i * t->base->size));
+            emit_store(g, t->base, addr);
+        }
     }
-    diag_end(d);
+    emit(g, "lea rax, [rbp - %d]", -slot);
+}
+
+static void gen_value(Gen *g, const Expr *e) {
+    const Type *t = e->type;
+    char buf[96];
+    switch (e->kind) {
+    case EXPR_INT:
+    case EXPR_CHAR:
+        if (type_is_float(t)) emit_float_const(g, t, (double)e->u.int_val);
+        else emit_int_const(g, type_is_int(t) ? int_normalize(t, e->u.int_val) : e->u.int_val);
+        return;
+    case EXPR_FLOAT:
+        emit_float_const(g, t, e->u.float_val);
+        return;
+    case EXPR_BOOL:
+        emit(g, "mov eax, %d", e->u.bool_val ? 1 : 0);
+        return;
+    case EXPR_NULL:
+        emit(g, "xor eax, eax");
+        return;
+    case EXPR_IDENT:
+        emit_load(g, t, var_addr(buf, sizeof buf, e->sym));
+        return;
+    case EXPR_UNARY: {
+        TokenKind op = e->u.unary.op;
+        const Expr *operand = e->u.unary.operand;
+        if (op == TOK_MINUS && operand->kind == EXPR_INT) {   /* a negative literal */
+            if (type_is_float(t)) emit_float_const(g, t, -(double)operand->u.int_val);
+            else emit_int_const(g, int_normalize(t, 0 - operand->u.int_val));
+            return;
+        }
+        switch (op) {
+        case TOK_MINUS:
+            gen_value(g, operand);
+            if (type_is_float(t)) {   /* flip the sign bit */
+                if (t->size == 4) {
+                    emit(g, "movd eax, xmm0");
+                    emit(g, "btc eax, 31");
+                    emit(g, "movd xmm0, eax");
+                } else {
+                    emit(g, "movq rax, xmm0");
+                    emit(g, "btc rax, 63");
+                    emit(g, "movq xmm0, rax");
+                }
+            } else {
+                emit(g, "neg rax");
+                normalize(g, t);
+            }
+            return;
+        case TOK_TILDE:
+            gen_value(g, operand);
+            emit(g, "not rax");
+            normalize(g, t);
+            return;
+        case TOK_BANG:
+            gen_value(g, operand);
+            emit(g, "xor eax, 1");
+            return;
+        case TOK_AMP:
+            gen_addr(g, operand);
+            return;
+        case TOK_STAR:
+            gen_value(g, operand);
+            emit_load(g, t, "rax");
+            return;
+        case TOK_PLUSPLUS:
+        case TOK_MINUSMINUS:
+            gen_incdec(g, e, true);
+            return;
+        default:
+            return;
+        }
+    }
+    case EXPR_POSTFIX:
+        gen_incdec(g, e, false);
+        return;
+    case EXPR_BINARY:
+        gen_binary(g, e);
+        return;
+    case EXPR_TERNARY: {
+        int else_label = new_label(g), end_label = new_label(g);
+        gen_value(g, e->u.ternary.cond);
+        emit(g, "test rax, rax");
+        emit(g, "je .L%d", else_label);
+        gen_value(g, e->u.ternary.then_expr);
+        emit(g, "jmp .L%d", end_label);
+        emit_label(g, else_label);
+        gen_value(g, e->u.ternary.else_expr);
+        emit_label(g, end_label);
+        return;
+    }
+    case EXPR_CALL:
+        gen_call(g, e);
+        return;
+    case EXPR_MEMBER:
+    case EXPR_INDEX:
+        gen_addr(g, e);
+        if (cls(t) != CLS_MEM) emit_load(g, t, "rax");
+        return;
+    case EXPR_CAST:
+        gen_cast(g, e);
+        return;
+    case EXPR_STRUCT_LIT:
+    case EXPR_ARRAY_LIT:
+        gen_aggregate_lit(g, e);
+        return;
+    default:
+        fatal("codegen: unexpected expression kind %d (sema should have rejected it)", (int)e->kind);
+    }
 }
 
 static TokenKind compound_to_binary(TokenKind op) {
@@ -831,76 +747,67 @@ static TokenKind compound_to_binary(TokenKind op) {
     case TOK_PIPE_ASSIGN:    return TOK_PIPE;
     case TOK_CARET_ASSIGN:   return TOK_CARET;
     case TOK_SHL_ASSIGN:     return TOK_SHL;
-    case TOK_SHR_ASSIGN:     return TOK_SHR;
-    default:                 return TOK_ERROR;  /* .= */
+    default:                 return TOK_SHR;
     }
 }
 
 static void gen_assign(Gen *g, const Expr *e) {
     TokenKind op = e->u.binary.op;
-    if (op == TOK_DOT_ASSIGN) {
-        not_yet(e->loc, "string concatenation with `.=`", 7);
-        return;
-    }
-    if (e->u.binary.rhs->kind == EXPR_ASSIGN) {
-        Diag *d = diag_start(DIAG_ERROR, "E0211", e->u.binary.rhs->loc, "assignments can't be chained");
-        diag_label(d, "second assignment");
-        diag_span(d, e->u.binary.lhs->loc, "first assignment target");
-        diag_help(d, "assign each variable in its own statement");
-        diag_end(d);
-        return;
-    }
-    Var *v = assign_target(g, e->u.binary.lhs, "assign to");
+    const Expr *target = e->u.binary.lhs, *value = e->u.binary.rhs;
+    const Type *t = target->type;
+    char buf[96];
+
     if (op == TOK_ASSIGN) {
-        if (gen_int(g, e->u.binary.rhs) && v) store_var(g, v, "rax");
+        if (target->kind == EXPR_IDENT) {
+            gen_value(g, value);
+            emit_store(g, t, var_addr(buf, sizeof buf, target->sym));
+            return;
+        }
+        /* Left to right: the target's address, then the value. */
+        gen_addr(g, target);
+        emit(g, "push rax");
+        g->depth++;
+        gen_value(g, value);
+        emit(g, "pop rdx");
+        g->depth--;
+        emit_store(g, t, "rdx");
         return;
     }
-    if (!v) {
-        gen_int(g, e->u.binary.rhs);
-        return;
+
+    TokenKind bop = compound_to_binary(op);
+    gen_addr(g, target);
+    emit(g, "push rax");
+    g->depth++;
+    emit_load(g, t, "rax");
+    push_value(g, t);
+    gen_value(g, value);
+    if (cls(t) == CLS_SSE) {
+        emit(g, "movaps xmm1, xmm0");
+        pop_value(g, t, NULL, 0);
+        emit_float_op(g, bop, t);
+    } else {
+        emit(g, "mov rcx, rax");
+        pop_value(g, t, "rax", 0);
+        if (t->kind == TY_PTR) {
+            emit_scale(g, "rcx", t->base->size);
+            emit(g, bop == TOK_PLUS ? "add rax, rcx" : "sub rax, rcx");
+        } else {
+            emit_int_op(g, bop, t);
+        }
     }
-    load_var(g, v);
-    push_rax(g);
-    bool ok = gen_int(g, e->u.binary.rhs);
-    emit(g, "mov rcx, rax");
-    pop_reg(g, "rax");
-    emit_arith(g, compound_to_binary(op));
-    if (ok) store_var(g, v, "rax");
+    emit(g, "pop rdx");
+    g->depth--;
+    emit_store(g, t, "rdx");
 }
 
-/* An expression whose value is thrown away: statements, for-loop steps. */
 static void gen_effect(Gen *g, const Expr *e) {
     if (e->kind == EXPR_ASSIGN) gen_assign(g, e);
-    else gen_expr(g, e);
+    else gen_value(g, e);
 }
 
 /* ---- statements ---------------------------------------------------------- */
 
 static void gen_stmt(Gen *g, const Stmt *s);
-static bool falls_through(Gen *g, const Stmt *s);
-
-/* Generates a statement list, warning once if code follows a statement
- * control can't get past (W0002). */
-static void gen_stmt_list(Gen *g, Stmt **stmts, size_t n) {
-    bool warned = false;
-    for (size_t i = 0; i < n; i++) {
-        if (!warned && i > 0 && diag_error_count() == g->fn_errors_before && !falls_through(g, stmts[i - 1])) {
-            Diag *d = diag_start(DIAG_WARNING, "W0002", stmts[i]->loc, "unreachable statement");
-            diag_label(d, "this can never run");
-            diag_span(d, stmts[i - 1]->loc, "any code after this is unreachable");
-            diag_end(d);
-            warned = true;
-        }
-        gen_stmt(g, stmts[i]);
-    }
-}
-
-static void gen_scoped(Gen *g, const Stmt *s) {
-    push_scope(g);
-    if (s->kind == STMT_BLOCK) gen_stmt_list(g, s->u.block.stmts, s->u.block.n);
-    else gen_stmt(g, s);
-    pop_scope(g);
-}
 
 static void push_loop(Gen *g, int break_label, int continue_label) {
     if (g->nloops == g->loops_cap) {
@@ -914,273 +821,144 @@ static void push_loop(Gen *g, int break_label, int continue_label) {
     g->nloops++;
 }
 
-static void gen_cond_jump_false(Gen *g, const Expr *cond, int label) {
-    gen_int(g, cond);
+static void gen_jump_if_false(Gen *g, const Expr *cond, int label) {
+    gen_value(g, cond);
     emit(g, "test rax, rax");
     emit(g, "je .L%d", label);
 }
 
-/* E0208 */
-static void report_missing_const_value(const VarDecl *vd) {
-    Diag *d = diag_start(DIAG_ERROR, "E0208", vd->loc, "constant `%s` needs a value", vd->name);
-    diag_label(d, "declared without a value");
-    diag_note(d, "a constant can never be assigned later, so it must be given a value here");
-    diag_fix(d, loc_after(vd->loc), " = 0", "give it a value");
-    diag_end(d);
+static void gen_body(Gen *g, const Stmt *s) {
+    if (s->kind == STMT_BLOCK)
+        for (size_t i = 0; i < s->u.block.n; i++) gen_stmt(g, s->u.block.stmts[i]);
+    else
+        gen_stmt(g, s);
 }
 
 static void gen_var_decl(Gen *g, const VarDecl *vd) {
-    bool type_ok = check_var_type(vd->type);
-    if (vd->type->is_const && !vd->init) report_missing_const_value(vd);
-
-    /* The initializer is generated before the name exists, so `int x = x;`
-     * can't read the variable it's declaring. */
+    Symbol *v = vd->sym;
+    const Type *t = v->type;
+    v->offset = alloc_slot(g, t->size, t->align);
+    char buf[96];
     if (vd->init) {
-        if (vd->init->kind == EXPR_ASSIGN) {
-            report_assign_as_value(vd->init);
-            type_ok = false;
-        } else if (!gen_int(g, vd->init)) {
-            type_ok = false;
-        }
+        gen_value(g, vd->init);
+        emit_store(g, t, var_addr(buf, sizeof buf, v));
     } else {
-        emit(g, "xor eax, eax");  /* locals start at zero */
+        zero_memory(g, v->offset, t->size);   /* locals start at zero */
     }
-    Var *v = declare_local(g, vd->name, vd->loc, vd->type, false);
-    if (type_ok) store_var(g, v, "rax");
 }
 
 static void gen_stmt(Gen *g, const Stmt *s) {
     switch (s->kind) {
     case STMT_BLOCK:
-        gen_scoped(g, s);
+        gen_body(g, s);
         break;
-
     case STMT_EXPR:
         gen_effect(g, s->u.expr);
         break;
-
     case STMT_VAR:
         gen_var_decl(g, s->u.var);
         break;
-
     case STMT_RETURN:
-        if (g->fn_ret == VT_VOID && s->u.expr) {
-            Diag *d = diag_start(DIAG_ERROR, "E0302", s->u.expr->loc, "function `%s` doesn't return a value",
-                                 g->fn->name);
-            diag_label(d, "unexpected return value");
-            diag_span(d, ret_type_loc(g->fn), g->fn->u.func.ret ? "declared to return `void` here"
-                                                                : "no return type is declared, so it returns nothing");
-            diag_help(d, "remove the value, or declare a return type: `function %s(...): int`", g->fn->name);
-            diag_end(d);
-            gen_expr(g, s->u.expr);
-        } else if (g->fn_ret == VT_INT && !s->u.expr) {
-            Diag *d = diag_start(DIAG_ERROR, "E0303", s->loc, "missing return value in function `%s`", g->fn->name);
-            diag_label(d, "expected an `int` value");
-            diag_span(d, ret_type_loc(g->fn), "`%s` is declared to return `int`", g->fn->name);
-            diag_end(d);
-        } else if (s->u.expr) {
-            gen_int(g, s->u.expr);
-        }
+        if (s->u.expr) gen_value(g, s->u.expr);
         emit(g, "jmp .L%d", g->ret_label);
         break;
-
     case STMT_IF: {
         int else_label = new_label(g), end_label = new_label(g);
-        gen_cond_jump_false(g, s->u.if_.cond, else_label);
-        gen_scoped(g, s->u.if_.then_stmt);
+        gen_jump_if_false(g, s->u.if_.cond, else_label);
+        gen_body(g, s->u.if_.then_stmt);
         if (s->u.if_.else_stmt) emit(g, "jmp .L%d", end_label);
         emit_label(g, else_label);
         if (s->u.if_.else_stmt) {
-            gen_scoped(g, s->u.if_.else_stmt);
+            gen_body(g, s->u.if_.else_stmt);
             emit_label(g, end_label);
         }
         break;
     }
-
     case STMT_WHILE: {
         int top = new_label(g), end = new_label(g);
         emit_label(g, top);
-        gen_cond_jump_false(g, s->u.while_.cond, end);
+        gen_jump_if_false(g, s->u.while_.cond, end);
         push_loop(g, end, top);
-        gen_scoped(g, s->u.while_.body);
+        gen_body(g, s->u.while_.body);
         g->nloops--;
         emit(g, "jmp .L%d", top);
         emit_label(g, end);
         break;
     }
-
     case STMT_DO_WHILE: {
         int top = new_label(g), cont = new_label(g), end = new_label(g);
         emit_label(g, top);
         push_loop(g, end, cont);
-        gen_scoped(g, s->u.while_.body);
+        gen_body(g, s->u.while_.body);
         g->nloops--;
         emit_label(g, cont);
-        gen_int(g, s->u.while_.cond);
+        gen_value(g, s->u.while_.cond);
         emit(g, "test rax, rax");
         emit(g, "jne .L%d", top);
         emit_label(g, end);
         break;
     }
-
     case STMT_FOR: {
         int top = new_label(g), cont = new_label(g), end = new_label(g);
-        push_scope(g);  /* the init variable lives for the whole loop */
         if (s->u.for_.init) gen_stmt(g, s->u.for_.init);
         emit_label(g, top);
-        if (s->u.for_.cond) gen_cond_jump_false(g, s->u.for_.cond, end);
+        if (s->u.for_.cond) gen_jump_if_false(g, s->u.for_.cond, end);
         push_loop(g, end, cont);
-        gen_scoped(g, s->u.for_.body);
+        gen_body(g, s->u.for_.body);
         g->nloops--;
         emit_label(g, cont);
         if (s->u.for_.step) gen_effect(g, s->u.for_.step);
         emit(g, "jmp .L%d", top);
         emit_label(g, end);
-        pop_scope(g);
         break;
     }
-
     case STMT_BREAK:
     case STMT_CONTINUE: {
-        bool is_break = s->kind == STMT_BREAK;
-        if (g->nloops == 0) {
-            Diag *d = diag_start(DIAG_ERROR, "E0212", s->loc, "`%s` outside of a loop", is_break ? "break" : "continue");
-            diag_label(d, "can only be used inside a loop");
-            if (is_break) diag_help(d, "to leave the function early, use `return`");
-            diag_end(d);
-            break;
-        }
         const Loop *loop = &g->loops[g->nloops - 1];
-        emit(g, "jmp .L%d", is_break ? loop->break_label : loop->continue_label);
+        emit(g, "jmp .L%d", s->kind == STMT_BREAK ? loop->break_label : loop->continue_label);
         break;
     }
-
-    case STMT_FOREACH:  not_yet(s->loc, "'foreach'", 12); break;
-    case STMT_ECHO:     not_yet(s->loc, "'echo'", 7); break;
-    case STMT_DEFER:    not_yet(s->loc, "'defer'", 9); break;
-    case STMT_ASM:      not_yet(s->loc, "inline asm", 13); break;
-    }
-}
-
-/* ---- return analysis ------------------------------------------------------ */
-
-static bool is_const_true(Gen *g, const Expr *e) {
-    int64_t v;
-    return const_eval(g, e, &v, false) && v != 0;
-}
-
-/* Does `s` contain a break (or continue) aimed at the loop it's directly in?
- * Doesn't look inside nested loops, whose breaks are their own. */
-static bool has_jump(const Stmt *s, StmtKind kind) {
-    if (!s) return false;
-    switch (s->kind) {
-    case STMT_BREAK:
-    case STMT_CONTINUE:
-        return s->kind == kind;
-    case STMT_BLOCK:
-        for (size_t i = 0; i < s->u.block.n; i++)
-            if (has_jump(s->u.block.stmts[i], kind)) return true;
-        return false;
-    case STMT_IF:
-        return has_jump(s->u.if_.then_stmt, kind) || has_jump(s->u.if_.else_stmt, kind);
     default:
-        return false;
-    }
-}
-
-/* Can control reach the end of `s`? Used to require a return at the end of
- * int functions. Loops with a constant-true condition and no break never
- * end, so `while (true) { ... }` needs no return after it. */
-static bool falls_through(Gen *g, const Stmt *s) {
-    switch (s->kind) {
-    case STMT_RETURN:
-    case STMT_BREAK:
-    case STMT_CONTINUE:
-        return false;
-    case STMT_BLOCK:
-        for (size_t i = 0; i < s->u.block.n; i++)
-            if (!falls_through(g, s->u.block.stmts[i])) return false;
-        return true;
-    case STMT_IF:
-        if (!s->u.if_.else_stmt) return true;
-        return falls_through(g, s->u.if_.then_stmt) || falls_through(g, s->u.if_.else_stmt);
-    case STMT_WHILE:
-        return !is_const_true(g, s->u.while_.cond) || has_jump(s->u.while_.body, STMT_BREAK);
-    case STMT_DO_WHILE:
-        if (has_jump(s->u.while_.body, STMT_BREAK)) return true;
-        if (is_const_true(g, s->u.while_.cond)) return false;
-        return falls_through(g, s->u.while_.body) || has_jump(s->u.while_.body, STMT_CONTINUE);
-    case STMT_FOR:
-        if (s->u.for_.cond && !is_const_true(g, s->u.for_.cond)) return true;
-        return has_jump(s->u.for_.body, STMT_BREAK);
-    default:
-        return true;
+        fatal("codegen: unexpected statement kind %d (sema should have rejected it)", (int)s->kind);
     }
 }
 
 /* ---- functions ------------------------------------------------------------- */
 
-static void gen_function(Gen *g, const Decl *d) {
-    if (d->is_extern || d->is_export) {
-        not_yet(d->loc, d->is_extern ? "extern functions" : "export", d->is_extern ? 6 : 13);
-        return;
-    }
-    if (d->u.func.variadic) {
-        not_yet(d->name_loc, "variadic functions", 6);
-        return;
-    }
-
-    g->fn = d;
-    g->fn_errors_before = diag_error_count();
-    g->fn_ret = ret_type_of(d);
-    if (g->fn_ret == VT_ERROR) not_yet(d->u.func.ret->loc, "return types other than `int` and `void`", 5);
+static void gen_function(Gen *g, const Symbol *fn) {
+    const Decl *d = fn->decl;
     g->ret_label = new_label(g);
     g->depth = 0;
-    g->slots = 0;
-    g->locals.len = 0;
-    g->nscopes = 0;
+    g->frame = 0;
     g->nloops = 0;
 
     /* The body goes to a buffer first: the prologue needs the frame size,
-     * which is only known once every local has been seen. */
+     * which is only known once every local and temporary has been placed. */
     char *body = NULL;
     size_t body_len = 0;
     FILE *real_out = g->out;
     g->out = open_memstream(&body, &body_len);
     if (!g->out) fatal("open_memstream failed");
 
-    push_scope(g);
+    /* Spill register parameters; stack parameters stay where the caller put them. */
+    int ngpr = 0, nsse = 0, nstack = 0;
     for (size_t i = 0; i < d->u.func.nparams; i++) {
-        const Param *p = d->u.func.params[i];
-        check_var_type(p->type);
-        if (i < 6) {
-            Var *v = declare_local(g, p->name, p->loc, p->type, true);
-            store_var(g, v, arg_regs[i]);
+        Symbol *p = d->u.func.params[i]->sym;
+        bool sse = cls(p->type) == CLS_SSE;
+        if ((sse && nsse < 8) || (!sse && ngpr < 6)) {
+            p->offset = alloc_slot(g, 8, 8);
+            if (sse) emit(g, "movsd qword ptr [rbp - %d], xmm%d", -p->offset, nsse++);
+            else emit(g, "mov qword ptr [rbp - %d], %s", -p->offset, arg_regs[ngpr++]->q);
         } else {
-            /* Stack arguments already live in the caller's frame. */
-            declare_local_at(g, p->name, p->loc, p->type, true, 16 + 8 * (int)(i - 6));
+            p->offset = 16 + 8 * nstack++;
         }
     }
-    /* Body statements share the parameters' scope, so a local can't
-     * redeclare a parameter. */
-    const Stmt *b = d->u.func.body;
-    gen_stmt_list(g, b->u.block.stmts, b->u.block.n);
-    pop_scope(g);
-
-    if (g->fn_ret == VT_INT && falls_through(g, b)) {
-        Loc closing = loc_at(b->loc.file, b->loc.offset + b->loc.len - 1, 1);
-        Diag *e = diag_start(DIAG_ERROR, "E0304", closing, "function `%s` can reach its end without returning a value",
-                             d->name);
-        diag_label(e, "the function can end here without returning");
-        diag_span(e, ret_type_loc(d), "`%s` is declared to return `int`", d->name);
-        diag_help(e, "add a `return` before the closing brace, or make sure every path returns");
-        diag_end(e);
-    }
+    gen_body(g, d->u.func.body);
 
     fclose(g->out);
     g->out = real_out;
 
-    int frame = (g->slots * 8 + 15) & ~15;
+    int frame = (g->frame + 15) & ~15;
     fprintf(g->out, "\n    .globl w.%s\n    .type w.%s, @function\nw.%s:\n", d->name, d->name, d->name);
     emit(g, "push rbp");
     emit(g, "mov rbp, rsp");
@@ -1193,110 +971,55 @@ static void gen_function(Gen *g, const Decl *d) {
     fprintf(g->out, "    .size w.%s, .-w.%s\n", d->name, d->name);
 }
 
-/* ---- module ---------------------------------------------------------------- */
+/* ---- data ------------------------------------------------------------------ */
 
-/* Registers globals (evaluating their constant initializers) and checks
- * top-level names. Returns the main function, or NULL. */
-static const Decl *check_top_level(Gen *g) {
-    const Module *m = g->mod;
-    const Decl *main_fn = NULL;
-
-    for (size_t i = 0; i < m->n; i++) {
-        const Decl *d = m->decls[i];
-        if (d->kind != DECL_FUNC && d->kind != DECL_VAR) {
-            switch (d->kind) {
-            case DECL_IMPORT: not_yet(d->loc, "imports", 8); break;
-            case DECL_STRUCT: not_yet(d->loc, "structs", 5); break;
-            case DECL_CLASS:  not_yet(d->loc, "classes", 10); break;
-            case DECL_ENUM:   not_yet(d->loc, "enums", 12); break;
-            default: break;
-            }
-            continue;
-        }
-
-        for (size_t j = 0; j < i; j++) {
-            const Decl *prev = m->decls[j];
-            if ((prev->kind == DECL_FUNC || prev->kind == DECL_VAR) && strcmp(prev->name, d->name) == 0) {
-                Diag *e = diag_start(DIAG_ERROR, "E0202", d->name_loc, "the name `%s` is defined more than once", d->name);
-                diag_label(e, "`%s` redefined here", d->name);
-                diag_span(e, prev->name_loc, "first definition of `%s` here", d->name);
-                if (prev->kind != d->kind) diag_note(e, "functions and global variables share one namespace");
-                diag_end(e);
-                break;
-            }
-        }
-
-        if (d->kind == DECL_FUNC) {
-            if (strcmp(d->name, "main") == 0 && !main_fn) main_fn = d;
-            continue;
-        }
-
-        const VarDecl *vd = d->u.var;
-        if (d->is_extern || d->is_export) {
-            not_yet(d->loc, d->is_extern ? "extern variables" : "export", d->is_extern ? 6 : 13);
-            continue;
-        }
-        if (!check_var_type(vd->type)) continue;
-        Var *v = ARENA_NEW(&g->arena, Var);
-        v->name = vd->name;
-        v->loc = vd->loc;
-        v->type = vd->type;
-        v->is_global = true;
-        v->is_const = vd->type->is_const;
-        if (v->is_const && !vd->init) report_missing_const_value(vd);
-        bool known = vd->init && const_eval(g, vd->init, &v->value, true);
-        if (!known) v->value = 0;
-        /* Only constants fold into later initializers; mutable globals may change. */
-        v->has_value = known && v->is_const;
-        ptrvec_push(&g->globals, v);
+static void emit_bytes(Gen *g, const unsigned char *bytes, uint32_t size) {
+    for (uint32_t i = 0; i < size; i += 16) {
+        fputs("    .byte ", g->out);
+        for (uint32_t j = i; j < size && j < i + 16; j++) fprintf(g->out, "%s%u", j > i ? ", " : "", bytes[j]);
+        fputc('\n', g->out);
     }
-
-    if (!main_fn) {
-        Loc loc = {m->file, 0, 0, 0, 0};
-        Diag *d = diag_start(DIAG_ERROR, "E0305", loc, "`main` function not found in `%s`", m->file->path);
-        diag_note(d, "a program starts running at `main`");
-        diag_help(d, "add one: `function main(): int { return 0; }`");
-        diag_end(d);
-        return NULL;
-    }
-    if (!is_int_type(main_fn->u.func.ret) || main_fn->u.func.ret->is_const) {
-        Diag *d = diag_start(DIAG_ERROR, "E0306", ret_type_loc(main_fn), "`main` must return `int`");
-        diag_label(d, main_fn->u.func.ret ? "expected `int` here" : "no return type");
-        diag_note(d, "main's return value becomes the program's exit code");
-        if (main_fn->u.func.ret) diag_fix(d, main_fn->u.func.ret->loc, "int", "change the return type");
-        diag_end(d);
-    }
-    if (main_fn->u.func.nparams > 0)
-        not_yet(main_fn->u.func.params[0]->loc, "command-line arguments to main", 7);
-    return main_fn;
 }
 
-static void emit_globals(Gen *g) {
-    bool any_data = false, any_rodata = false;
-    for (size_t i = 0; i < g->globals.len; i++) {
-        const Var *v = g->globals.items[i];
-        if (v->is_const) any_rodata = true;
-        else any_data = true;
-    }
-    for (int pass = 0; pass < 2; pass++) {
-        bool want_const = pass == 1;
-        if (want_const ? !any_rodata : !any_data) continue;
-        fprintf(g->out, "\n    .section %s\n    .p2align 3\n", want_const ? ".rodata" : ".data");
-        for (size_t i = 0; i < g->globals.len; i++) {
-            const Var *v = g->globals.items[i];
-            if (v->is_const != want_const) continue;
-            fprintf(g->out, "w.%s:\n    .quad %lld\n", v->name, (long long)v->value);
+static int log2_align(uint32_t align) {
+    int n = 0;
+    while ((1u << n) < align) n++;
+    return n;
+}
+
+static void emit_globals(Gen *g, const Program *prog) {
+    /* .data: mutable with an initializer; .rodata: const; .bss: all zero. */
+    static const char *const sections[3] = {".data", ".rodata", ".bss"};
+    for (int sec = 0; sec < 3; sec++) {
+        bool any = false;
+        for (size_t i = 0; i < prog->nglobals; i++) {
+            const Symbol *v = prog->globals[i];
+            int want = v->is_const ? 1 : v->init ? 0 : 2;
+            if (want != sec || v->type->size == 0) continue;
+            if (!any) fprintf(g->out, "\n    .section %s\n", sections[sec]);
+            any = true;
+            fprintf(g->out, "    .p2align %d\nw.%s:\n", log2_align(v->type->align), v->name);
+            if (v->init) emit_bytes(g, v->init, v->type->size);
+            else fprintf(g->out, "    .zero %u\n", v->type->size);
         }
     }
 }
 
-bool codegen_x64(const Module *m, FILE *out) {
-    int errors_before = diag_error_count();
+static void emit_ascii(FILE *out, const char *s) {
+    fputs("    .ascii \"", out);
+    for (; *s; s++) {
+        unsigned char c = (unsigned char)*s;
+        if (c == '"' || c == '\\') fprintf(out, "\\%c", c);
+        else if (c == '\n') fputs("\\n", out);
+        else if (c < 0x20 || c >= 0x7f) fprintf(out, "\\%03o", c);
+        else fputc(c, out);
+    }
+    fputs("\"\n", out);
+}
+
+void codegen_x64(const Module *m, const Program *prog, FILE *out) {
     Gen g = {0};
     g.out = out;
-    g.mod = m;
-
-    check_top_level(&g);
 
     fprintf(out, "# generated by watrc from %s\n", m->file->path);
     fputs("    .intel_syntax noprefix\n"
@@ -1312,18 +1035,37 @@ bool codegen_x64(const Module *m, FILE *out) {
           "    syscall\n",
           out);
 
-    for (size_t i = 0; i < m->n; i++)
-        if (m->decls[i]->kind == DECL_FUNC) gen_function(&g, m->decls[i]);
+    for (size_t i = 0; i < prog->nfuncs; i++)
+        if (prog->funcs[i]->decl->u.func.body) gen_function(&g, prog->funcs[i]);
 
-    emit_globals(&g);
+    if (g.panics.len) {
+        /* w.panic(msg = rdi, len = rsi): print to stderr, exit with status 101. */
+        fputs("\n# Runtime check failures.\n"
+              "w.panic:\n"
+              "    mov rdx, rsi\n"
+              "    mov rsi, rdi\n"
+              "    mov edi, 2\n"
+              "    mov eax, 1\n"
+              "    syscall\n"
+              "    mov edi, 101\n"
+              "    mov eax, 60\n"
+              "    syscall\n"
+              "\n    .section .rodata\n",
+              out);
+        for (size_t i = 0; i < g.panics.len; i++) {
+            PanicSite *site = g.panics.items[i];
+            fprintf(out, ".Lpanic%d:\n", site->label);
+            emit_ascii(out, site->msg);
+            free(site->msg);
+            free(site);
+        }
+    }
+
+    emit_globals(&g, prog);
 
     /* Tell the linker this code doesn't need an executable stack. */
     fputs("\n    .section .note.GNU-stack,\"\",@progbits\n", out);
 
-    free(g.globals.items);
-    free(g.locals.items);
-    free(g.scope_marks);
+    free(g.panics.items);
     free(g.loops);
-    arena_free(&g.arena);
-    return diag_error_count() == errors_before;
 }

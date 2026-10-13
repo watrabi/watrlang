@@ -1,0 +1,20 @@
+const int N = 5;
+
+function main(): int {
+    int[N] squares;
+    for (int i = 0; i < N; i++) {
+        squares[i] = i * i;
+    }
+    int[3] lit = [7, 8, 9];
+    int[3] copy = lit;               // arrays copy by value
+    copy[0] = 70;
+    int[2][3] grid;                  // 3 rows, each an int[2]
+    grid[2][1] = 5;
+    u8[4] bytes = [1, 2, 3, 4];
+    int total = 0;
+    for (usize i = 0; i < len(bytes); i++) total += bytes[i];
+
+    bool ok = squares[4] == 16 && lit[0] == 7 && copy[0] == 70 && len(squares) == 5
+           && grid[2][1] == 5 && grid[0][0] == 0 && total == 10 && sizeof(int[2][3]) == 48;
+    return ok as int;
+}

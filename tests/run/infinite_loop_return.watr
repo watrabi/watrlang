@@ -1,7 +1,7 @@
 // No return needed after a loop that can only exit through return.
 function find(int target): int {
     int i = 0;
-    while (1) {
+    while (true) {
         if (i * i >= target) return i;
         i++;
     }
@@ -14,5 +14,5 @@ function first_even(int start): int {
 }
 
 function main(): int {
-    return (find(50) == 8) + (first_even(7) == 8) * 2;
+    return (find(50) == 8) as int + (first_even(7) == 8) as int * 2;
 }

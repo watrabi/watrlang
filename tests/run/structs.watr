@@ -1,0 +1,32 @@
+struct Vec2 {
+    f32 x;
+    f32 y;
+}
+
+struct Entity {
+    u8 kind;          // offset 0
+    Vec2 pos;         // offset 4
+    u64 id;           // offset 16 (aligned to 8)
+    i16[3] stats;     // offset 24
+    Entity* parent;   // offset 32
+}
+
+function move(Entity* e, f32 dx): void {
+    e->pos->x += dx;   // -> follows pointers automatically
+}
+
+function main(): int {
+    Entity root;                       // all zero
+    Entity child = Entity { kind: 2, pos: Vec2 { x: 1.5, y: 2.0 }, id: 77, parent: &root };
+    move(&child, 1.0);
+    child->stats[1] = -5;
+    Entity copy = child;               // structs copy by value
+    copy->id = 78;
+    Vec2 v = child->pos;
+    v->y = 9.0;
+
+    bool ok = sizeof(Vec2) == 8 && sizeof(Entity) == 40 && child->pos->x == 2.5 && copy->pos->x == 2.5
+           && child->id == 77 && copy->id == 78 && child->stats[1] == -5 && child->stats[0] == 0
+           && child->parent == &root && root->kind == 0 && child->pos->y == 2.0 && v->y == 9.0;
+    return ok as int;
+}

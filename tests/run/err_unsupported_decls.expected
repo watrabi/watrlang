@@ -6,23 +6,63 @@ error[E0900]: not supported yet: imports
   |
   = note: watrlang is still being built; docs/DESIGN.md has the roadmap
 
-error[E0900]: not supported yet: structs
+error[E0900]: not supported yet: classes
  --> tests/run/err_unsupported_decls.watr:2:1
   |
-2 | struct S { int x; }
-  | ^^^^^^^^^^^^^^^^^^^ planned for milestone 5
+2 | class Point { public int x; }
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ planned for milestone 10
   |
   = note: watrlang is still being built; docs/DESIGN.md has the roadmap
 
-error[E0900]: not supported yet: return types other than `int` and `void`
- --> tests/run/err_unsupported_decls.watr:5:15
+error[E0900]: not supported yet: enums
+ --> tests/run/err_unsupported_decls.watr:3:1
   |
-5 | function u(): u8 { return 1; }
-  |               ^^ planned for milestone 5
+3 | enum Color { Red, Green }
+  | ^^^^^^^^^^^^^^^^^^^^^^^^^ planned for milestone 12
   |
   = note: watrlang is still being built; docs/DESIGN.md has the roadmap
 
-error: could not compile `tests/run/err_unsupported_decls.watr` due to 3 previous errors
+error[E0900]: not supported yet: the `string` type
+ --> tests/run/err_unsupported_decls.watr:4:1
+  |
+4 | string name = "watr";
+  | ^^^^^^ planned for milestone 7
+  |
+  = note: watrlang is still being built; docs/DESIGN.md has the roadmap
+
+error[E0900]: not supported yet: `alloc`
+ --> tests/run/err_unsupported_decls.watr:7:14
+  |
+7 |     int* p = alloc(int, 4);
+  |              ^^^^^^^^^^^^^ planned for milestone 6
+  |
+  = note: watrlang is still being built; docs/DESIGN.md has the roadmap
+
+error[E0900]: not supported yet: `foreach`
+ --> tests/run/err_unsupported_decls.watr:9:5
+  |
+9 |     foreach (xs as x) { }
+  |     ^^^^^^^ planned for milestone 12
+  |
+  = note: watrlang is still being built; docs/DESIGN.md has the roadmap
+
+error[E0900]: not supported yet: `defer`
+  --> tests/run/err_unsupported_decls.watr:10:5
+   |
+10 |     defer p = null;
+   |     ^^^^^ planned for milestone 9
+   |
+   = note: watrlang is still being built; docs/DESIGN.md has the roadmap
+
+error[E0900]: not supported yet: inline asm
+  --> tests/run/err_unsupported_decls.watr:11:5
+   |
+11 |     asm { "nop" }
+   |     ^^^^^^^^^^^^^ planned for milestone 13
+   |
+   = note: watrlang is still being built; docs/DESIGN.md has the roadmap
+
+error: could not compile `tests/run/err_unsupported_decls.watr` due to 8 previous errors
 This error has a detailed explanation: E0900.
 For more information about an error, try `watrc --explain E0900`.
 compile failed: 1

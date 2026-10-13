@@ -6,6 +6,12 @@ error[E0202]: the name `f` is defined more than once
 3 | function f(): int { return 2; }
   |          ^ `f` redefined here
 
+error[E0201]: cannot find function `nope`
+ --> tests/run/err_calls.watr:5:18
+  |
+5 |     return v() + nope() + f + 18446744073709551615;
+  |                  ^^^^ not found
+
 error[E0300]: expected a value, but this call returns nothing
  --> tests/run/err_calls.watr:5:12
   |
@@ -14,12 +20,6 @@ error[E0300]: expected a value, but this call returns nothing
 ...
 5 |     return v() + nope() + f + 18446744073709551615;
   |            ^^^ has no value
-
-error[E0201]: cannot find function `nope`
- --> tests/run/err_calls.watr:5:18
-  |
-5 |     return v() + nope() + f + 18446744073709551615;
-  |                  ^^^^ not found
 
 error[E0205]: `f` is a function, not a value
  --> tests/run/err_calls.watr:5:27
@@ -32,15 +32,16 @@ help: call it
 5 |     return v() + nope() + f() + 18446744073709551615;
   |                           ~~~
 
-error[E0301]: integer literal is too large for `int`
+error[E0301]: literal `18446744073709551615` doesn't fit in `int`
  --> tests/run/err_calls.watr:5:31
   |
 5 |     return v() + nope() + f + 18446744073709551615;
-  |                               ^^^^^^^^^^^^^^^^^^^^ doesn't fit in `int`
+  |                               ^^^^^^^^^^^^^^^^^^^^ out of range for `int`
   |
-  = note: `int` is 64-bit signed; the largest value is 9223372036854775807
+  = note: `int` holds -9223372036854775808 to 9223372036854775807
+  = help: for values this large, use `u64`
 
 error: could not compile `tests/run/err_calls.watr` due to 5 previous errors
-Some errors have detailed explanations: E0202, E0300, E0201, E0205, E0301.
+Some errors have detailed explanations: E0202, E0201, E0300, E0205, E0301.
 For more information about an error, try `watrc --explain E0202`.
 compile failed: 1

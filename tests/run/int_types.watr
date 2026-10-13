@@ -1,0 +1,31 @@
+// Every integer type wraps at its own width.
+function main(): int {
+    u8 a = 250;
+    a += 10;                         // 4
+    i8 b = 127;
+    b++;                             // -128
+    u16 c = 0;
+    c--;                             // 65535
+    i16 d = -32768;
+    d = d - 1;                       // 32767
+    u32 e = 4294967295;
+    e = e * 2;                       // 4294967294
+    i32 f = 2147483647;
+    f += 1;                          // -2147483648
+    u64 g = 18446744073709551615;
+    g += 2;                          // 1
+    usize h = 7;
+    u8 small = 200;
+    int widened = small + 1000;      // u8 widens to int: 1200
+
+    bool ok = a == 4 && b == -128 && c == 65535 && d == 32767 && e == 4294967294
+           && f == -2147483648 && g == 1 && h * 2 == 14 && widened == 1200;
+    // unsigned division and comparison
+    u64 huge = 18446744073709551615;
+    ok = ok && huge / 2 == 9223372036854775807 && huge > 1 && huge % 10 == 5;
+    // signed shifts keep the sign, unsigned shifts don't
+    i32 neg = -16;
+    u32 pos = 4294967280;
+    ok = ok && neg >> 2 == -4 && pos >> 2 == 1073741820;
+    return ok as int;
+}

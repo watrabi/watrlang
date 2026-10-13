@@ -22,5 +22,5 @@ function count_primes(int below): int {
 }
 
 function main(): int {
-    return (gcd(1071, 462) == 21) + (count_primes(1000) == 168) * 2;
+    return (gcd(1071, 462) == 21) as int + (count_primes(1000) == 168) as int * 2;
 }

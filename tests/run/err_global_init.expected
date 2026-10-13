@@ -13,7 +13,6 @@ error[E0308]: division by zero in a constant expression
   |
 3 | const int DIV = 10 / 0;
   |                 ^^^^^^ dividing by zero
-  |                      - this is 0
 
 error[E0307]: global initializers must be constant expressions
  --> tests/run/err_global_init.watr:4:12

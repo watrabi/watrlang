@@ -16,5 +16,5 @@ function main(): int {
     int b = ++i;   // b = 7, i = 7
     int c = i--;   // c = 7, i = 6
     int d = --i;   // d = 5, i = 5
-    return (x == 2) + (a == 5) * 2 + (b == 7) * 4 + (c == 7) * 8 + (d == 5) * 16 + (i == 5) * 32;
+    return (x == 2) as int + (a == 5) as int * 2 + (b == 7) as int * 4 + (c == 7) as int * 8 + (d == 5) as int * 16 + (i == 5) as int * 32;
 }

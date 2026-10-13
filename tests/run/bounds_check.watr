@@ -1,0 +1,5 @@
+function main(): int {
+    int[4] xs = [1, 2, 3, 4];
+    int i = 4;
+    return xs[i];   // out of bounds: the program stops with exit status 101
+}

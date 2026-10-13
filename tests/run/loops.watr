@@ -24,7 +24,7 @@ function do_once(): int {
 }
 
 function main(): int {
-    return (sum_to(100) == 5050)
-         + (count_down(7) == 7) * 2
-         + (do_once() == 1) * 4;
+    return (sum_to(100) == 5050) as int
+         + (count_down(7) == 7) as int * 2
+         + (do_once() == 1) as int * 4;
 }

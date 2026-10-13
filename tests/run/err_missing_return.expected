@@ -25,7 +25,7 @@ error[E0304]: function `h` can reach its end without returning a value
   |
 7 | function h(): int {
   |               --- `h` is declared to return `int`
-8 |     while (1) { break; }
+8 |     while (true) { break; }
 9 | }
   | ^ the function can end here without returning
   |

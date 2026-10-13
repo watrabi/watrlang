@@ -1,0 +1,2 @@
+panic at tests/run/bounds_check.watr:4:15: index out of bounds (array length 4)
+exit: 101

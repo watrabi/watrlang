@@ -1,7 +1,7 @@
 function f(int a): int {
     int a = 2;
     int b = 1;
-    if (b) {
+    if (b > 0) {
         int b = 3;
     }
     return a;

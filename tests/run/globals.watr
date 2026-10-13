@@ -12,5 +12,5 @@ function main(): int {
     bump();
     bump();
     start += counter;
-    return (LIMIT == 42) + (counter == 3) * 2 + (start == -2) * 4;
+    return (LIMIT == 42) as int + (counter == 3) as int * 2 + (start == -2) as int * 4;
 }

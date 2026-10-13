@@ -48,6 +48,7 @@ BIN = {
     ">=": lambda a, b: int(a >= b),
 }
 COMPOUND = ["+", "-", "*", "&", "|", "^", "<<", ">>", "/", "%"]
+ARITH = ["+", "-", "*", "/", "%", "&", "|", "^", "<<", ">>"]
 
 
 class Break(Exception):
@@ -81,6 +82,7 @@ class Gen:
         return f"{prefix}_{self.counter}"
 
     def expr(self, scope, depth):
+        """An int expression: (source, evaluator(env, funcs) -> int)."""
         rng = self.rng
         r = rng.random()
         if depth <= 0 or r < 0.3:
@@ -94,24 +96,20 @@ class Gen:
             args = [self.expr(scope, depth - 1) for _ in range(nparams)]
             src = f"{name}({', '.join(a[0] for a in args)})"
             return src, lambda env, f, n=name, args=args: call(f, n, [a[1](env, f) for a in args])
-        if r < 0.5:
-            op = rng.choice(["-", "~", "!"])
+        if r < 0.48:
+            op = rng.choice(["-", "~"])
             s, e = self.expr(scope, depth - 1)
-            fn = {"-": lambda a: wrap(-a), "~": lambda a: wrap(~a), "!": lambda a: int(a == 0)}[op]
+            fn = {"-": lambda a: wrap(-a), "~": lambda a: wrap(~a)}[op]
             return f"({op}{s})", lambda env, f, e=e, fn=fn: fn(e(env, f))
-        if r < 0.58:
-            c, ce = self.expr(scope, depth - 1)
+        if r < 0.56:
+            c, ce = self.cond(scope, depth - 1)
             a, ae = self.expr(scope, depth - 1)
             b, be = self.expr(scope, depth - 1)
             return f"({c} ? {a} : {b})", lambda env, f: ae(env, f) if ce(env, f) else be(env, f)
-        if r < 0.66:
-            op = rng.choice(["&&", "||"])
-            a, ae = self.expr(scope, depth - 1)
-            b, be = self.expr(scope, depth - 1)
-            if op == "&&":
-                return f"({a} && {b})", lambda env, f: int(bool(ae(env, f)) and bool(be(env, f)))
-            return f"({a} || {b})", lambda env, f: int(bool(ae(env, f)) or bool(be(env, f)))
-        op = rng.choice(list(BIN))
+        if r < 0.62:
+            c, ce = self.cond(scope, depth - 1)
+            return f"({c} as int)", lambda env, f, ce=ce: int(ce(env, f))
+        op = rng.choice(list(ARITH))
         a, ae = self.expr(scope, depth - 1)
         if op in ("/", "%"):
             # A divisor that can't be 0 or -1, so the model never traps.
@@ -119,6 +117,28 @@ class Gen:
             return f"({a} {op} {lit(d)})", lambda env, f, ae=ae, d=d, op=op: BIN[op](ae(env, f), d)
         b, be = self.expr(scope, depth - 1)
         return f"({a} {op} {b})", lambda env, f, ae=ae, be=be, op=op: BIN[op](ae(env, f), be(env, f))
+
+    def cond(self, scope, depth):
+        """A bool expression: (source, evaluator(env, funcs) -> bool)."""
+        rng = self.rng
+        r = rng.random()
+        if depth <= 0 or r < 0.5:
+            op = rng.choice(["==", "!=", "<", ">", "<=", ">="])
+            a, ae = self.expr(scope, max(depth - 1, 0))
+            b, be = self.expr(scope, max(depth - 1, 0))
+            return f"({a} {op} {b})", lambda env, f, ae=ae, be=be, op=op: bool(BIN[op](ae(env, f), be(env, f)))
+        if r < 0.6:
+            s, e = self.cond(scope, depth - 1)
+            return f"(!{s})", lambda env, f, e=e: not e(env, f)
+        if r < 0.65:
+            v = rng.random() < 0.5
+            return ("true" if v else "false"), lambda env, f, v=v: v
+        op = rng.choice(["&&", "||"])
+        a, ae = self.cond(scope, depth - 1)
+        b, be = self.cond(scope, depth - 1)
+        if op == "&&":
+            return f"({a} && {b})", lambda env, f: ae(env, f) and be(env, f)
+        return f"({a} || {b})", lambda env, f: ae(env, f) or be(env, f)
 
     # ---- statements: (source lines, executor(env, funcs)) --------------------
 
@@ -177,7 +197,7 @@ class Gen:
             return [f"{pad}{name}{op};"], run
 
         if r < 0.64 and depth > 0:
-            c, ce = self.expr(scope, 2)
+            c, ce = self.cond(scope, 2)
             tl, tr = self.block(scope, depth - 1, in_loop, readonly, indent + 1)
             el, er = self.block(scope, depth - 1, in_loop, readonly, indent + 1)
             lines = [f"{pad}if ({c}) {{"] + tl + [f"{pad}}} else {{"] + el + [f"{pad}}}"]
@@ -228,7 +248,7 @@ class Gen:
             return lines, run
 
         if r < 0.9 and in_loop:
-            c, ce = self.expr(scope, 1)
+            c, ce = self.cond(scope, 1)
             kind = rng.choice(["break", "continue"])
             exc = Break if kind == "break" else Continue
 
@@ -240,7 +260,7 @@ class Gen:
         if r < 0.93:
             # Early returns hand back a checksum of everything in scope, so
             # every variable's value shows up in the function's result.
-            c, ce = self.expr(scope, 2)
+            c, ce = self.cond(scope, 2)
             hs, he = checksum(scope)
 
             def run(env, f, ce=ce, he=he):
