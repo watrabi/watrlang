@@ -109,7 +109,8 @@ static ValClass cls(const Type *t) {
     case TY_ARRAY:
     case TY_STRUCT:
     case TY_STRING:
-    case TY_ERRUNION: return CLS_MEM;
+    case TY_ERRUNION:
+    case TY_MIXED: return CLS_MEM;
     case TY_VOID: return CLS_NONE;
     default: return CLS_GPR;
     }
@@ -138,6 +139,7 @@ static void classify_into(const Type *t, uint32_t off, Eightbyte eb[2]) {
         if (eb[off / 8] == EB_NONE) eb[off / 8] = EB_SSE;   /* INTEGER wins if both appear */
         break;
     case TY_STRING:   /* {ptr, len} */
+    case TY_MIXED:    /* {tag, bits} */
         eb[off / 8] = EB_INT;
         eb[off / 8 + 1] = EB_INT;
         break;
@@ -1114,8 +1116,19 @@ static void gen_value(Gen *g, const Expr *e) {
     case EXPR_CAST:
         gen_cast(g, e);
         return;
-    case EXPR_STRUCT_LIT:
     case EXPR_ARRAY_LIT:
+        if (t->kind == TY_PHPARRAY) {   /* create, then fill */
+            Symbol *tmp = e->u.array.tmp;
+            gen_call(g, e->u.array.create);
+            tmp->offset = alloc_slot(g, 8, 8);
+            emit(g, "mov qword ptr [rbp - %d], rax", -tmp->offset);
+            for (size_t i = 0; i < e->u.array.ncalls; i++) gen_call(g, e->u.array.calls[i]);
+            emit(g, "mov rax, qword ptr [rbp - %d]", -tmp->offset);
+            return;
+        }
+        gen_aggregate_lit(g, e);
+        return;
+    case EXPR_STRUCT_LIT:
         gen_aggregate_lit(g, e);
         return;
     default:
@@ -1499,7 +1512,7 @@ static void emit_globals(Gen *g, const Program *prog) {
 /* Can a value of this type hold a pointer into the GC heap? */
 static bool has_pointers(const Type *t) {
     switch (t->kind) {
-    case TY_PTR: case TY_STRING: case TY_CLASS: return true;
+    case TY_PTR: case TY_STRING: case TY_CLASS: case TY_MIXED: case TY_PHPARRAY: return true;
     case TY_ARRAY: return has_pointers(t->base);
     case TY_STRUCT: case TY_ERRUNION:
         for (size_t i = 0; i < t->nfields; i++)

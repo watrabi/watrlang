@@ -111,6 +111,7 @@
     X(FLOAT_T,   "float")       \
     X(STRING_T,  "string")      \
     X(ARRAY_T,   "array")       \
+    X(MIXED_T,   "mixed")       \
     X(I8,        "i8")          \
     X(I16,       "i16")         \
     X(I32,       "i32")         \

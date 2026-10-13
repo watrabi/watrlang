@@ -1,0 +1,19 @@
+name: watr, age: 21, count: 4
+  name => watr
+  age => 21
+  admin => false
+  0 => appended
+0:10 1:20 2:30 3:40 10:100 11:101 
+sum: 301
+missing: null
+equal: true true false
+matrix: 32
+points: 4, second y: 4
+bag: 2 first 2.5
+total: 3.75
+shared: -1
+42 2.5 str [] true true
+0=5 1=6 2=7 3=8 0:104 1:101 2:121 
+big: 1000 47262215
+panic at tests/run/arrays_php.watr:103:10: expected string, found int
+exit: 101

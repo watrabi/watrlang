@@ -1,0 +1,138 @@
+// Helpers for PHP-style arrays (ordered maps from int or string keys to
+// mixed values). Arrays are shared, not copied, when assigned or passed;
+// copy() makes an independent one.
+
+// Is there an element with this key?
+function has(array a, mixed key): bool {
+    return __rt_array_has(a, key);
+}
+
+// Removes the element with this key; false if there wasn't one.
+function remove(array a, mixed key): bool {
+    return __rt_array_remove(a, key);
+}
+
+// Appends, like `a[] = v`.
+function push(array a, mixed v): void {
+    a[] = v;
+}
+
+// Removes and returns the last element (null if the array is empty).
+function pop(array a): mixed {
+    for (usize i = __rt_array_slots(a); i > 0; i--) {
+        if (__rt_array_live(a, i - 1)) {
+            mixed v = __rt_array_value(a, i - 1);
+            __rt_array_remove(a, __rt_array_key(a, i - 1));
+            return v;
+        }
+    }
+    return null;
+}
+
+// The keys, in order, as a list.
+function keys(array a): array {
+    array out = [];
+    foreach (a as k => _v) {
+        out[] = k;
+    }
+    return out;
+}
+
+// The values, in order, as a list.
+function values(array a): array {
+    array out = [];
+    foreach (a as v) {
+        out[] = v;
+    }
+    return out;
+}
+
+// Is some element equal to v (same type and value)?
+function contains(array a, mixed v): bool {
+    foreach (a as x) {
+        if (x == v) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// The key of the first element equal to v, or null.
+function key_of(array a, mixed v): mixed {
+    foreach (a as k => x) {
+        if (x == v) {
+            return k;
+        }
+    }
+    return null;
+}
+
+// The elements as text, separated by sep.
+function join(array a, string sep): string {
+    string out = "";
+    bool first = true;
+    foreach (a as v) {
+        if (!first) {
+            out .= sep;
+        }
+        out .= v;
+        first = false;
+    }
+    return out;
+}
+
+// [lo, lo + 1, ..., hi]
+function range(int lo, int hi): array {
+    array out = [];
+    for (int i = lo; i <= hi; i++) {
+        out[] = i;
+    }
+    return out;
+}
+
+// A new array with the same keys and values.
+function copy(array a): array {
+    array out = [];
+    foreach (a as k => v) {
+        out[k] = v;
+    }
+    return out;
+}
+
+// Like PHP's array_merge: b's string keys replace a's; int keys are
+// renumbered from 0.
+function merge(array a, array b): array {
+    array out = [];
+    foreach (a as k => v) {
+        if (__rt_mixed_type(k) == "string") {
+            out[k] = v;
+        } else {
+            out[] = v;
+        }
+    }
+    foreach (b as k => v) {
+        if (__rt_mixed_type(k) == "string") {
+            out[k] = v;
+        } else {
+            out[] = v;
+        }
+    }
+    return out;
+}
+
+// The values in reverse order, as a list.
+function reverse(array a): array {
+    array out = [];
+    for (usize i = __rt_array_slots(a); i > 0; i--) {
+        if (__rt_array_live(a, i - 1)) {
+            out[] = __rt_array_value(a, i - 1);
+        }
+    }
+    return out;
+}
+
+// The type of value a mixed holds: "null", "bool", "int", "float",
+// "string", "array" or "object".
+function type_of(mixed v): string {
+    return __rt_mixed_type(v);
+}

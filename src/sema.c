@@ -36,6 +36,8 @@ typedef struct {
     int defer_loop_depth;   /* loop_depth where that body starts */
     int fn_errors_before;
     bool needs_libc;
+    int temps;          /* numbering for names sema invents (foreach) */
+    uint32_t classes;   /* class ids handed out */
 } Sema;
 
 typedef struct {
@@ -51,6 +53,7 @@ static bool const_eval(Sema *S, const Expr *e, ConstVal *out, bool report);
 static bool coerce(Sema *S, Expr **slot, Type *to, const Loc *why, const char *why_text);
 static Type *check_coalesce(Sema *S, Expr *e, Type *hint);
 static const char *closest(const char *name, const char **candidates, size_t n);
+static Expr *to_mixed(Sema *S, Expr *e);
 
 /* ---- small helpers ------------------------------------------------------- */
 
@@ -515,6 +518,8 @@ static Type *resolve_type(Sema *S, const TypeExpr *te, bool allow_void) {
     case TYPEX_SLICE:
         not_yet(te->loc, "slices (`T[]`)", 7);
         return ty_error;
+    case TYPEX_RESOLVED:
+        return te->u.resolved;
     case TYPEX_ERROR_UNION: {
         Type *vt = resolve_type(S, te->u.error_union.value, true);
         Type *et = resolve_type(S, te->u.error_union.error, false);
@@ -776,6 +781,9 @@ static void mismatch_help(Sema *S, Diag *d, const Expr *e, const Type *from, con
         diag_help(d, "to handle the error here instead: `??` gives a fallback value, and `->ok` says whether it succeeded");
     } else if (to->kind == TY_ERRUNION && from->kind == TY_ENUM) {
         diag_note(d, "this function's errors are `%s`, not `%s`", type_name(to->err), type_name(from));
+    } else if (from->kind == TY_MIXED) {
+        snprintf(suffix, sizeof suffix, " as %s", type_name(to));
+        fix_append(S, d, e, suffix, "convert it with `as`, which checks the type at run time");
     }
 }
 
@@ -790,6 +798,13 @@ static bool coerce(Sema *S, Expr **slot, Type *to, const Loc *why, const char *w
     if (type_assignable(from, to)) {
         if (from->kind == TY_FLOAT && to->kind == TY_FLOAT && from->size != to->size) *slot = wrap_cast(S, e, to);
         return true;
+    }
+    if (to->kind == TY_MIXED) {   /* any storable value becomes mixed */
+        Expr *m = to_mixed(S, e);
+        if (m) {
+            *slot = m;
+            return true;
+        }
     }
     if (to->kind == TY_ERRUNION && from->kind != TY_ERRUNION) {
         /* A value or an error becomes a T!E. */
@@ -964,6 +979,86 @@ static void report_not_stringable(const Expr *e, const char *context) {
     diag_end(d);
 }
 
+/* "file:line:col" as a string literal, for runtime check messages. */
+static Expr *where_string(Sema *S, Loc loc) {
+    char buf[512];
+    snprintf(buf, sizeof buf, "%s:%u:%u", loc.file ? loc.file->path : "?", loc.line, loc.col);
+    Expr *e = new_node(S, EXPR_STRING, loc, ty_string);
+    e->u.str.data = arena_strndup(S->arena, buf, strlen(buf));
+    e->u.str.len = strlen(buf);
+    return e;
+}
+
+static Expr *u64_const(Sema *S, Loc loc, uint64_t v) {
+    Expr *e = new_node(S, EXPR_INT, loc, ty_u64);
+    e->u.int_val = v;
+    return e;
+}
+
+static Expr *rt_call2(Sema *S, const char *name, Loc loc, Expr *a, Expr *b) {
+    Expr *args[2] = {a, b};
+    return rt_call(S, name, loc, args, 2);
+}
+
+/* A checked value as `mixed`, or NULL if its type can't be stored in one. */
+static Expr *to_mixed(Sema *S, Expr *e) {
+    Type *t = e->type;
+    switch (t->kind) {
+    case TY_MIXED: return e;
+    case TY_NULL: return rt_call(S, "__rt_mixed_null", e->loc, NULL, 0);
+    case TY_BOOL: return rt_call1(S, "__rt_mixed_bool", e);
+    case TY_INT:
+    case TY_ENUM: return rt_call1(S, "__rt_mixed_int", convert(S, e, ty_i64));
+    case TY_FLOAT: return rt_call1(S, "__rt_mixed_float", convert(S, e, ty_f64));
+    case TY_STRING: return rt_call1(S, "__rt_mixed_string", e);
+    case TY_PHPARRAY: return rt_call1(S, "__rt_mixed_array", e);
+    case TY_CLASS:
+        return rt_call2(S, "__rt_mixed_object", e->loc, u64_const(S, e->loc, 16 + (uint64_t)t->class_id),
+                        wrap_cast(S, e, ty_u64));
+    default: return NULL;
+    }
+}
+
+/* A mixed value as `to`, checked at run time; NULL if `to` can't be held in a mixed. */
+static Expr *from_mixed(Sema *S, Expr *e, Type *to, Loc loc) {
+    Expr *args[4];
+    switch (to->kind) {
+    case TY_MIXED: return e;
+    case TY_BOOL: return rt_call2(S, "__rt_as_bool", loc, e, where_string(S, loc));
+    case TY_INT:
+    case TY_ENUM: return convert(S, rt_call2(S, "__rt_as_int", loc, e, where_string(S, loc)), to);
+    case TY_FLOAT: return convert(S, rt_call2(S, "__rt_as_float", loc, e, where_string(S, loc)), to);
+    case TY_STRING: return rt_call2(S, "__rt_as_string", loc, e, where_string(S, loc));
+    case TY_PHPARRAY: return rt_call2(S, "__rt_as_array", loc, e, where_string(S, loc));
+    case TY_CLASS: {
+        Expr *name = new_node(S, EXPR_STRING, loc, ty_string);
+        name->u.str.data = to->name;
+        name->u.str.len = strlen(to->name);
+        args[0] = e;
+        args[1] = u64_const(S, loc, 16 + (uint64_t)to->class_id);
+        args[2] = name;
+        args[3] = where_string(S, loc);
+        return wrap_cast(S, rt_call(S, "__rt_as_object", loc, args, 4), to);
+    }
+    default: return NULL;
+    }
+}
+
+/* An `array` (or a mixed holding one, checked at run time) as an array expression. */
+static Expr *as_array_expr(Sema *S, Expr *base) {
+    if (base->type->kind == TY_PHPARRAY) return base;
+    return rt_call2(S, "__rt_as_array", base->loc, base, where_string(S, base->loc));
+}
+
+/* E0366 */
+static void report_not_mixable(const Expr *e, const char *what) {
+    Diag *d = diag_start(DIAG_ERROR, "E0366", e->loc, "a value of type `%s` can't be %s", type_name(e->type), what);
+    diag_label(d, "not storable in `mixed`");
+    diag_note(d, "`mixed` holds null, bools, ints, floats, strings, arrays and objects");
+    if (e->type->kind == TY_STRUCT) diag_help(d, "use a class instead of a struct, or store the fields one by one");
+    diag_end(d);
+}
+
 /* A call to the generated function that names a variant of enum `e`'s
  * type ("Red"); values that aren't a variant print as numbers. */
 static Expr *enum_name_call(Sema *S, Expr *e) {
@@ -1036,6 +1131,10 @@ static Expr *stringify(Sema *S, Expr *e, const char *context) {
         return rt_call1(S, "__rt_bool_to_string", e);
     case TY_ENUM:
         return enum_name_call(S, e);
+    case TY_MIXED:
+        return rt_call1(S, "__rt_mixed_to_string", e);
+    case TY_PHPARRAY:
+        return rt_call1(S, "__rt_mixed_to_string", rt_call1(S, "__rt_mixed_array", e));
     case TY_CLASS:
         if (find_method(t, "__toString")) return to_string_call(S, e);
         report_not_stringable(e, context);
@@ -1062,6 +1161,8 @@ static Expr *echo_call(Sema *S, Expr *e) {
     case TY_FLOAT: return rt_call1(S, "__rt_echo_f64", convert(S, e, ty_f64));
     case TY_BOOL: return rt_call1(S, "__rt_echo_bool", e);
     case TY_ENUM: return rt_call1(S, "__rt_echo_str", enum_name_call(S, e));
+    case TY_MIXED:
+    case TY_PHPARRAY: return rt_call1(S, "__rt_echo_str", stringify(S, e, "printed"));
     case TY_CLASS:
         if (find_method(t, "__toString")) return rt_call1(S, "__rt_echo_str", to_string_call(S, e));
         report_not_stringable(e, "printed with `echo`");
@@ -1480,6 +1581,24 @@ static Type *check_binary(Sema *S, Expr **slot, Type *hint) {
         return set_type(*slot, ty_bool);
     }
 
+    if ((op == TOK_EQ || op == TOK_NE) && (lt->kind == TY_MIXED || rt->kind == TY_MIXED)) {
+        /* Strict, like PHP's ===: the same type and value. */
+        Expr *a = to_mixed(S, *lhs), *b = to_mixed(S, *rhs);
+        if (!a || !b) {
+            report_not_mixable(!a ? *lhs : *rhs, "compared with a `mixed` value");
+            return set_type(e, ty_error);
+        }
+        Expr *call = rt_call2(S, "__rt_mixed_eq", e->loc, a, b);
+        if (op == TOK_NE) {
+            Expr *not_ = new_node(S, EXPR_UNARY, e->loc, ty_bool);
+            not_->u.unary.op = TOK_BANG;
+            not_->u.unary.operand = call;
+            call = not_;
+        }
+        *slot = call;
+        return ty_bool;
+    }
+
     if (is_cmp(op)) {
         bool eq = op == TOK_EQ || op == TOK_NE;
         if (type_is_numeric(lt) && type_is_numeric(rt)) {
@@ -1492,8 +1611,8 @@ static Type *check_binary(Sema *S, Expr **slot, Type *hint) {
         if (eq && lt->kind == TY_BOOL && rt->kind == TY_BOOL) return set_type(e, ty_bool);
         if (lt->kind == TY_ENUM && lt == rt) return set_type(e, ty_bool);
         /* Objects compare by identity, with each other or with null. */
-        if (eq && (lt->kind == TY_CLASS || rt->kind == TY_CLASS) &&
-            (lt == rt || lt->kind == TY_NULL || rt->kind == TY_NULL))
+        bool lref = lt->kind == TY_CLASS || lt->kind == TY_PHPARRAY, rref = rt->kind == TY_CLASS || rt->kind == TY_PHPARRAY;
+        if (eq && (lref || rref) && (lt == rt || lt->kind == TY_NULL || rt->kind == TY_NULL))
             return set_type(e, ty_bool);
         bool lp = lt->kind == TY_PTR || lt->kind == TY_NULL, rp = rt->kind == TY_PTR || rt->kind == TY_NULL;
         if (lp && rp && (eq || (lt->kind == TY_PTR && rt->kind == TY_PTR)) &&
@@ -1503,7 +1622,9 @@ static Type *check_binary(Sema *S, Expr **slot, Type *hint) {
         Diag *d = diag_start(DIAG_ERROR, "E0310", e->loc, "can't compare `%s` with `%s`", type_name(lt), type_name(rt));
         diag_span(d, (*lhs)->loc, "`%s`", type_name(lt));
         diag_span(d, (*rhs)->loc, "`%s`", type_name(rt));
-        if (type_is_aggregate(lt)) diag_note(d, "structs and arrays can't be compared with operators");
+        if (lt->kind == TY_MIXED || rt->kind == TY_MIXED)
+            diag_help(d, "`mixed` values only compare with `==` and `!=`; convert with `as` first");
+        else if (type_is_aggregate(lt)) diag_note(d, "structs and arrays can't be compared with operators");
         else if (lt->kind == TY_ERRUNION || rt->kind == TY_ERRUNION)
             diag_help(d, "unwrap the error union first, with `?` or `??`");
         else if (lt->kind == TY_ENUM || rt->kind == TY_ENUM)
@@ -1873,6 +1994,14 @@ static Type *check_call(Sema *S, Expr *e) {
         }
         Type *t = check(S, &e->u.call.args[0], NULL);
         if (is_err(t)) return set_type(e, ty_error);
+        if (t->kind == TY_PHPARRAY) {
+            *e = *rt_call1(S, "__rt_array_len", e->u.call.args[0]);
+            return ty_usize;
+        }
+        if (t->kind == TY_MIXED) {
+            *e = *rt_call1(S, "__rt_array_len", as_array_expr(S, e->u.call.args[0]));
+            return ty_usize;
+        }
         if (t->kind == TY_STRING) {   /* known at run time: the string's len field */
             Expr *arg = e->u.call.args[0];
             e->kind = EXPR_MEMBER;
@@ -1956,9 +2085,25 @@ static Type *check_member(Sema *S, Expr *e) {
     if (is_err(t)) return set_type(e, ty_error);
     Type *st = t;
     e->via_pointer = false;
-    if (t->kind == TY_PTR && (t->base->kind == TY_STRUCT || t->base->kind == TY_STRING || t->base->kind == TY_ERRUNION)) {
+    if (t->kind == TY_PTR && (t->base->kind == TY_STRUCT || t->base->kind == TY_STRING || t->base->kind == TY_ERRUNION ||
+                              t->base->kind == TY_MIXED)) {
         st = t->base;
         e->via_pointer = true;
+    }
+    if (st->kind == TY_MIXED && S->mods[S->cur]->is_runtime) {   /* the runtime's m->tag, m->bits */
+        const Field *f = find_field(st, e->u.member.name);
+        if (f) {
+            e->field_offset = f->offset;
+            return set_type(e, f->type);
+        }
+    }
+    if (st->kind == TY_MIXED) {
+        Diag *d = diag_start(DIAG_ERROR, "E0318", e->u.member.name_loc, "a `mixed` value has no fields");
+        diag_label(d, "can't use `->` here");
+        diag_span(d, obj->loc, "this is `mixed`");
+        diag_help(d, "convert it to the type it holds first, like `(m as Point)->%s`", e->u.member.name);
+        diag_end(d);
+        return set_type(e, ty_error);
     }
     if (st->kind == TY_ERRUNION) {   /* r->ok, r->value, r->error */
         const char *name = e->u.member.name;
@@ -2052,11 +2197,52 @@ static Type *check_member(Sema *S, Expr *e) {
     return set_type(e, f->type);
 }
 
-static Type *check_index(Sema *S, Expr *e) {
+/* The key of a[key] on an `array`, as mixed; NULL after an error. */
+static Expr *array_key(Sema *S, Expr **slot) {
+    Type *kt = check(S, slot, NULL);
+    Expr *k = *slot;
+    if (is_err(kt) || !require_value(S, k)) return NULL;
+    if (!type_is_intlike(kt) && kt->kind != TY_STRING && kt->kind != TY_MIXED && kt->kind != TY_BOOL) {
+        Diag *d = diag_start(DIAG_ERROR, "E0366", k->loc, "array keys must be ints or strings, found `%s`", type_name(kt));
+        diag_label(d, "invalid key");
+        diag_end(d);
+        return NULL;
+    }
+    return to_mixed(S, k);
+}
+
+static void report_append_as_value(const Expr *e) {
+    Diag *d = diag_start(DIAG_ERROR, "E0366", e->loc, "`a[]` can only be assigned to");
+    diag_label(d, "appends a new element");
+    diag_help(d, "write `a[] = value;` to append, or `a[key]` to read an element");
+    diag_end(d);
+}
+
+static Type *check_index_rest(Sema *S, Expr **slot, Type *bt);
+
+static Type *check_index(Sema *S, Expr **slot) {
+    Expr *e = *slot;
     Type *bt = check(S, &e->u.index.base, NULL);
+    return check_index_rest(S, slot, bt);
+}
+
+/* a[i], with `a` already checked. */
+static Type *check_index_rest(Sema *S, Expr **slot, Type *bt) {
+    Expr *e = *slot;
     if (!e->u.index.index) {
-        not_yet(e->loc, "appending with `a[] = x` (PHP-style arrays)", 12);
+        if (bt->kind == TY_PHPARRAY || bt->kind == TY_MIXED) report_append_as_value(e);
+        else if (!is_err(bt)) {
+            Diag *d = diag_start(DIAG_ERROR, "E0319", e->loc, "`[]` appends to an `array`, but this is `%s`", type_name(bt));
+            diag_label(d, "can't append to this");
+            diag_end(d);
+        }
         return set_type(e, ty_error);
+    }
+    if (bt->kind == TY_PHPARRAY || bt->kind == TY_MIXED) {   /* a[key]: null if missing */
+        Expr *key = array_key(S, &e->u.index.index);
+        if (!key) return set_type(e, ty_error);
+        *slot = rt_call2(S, "__rt_array_get", e->loc, as_array_expr(S, e->u.index.base), key);
+        return ty_mixed;
     }
     Type *it = check(S, &e->u.index.index, ty_usize);
     Expr *base = e->u.index.base, *index = e->u.index.index;
@@ -2103,6 +2289,27 @@ static Type *check_cast(Sema *S, Expr *e) {
     Expr *inner = e->u.cast.expr;
     if (is_err(to) || is_err(from)) return set_type(e, ty_error);
     if (!require_value(S, inner)) return set_type(e, ty_error);
+    if (from->kind == TY_MIXED && to->kind != TY_MIXED) {   /* checked at run time */
+        Expr *conv = from_mixed(S, inner, to, e->loc);
+        if (!conv) {
+            Diag *d = diag_start(DIAG_ERROR, "E0366", e->loc, "a `mixed` value can't hold a `%s`", type_name(to));
+            diag_label(d, "invalid cast");
+            diag_note(d, "`mixed` holds null, bools, ints, floats, strings, arrays and objects");
+            diag_end(d);
+            return set_type(e, ty_error);
+        }
+        *e = *conv;
+        return e->type;
+    }
+    if (to->kind == TY_MIXED) {
+        Expr *conv = to_mixed(S, inner);
+        if (!conv) {
+            report_not_mixable(inner, "converted to `mixed`");
+            return set_type(e, ty_error);
+        }
+        *e = *conv;
+        return e->type;
+    }
     /* `0xB8000 as u16*`: the literal must not be range-checked as int if it fits u64. */
     if (type_castable(from, to)) return set_type(e, to);
     Diag *d = diag_start(DIAG_ERROR, "E0313", e->loc, "can't cast `%s` to `%s`", type_name(from), type_name(to));
@@ -2137,8 +2344,27 @@ static Type *check_string_lit(Sema *S, Expr *e) {
     return set_type(e, ty_string);
 }
 
+/* mixed { tag: t, bits: b }: the runtime builds mixed values from parts. */
+static Type *check_mixed_lit(Sema *S, Expr *e) {
+    if (!S->mods[S->cur]->is_runtime) {
+        Diag *d = diag_start(DIAG_ERROR, "E0365", e->loc, "`mixed` values can't be built from parts");
+        diag_label(d, "the representation of `mixed` is private to the runtime");
+        diag_help(d, "convert a value instead: `mixed m = 5;`");
+        diag_end(d);
+        for (size_t i = 0; i < e->u.struct_lit.n; i++) check(S, &e->u.struct_lit.fields[i]->value, NULL);
+        return set_type(e, ty_error);
+    }
+    for (size_t i = 0; i < e->u.struct_lit.n; i++) {
+        FieldInit *fi = e->u.struct_lit.fields[i];
+        check(S, &fi->value, ty_u64);
+        coerce(S, &fi->value, ty_u64, NULL, NULL);
+    }
+    return set_type(e, ty_mixed);
+}
+
 static Type *check_struct_lit(Sema *S, Expr *e) {
     if (strcmp(e->u.struct_lit.type_name, "string") == 0) return check_string_lit(S, e);
+    if (strcmp(e->u.struct_lit.type_name, "mixed") == 0) return check_mixed_lit(S, e);
     Type *st = find_struct(S, e->u.struct_lit.type_name);
     if (st && st->kind == TY_CLASS) {
         Diag *d = diag_start(DIAG_ERROR, "E0363", e->loc, "`%s` is a class, not a struct", st->name);
@@ -2184,21 +2410,48 @@ static Type *check_struct_lit(Sema *S, Expr *e) {
     return set_type(e, st);
 }
 
-static Type *check_array_lit(Sema *S, Expr *e, Type *hint) {
+/* [a, b, k => v] as an `array`: created, then filled by runtime calls. */
+static Type *check_php_array_lit(Sema *S, Expr *e) {
+    Symbol *tmp = new_symbol(S, SYM_LOCAL, "array", e->loc);
+    tmp->type = ty_phparray;
+    e->u.array.tmp = tmp;
+    e->u.array.create = rt_call1(S, "__rt_array_new", u64_const(S, e->loc, e->u.array.n));
+    e->u.array.calls = arena_alloc(S->arena, (e->u.array.n ? e->u.array.n : 1) * sizeof(Expr *));
+    e->u.array.ncalls = 0;
+    bool ok = true;
     for (size_t i = 0; i < e->u.array.n; i++) {
-        if (e->u.array.entries[i]->key) {
-            not_yet(e->u.array.entries[i]->key->loc, "keys in array literals (PHP-style arrays)", 12);
-            return set_type(e, ty_error);
+        ArrayEntry *ent = e->u.array.entries[i];
+        Expr *key = NULL;
+        if (ent->key && !(key = array_key(S, &ent->key))) ok = false;
+        Type *vt = check(S, &ent->value, NULL);
+        if (is_err(vt) || !require_value(S, ent->value)) {
+            ok = false;
+            continue;
+        }
+        Expr *v = to_mixed(S, ent->value);
+        if (!v) {
+            report_not_mixable(ent->value, "stored in an array");
+            ok = false;
+            continue;
+        }
+        if (!ok) continue;
+        Expr *self = new_node(S, EXPR_IDENT, e->loc, ty_phparray);
+        self->u.name = "array";
+        self->sym = tmp;
+        if (key) {
+            Expr *args[3] = {self, key, v};
+            e->u.array.calls[e->u.array.ncalls++] = rt_call(S, "__rt_array_set", ent->value->loc, args, 3);
+        } else {
+            e->u.array.calls[e->u.array.ncalls++] = rt_call2(S, "__rt_array_push", ent->value->loc, self, v);
         }
     }
-    if (!hint || hint->kind != TY_ARRAY) {
-        Diag *d = diag_start(DIAG_ERROR, "E0325", e->loc, "can't tell what type this array literal is");
-        diag_label(d, hint ? "expected `%s` here" : "no type to infer from", hint ? type_name(hint) : "");
-        diag_help(d, "array literals need a declared array type, like `int[3] xs = [1, 2, 3];`");
-        diag_end(d);
-        for (size_t i = 0; i < e->u.array.n; i++) check(S, &e->u.array.entries[i]->value, NULL);
-        return set_type(e, ty_error);
-    }
+    return set_type(e, ok ? ty_phparray : ty_error);
+}
+
+static Type *check_array_lit(Sema *S, Expr *e, Type *hint) {
+    bool has_keys = false;
+    for (size_t i = 0; i < e->u.array.n; i++) has_keys |= e->u.array.entries[i]->key != NULL;
+    if (!hint || hint->kind != TY_ARRAY || has_keys) return check_php_array_lit(S, e);
     if (e->u.array.n != hint->len) {
         Diag *d = diag_start(DIAG_ERROR, "E0325", e->loc, "expected %llu element%s, found %zu",
                              (unsigned long long)hint->len, hint->len == 1 ? "" : "s", e->u.array.n);
@@ -2282,6 +2535,9 @@ static Type *check_new(Sema *S, Expr *e) {
     }
     e->u.new_.alloc = find_runtime_func(S, "__rt_alloc");
     add_callee(S, e->u.new_.alloc);
+    for (size_t i = 0; i < ct->nfields; i++)   /* array fields start as new empty arrays */
+        if (ct->fields[i].init && ct->fields[i].init->kind == EXPR_ARRAY_LIT)
+            add_callee(S, find_runtime_func(S, "__rt_array_new"));
     Symbol *tmp = new_symbol(S, SYM_LOCAL, "this", e->loc);
     tmp->type = ct;
     e->u.new_.tmp = tmp;
@@ -2338,6 +2594,7 @@ static void report_assign_as_value(const Expr *e) {
 
 static Type *check(Sema *S, Expr **slot, Type *hint) {
     Expr *e = *slot;
+    if (e->checked) return e->type;
     if (hint && is_err(hint)) hint = NULL;
     if (hint && hint->kind == TY_ERRUNION) hint = hint->base;   /* literals take the value type */
     switch (e->kind) {
@@ -2365,7 +2622,7 @@ static Type *check(Sema *S, Expr **slot, Type *hint) {
     case EXPR_MEMBER:
         return check_member(S, e);
     case EXPR_INDEX:
-        return check_index(S, e);
+        return check_index(S, slot);
     case EXPR_CAST:
         return check_cast(S, e);
     case EXPR_STRUCT_LIT:
@@ -2479,13 +2736,64 @@ static TokenKind compound_to_binary(TokenKind op) {
     }
 }
 
+/* a[key] = v and a[] = v on an `array`: become runtime calls. */
+static void check_array_store(Sema *S, Expr *e) {
+    Expr *target = e->u.binary.lhs;
+    TokenKind op = e->u.binary.op;
+    if (op != TOK_ASSIGN) {
+        Diag *d = diag_start(DIAG_ERROR, "E0366", e->loc, "`%s` doesn't work on array elements", token_kind_spelling(op));
+        diag_label(d, "elements are `mixed`");
+        diag_help(d, "read, convert and store explicitly, like `a[k] = (a[k] as int) + 1;`");
+        diag_end(d);
+        if (target->u.index.index) check(S, &target->u.index.index, NULL);
+        check(S, &e->u.binary.rhs, NULL);
+        return;
+    }
+    Expr *arr = as_array_expr(S, target->u.index.base);
+    Expr *key = NULL;
+    if (target->u.index.index) {
+        key = array_key(S, &target->u.index.index);
+        if (!key) {
+            check(S, &e->u.binary.rhs, NULL);
+            return;
+        }
+    }
+    Type *vt = check(S, &e->u.binary.rhs, NULL);
+    Expr *v = e->u.binary.rhs;
+    if (is_err(vt) || !require_value(S, v)) return;
+    Expr *mv = to_mixed(S, v);
+    if (!mv) {
+        report_not_mixable(v, "stored in an array");
+        return;
+    }
+    Expr *call;
+    if (key) {
+        Expr *args[3] = {arr, key, mv};
+        call = rt_call(S, "__rt_array_set", e->loc, args, 3);
+    } else {
+        call = rt_call2(S, "__rt_array_push", e->loc, arr, mv);
+    }
+    *e = *call;
+}
+
 static void check_assign(Sema *S, Expr *e) {
     TokenKind op = e->u.binary.op;
     set_type(e, ty_void);
     if (op == TOK_DOT_ASSIGN) {
         /* s .= x  is  s = s . x  (the target must be simple, since it's used twice). */
         Expr *target = e->u.binary.lhs;
-        Type *tt = target->kind == EXPR_IDENT ? check_ident(S, target, true) : check(S, &e->u.binary.lhs, NULL);
+        if (target->kind == EXPR_INDEX) {   /* a[k] .= x on an array */
+            Type *bt = check(S, &target->u.index.base, NULL);
+            if (bt->kind == TY_PHPARRAY || bt->kind == TY_MIXED) {
+                check_array_store(S, e);
+                return;
+            }
+            Type *tt0 = check_index_rest(S, &e->u.binary.lhs, bt);
+            (void)tt0;
+        }
+        Type *tt = target->kind == EXPR_IDENT ? check_ident(S, target, true)
+                   : target->kind == EXPR_INDEX ? e->u.binary.lhs->type
+                                                : check(S, &e->u.binary.lhs, NULL);
         target = e->u.binary.lhs;
         if (is_err(tt)) {
             check(S, &e->u.binary.rhs, NULL);
@@ -2533,7 +2841,17 @@ static void check_assign(Sema *S, Expr *e) {
         check(S, &e->u.binary.rhs, NULL);
         return;
     }
-    Type *tt = target->kind == EXPR_IDENT ? check_ident(S, target, op != TOK_ASSIGN) : check(S, &e->u.binary.lhs, NULL);
+    Type *tt;
+    if (target->kind == EXPR_INDEX) {
+        Type *bt = check(S, &target->u.index.base, NULL);
+        if (bt->kind == TY_PHPARRAY || bt->kind == TY_MIXED) {
+            check_array_store(S, e);
+            return;
+        }
+        tt = check_index_rest(S, &e->u.binary.lhs, bt);
+    } else {
+        tt = target->kind == EXPR_IDENT ? check_ident(S, target, op != TOK_ASSIGN) : check(S, &e->u.binary.lhs, NULL);
+    }
     target = e->u.binary.lhs;
     bool target_ok = check_target(target, "assign to");
 
@@ -2887,9 +3205,14 @@ static void report_missing_const_value(const VarDecl *vd) {
     diag_end(d);
 }
 
+static Expr *empty_array_lit(Sema *S, Loc loc) {
+    return new_node(S, EXPR_ARRAY_LIT, loc, NULL);
+}
+
 static void check_var_decl(Sema *S, VarDecl *vd) {
     Type *t = resolve_type(S, vd->type, false);
     if (vd->type->is_const && !vd->init) report_missing_const_value(vd);
+    if (t->kind == TY_PHPARRAY && !vd->init) vd->init = empty_array_lit(S, vd->loc);   /* `array a;` starts empty */
     if (vd->init) {
         if (vd->init->kind == EXPR_ASSIGN) {
             report_assign_as_value(vd->init);
@@ -2912,6 +3235,201 @@ static void check_dangling_return(const Expr *e) {
     diag_span(d, v->loc, "`%s` stops existing when the function returns", v->name);
     diag_help(d, "return the value itself, or have the caller pass in a pointer to fill");
     diag_end(d);
+}
+
+/* ---- foreach, rewritten into a for loop ---------------------------------- */
+
+static Stmt *mk_stmt(Sema *S, StmtKind kind, Loc loc) {
+    Stmt *s = ARENA_NEW(S->arena, Stmt);
+    s->kind = kind;
+    s->loc = loc;
+    return s;
+}
+
+static TypeExpr *mk_type(Sema *S, Type *t, Loc loc) {
+    TypeExpr *te = ARENA_NEW(S->arena, TypeExpr);
+    te->kind = TYPEX_RESOLVED;
+    te->loc = loc;
+    te->u.resolved = t;
+    return te;
+}
+
+static Expr *mk_ident(Sema *S, const char *name, Loc loc) {
+    Expr *e = new_node(S, EXPR_IDENT, loc, NULL);
+    e->u.name = name;
+    return e;
+}
+
+static Expr *mk_call(Sema *S, const char *fname, Loc loc, Expr *a, Expr *b) {
+    Expr *e = new_node(S, EXPR_CALL, loc, NULL);
+    e->u.call.callee = mk_ident(S, fname, loc);
+    e->u.call.nargs = b ? 2 : 1;
+    e->u.call.args = arena_alloc(S->arena, 2 * sizeof(Expr *));
+    e->u.call.args[0] = a;
+    e->u.call.args[1] = b;
+    return e;
+}
+
+static Expr *mk_binary(Sema *S, ExprKind kind, TokenKind op, Expr *a, Expr *b, Loc loc) {
+    Expr *e = new_node(S, kind, loc, NULL);
+    e->u.binary.op = op;
+    e->u.binary.lhs = a;
+    e->u.binary.rhs = b;
+    return e;
+}
+
+static Expr *mk_index(Sema *S, Expr *base, Expr *index, Loc loc) {
+    Expr *e = new_node(S, EXPR_INDEX, loc, NULL);
+    e->u.index.base = base;
+    e->u.index.index = index;
+    return e;
+}
+
+static Expr *mk_cast(Sema *S, Expr *inner, TypeExpr *te) {
+    Expr *e = new_node(S, EXPR_CAST, inner->loc, NULL);
+    e->u.cast.expr = inner;
+    e->u.cast.type = te;
+    return e;
+}
+
+static Stmt *mk_var(Sema *S, VarDecl *vd, Expr *init) {
+    Stmt *s = mk_stmt(S, STMT_VAR, vd->loc);
+    vd->init = init;
+    s->u.var = vd;
+    return s;
+}
+
+static VarDecl *mk_vardecl(Sema *S, Type *t, const char *name, Loc loc) {
+    VarDecl *vd = ARENA_NEW(S->arena, VarDecl);
+    vd->type = mk_type(S, t, loc);
+    vd->name = name;
+    vd->loc = loc;
+    return vd;
+}
+
+/* A foreach binding's initial value: converted with `as` if it has a
+ * declared type other than `natural` (the element's own type). */
+static Expr *binding_init(Sema *S, VarDecl *vd, Expr *value, Type *natural) {
+    if (!vd->type) {
+        vd->type = mk_type(S, natural, vd->loc);
+        return value;
+    }
+    return mk_cast(S, value, vd->type);
+}
+
+/*
+ * foreach (items as k => v) body  becomes
+ *   { T __fe = items;
+ *     for (usize __fi = 0; __fi < <count>; __fi++) {
+ *         [if (!<live>) continue;]   (arrays have holes)
+ *         K k = <key>; V v = <value>;
+ *         body } }
+ */
+static void check_foreach(Sema *S, Stmt *s) {
+    Loc loc = s->loc;
+    Expr **itp = &s->u.foreach_.iterable;
+    Type *t = check(S, itp, NULL);
+    Expr *it = *itp;
+    VarDecl *kb = s->u.foreach_.key, *vb = s->u.foreach_.value;
+    if (!is_err(t) && !require_value(S, it)) t = ty_error;
+    if (!is_err(t) && t->kind != TY_PHPARRAY && t->kind != TY_ARRAY && t->kind != TY_STRING) {
+        Diag *d = diag_start(DIAG_ERROR, "E0367", it->loc, "can't loop over a value of type `%s`", type_name(t));
+        diag_label(d, "not iterable");
+        char *text = t->kind == TY_MIXED ? loc_text(S, it->loc) : NULL;
+        if (text) {   /* parenthesized: `foreach (m as array as x)` wouldn't parse */
+            size_t len = strlen(text) + 16;
+            char *fixed = arena_alloc(S->arena, len);
+            snprintf(fixed, len, "(%s as array)", text);
+            diag_fix(d, it->loc, fixed, "if it holds an array, convert it");
+        }
+        if (t->kind != TY_MIXED) diag_note(d, "foreach works on `array`, fixed arrays (`T[N]`) and strings");
+        diag_end(d);
+        t = ty_error;
+    }
+    if (is_err(t)) {   /* still check the body, with error-typed bindings */
+        push_scope(S);
+        if (kb) kb->sym = declare_local(S, SYM_LOCAL, kb->name, kb->loc, ty_error, NULL);
+        vb->sym = declare_local(S, SYM_LOCAL, vb->name, vb->loc, ty_error, NULL);
+        if (kb) kb->sym->reads++;
+        vb->sym->reads++;
+        S->loop_depth++;
+        check_scoped(S, s->u.foreach_.body);
+        S->loop_depth--;
+        pop_scope(S);
+        return;
+    }
+    it->checked = true;
+    int n = ++S->temps;
+    char buf[32];
+    snprintf(buf, sizeof buf, "__fe%d", n);
+    const char *fe = arena_strndup(S->arena, buf, strlen(buf));
+    snprintf(buf, sizeof buf, "__fi%d", n);
+    const char *fi = arena_strndup(S->arena, buf, strlen(buf));
+
+    Stmt *setup, *skip = NULL;
+    Expr *count, *key, *value;
+    Type *key_type, *value_type;
+    if (t->kind == TY_PHPARRAY) {
+        setup = mk_var(S, mk_vardecl(S, ty_phparray, fe, loc), it);
+        count = mk_call(S, "__rt_array_slots", loc, mk_ident(S, fe, loc), NULL);
+        Expr *live = mk_call(S, "__rt_array_live", loc, mk_ident(S, fe, loc), mk_ident(S, fi, loc));
+        Expr *not_live = new_node(S, EXPR_UNARY, loc, NULL);
+        not_live->u.unary.op = TOK_BANG;
+        not_live->u.unary.operand = live;
+        skip = mk_stmt(S, STMT_IF, loc);
+        skip->u.if_.cond = not_live;
+        skip->u.if_.then_stmt = mk_stmt(S, STMT_CONTINUE, loc);
+        key = mk_call(S, "__rt_array_key", loc, mk_ident(S, fe, loc), mk_ident(S, fi, loc));
+        value = mk_call(S, "__rt_array_value", loc, mk_ident(S, fe, loc), mk_ident(S, fi, loc));
+        key_type = value_type = ty_mixed;
+    } else if (t->kind == TY_ARRAY) {
+        /* Through a pointer to the first element, so `items` is evaluated once. */
+        Expr *first = new_node(S, EXPR_UNARY, loc, NULL);
+        first->u.unary.op = TOK_AMP;
+        Expr *zero = new_node(S, EXPR_INT, loc, NULL);
+        first->u.unary.operand = mk_index(S, it, zero, loc);
+        setup = mk_var(S, mk_vardecl(S, type_ptr(t->base, true, false), fe, loc), first);
+        count = new_node(S, EXPR_INT, loc, NULL);
+        count->u.int_val = t->len;
+        key = mk_ident(S, fi, loc);
+        value = mk_index(S, mk_ident(S, fe, loc), mk_ident(S, fi, loc), loc);
+        key_type = ty_usize;
+        value_type = t->base;
+    } else {
+        setup = mk_var(S, mk_vardecl(S, ty_string, fe, loc), it);
+        count = new_node(S, EXPR_MEMBER, loc, NULL);
+        count->u.member.object = mk_ident(S, fe, loc);
+        count->u.member.name = "len";
+        count->u.member.name_loc = loc;
+        key = mk_ident(S, fi, loc);
+        value = mk_index(S, mk_ident(S, fe, loc), mk_ident(S, fi, loc), loc);
+        key_type = ty_usize;
+        value_type = ty_u8;
+    }
+    PtrVec body = {0};
+    if (skip) ptrvec_push(&body, skip);
+    if (kb) ptrvec_push(&body, mk_var(S, kb, binding_init(S, kb, key, key_type)));
+    ptrvec_push(&body, mk_var(S, vb, binding_init(S, vb, value, value_type)));
+    ptrvec_push(&body, s->u.foreach_.body);
+    Stmt *inner = mk_stmt(S, STMT_BLOCK, loc);
+    inner->u.block.stmts = (Stmt **)ptrvec_finish(&body, S->arena, &inner->u.block.n);
+
+    Stmt *loop = mk_stmt(S, STMT_FOR, loc);
+    Expr *zero = new_node(S, EXPR_INT, loc, NULL);
+    loop->u.for_.init = mk_var(S, mk_vardecl(S, ty_usize, fi, loc), zero);
+    loop->u.for_.cond = mk_binary(S, EXPR_BINARY, TOK_LT, mk_ident(S, fi, loc), count, loc);
+    Expr *step = new_node(S, EXPR_POSTFIX, loc, NULL);
+    step->u.unary.op = TOK_PLUSPLUS;
+    step->u.unary.operand = mk_ident(S, fi, loc);
+    loop->u.for_.step = step;
+    loop->u.for_.body = inner;
+
+    Stmt *stmts[2] = {setup, loop};
+    s->kind = STMT_BLOCK;
+    s->u.block.stmts = arena_alloc(S->arena, sizeof stmts);
+    memcpy(s->u.block.stmts, stmts, sizeof stmts);
+    s->u.block.n = 2;
+    check_scoped(S, s);
 }
 
 /* E0346 */
@@ -2997,7 +3515,7 @@ static void check_stmt(Sema *S, Stmt *s) {
             diag_end(d);
         }
         break;
-    case STMT_FOREACH: not_yet(s->loc, "`foreach`", 12); break;
+    case STMT_FOREACH: check_foreach(S, s); break;
     case STMT_ECHO: {
         /* Each value becomes a runtime call; interpolations print part by part. */
         PtrVec calls = {0};
@@ -3322,6 +3840,12 @@ static void layout_class(Sema *S, Type *ct) {
 static void check_field_defaults(Sema *S, Type *ct) {
     for (size_t i = 0; i < ct->nfields; i++) {
         Field *f = &ct->fields[i];
+        if (f->type->kind == TY_PHPARRAY && !f->init) {   /* array fields start empty */
+            Expr *lit = empty_array_lit(S, f->loc);
+            check(S, &lit, ty_phparray);
+            f->init = lit;
+            continue;
+        }
         if (!f->init || is_err(f->type)) continue;
         const Decl *m = NULL;
         for (size_t j = 0; j < ct->decl->u.class_.n; j++) {
@@ -3341,7 +3865,7 @@ static void check_field_defaults(Sema *S, Type *ct) {
         }
         f->init = vd->init;
         ConstVal cv;
-        bool is_lit = f->init->kind == EXPR_STRING;
+        bool is_lit = f->init->kind == EXPR_STRING || (f->init->kind == EXPR_ARRAY_LIT && f->init->u.array.n == 0);
         if (!is_lit && !const_eval(S, f->init, &cv, false)) {
             Diag *d = diag_start(DIAG_ERROR, "E0307", f->init->loc, "field defaults must be constant expressions");
             diag_label(d, "not a compile-time constant");
@@ -3493,6 +4017,7 @@ bool sema_check(Arena *arena, Module **mods, size_t nmods, Program *prog) {
                 d->type = type_new_struct(d->name, d);
             } else if (d->kind == DECL_CLASS) {
                 d->type = type_new_class(d->name, d);
+                d->type->class_id = S.classes++;
             } else {
                 Type *base = d->u.enum_.base ? resolve_type(&S, d->u.enum_.base, false) : ty_i32;
                 if (!is_err(base) && base->kind != TY_INT) {

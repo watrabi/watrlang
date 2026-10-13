@@ -7,18 +7,18 @@ error[E0301]: literal `300` doesn't fit in `u8`
   = note: `u8` holds 0 to 255
 
 error[E0310]: mismatched types: can't use `+` with `i32` and `u32`
- --> tests/run/err_types.watr:9:17
+ --> tests/run/err_types.watr:9:15
   |
-9 |     int mixed = a + b;
-  |                 ^^^^^
-  |                 - `i32`
-  |                     - `u32`
+9 |     int sum = a + b;
+  |               ^^^^^
+  |               - `i32`
+  |                   - `u32`
   |
   = note: watrlang never mixes signed and unsigned integers implicitly
 help: convert one side with `as`
   |
-9 |     int mixed = a + b as i32;
-  |                     ~~~~~~~~
+9 |     int sum = a + b as i32;
+  |                   ~~~~~~~~
 
 error[E0309]: mismatched types: expected `int`, found `f64`
   --> tests/run/err_types.watr:10:13

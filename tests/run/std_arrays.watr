@@ -1,0 +1,37 @@
+import "std/arrays";
+
+function main(): int {
+    array a = ["x" => 1, "y" => 2];
+    a[] = "three";
+    echo arrays::has(a, "x"), " ", arrays::has(a, "z"), " ", arrays::has(a, 0), "\n";
+    echo arrays::join(arrays::keys(a), ","), " | ", arrays::join(arrays::values(a), ","), "\n";
+    echo arrays::remove(a, "x"), " ", arrays::remove(a, "x"), " ", len(a), "\n";
+    arrays::push(a, 4.5);
+    echo arrays::pop(a), " ", len(a), " ", arrays::join(a, " "), "\n";
+    array r = range(1, 5);
+    echo join(r, "+"), " = ", contains(r, 3), " ", contains(r, "3"), " ", key_of(r, 4), "\n";
+    array c = copy(r);
+    c[0] = 100;
+    echo r[0], " ", c[0], "\n";
+    array m = merge(["a" => 1, 5 => "five"], ["a" => 2, 9 => "nine"]);
+    foreach (m as k => v) {
+        echo k, "=", v, " ";
+    }
+    echo "\n", join(reverse(r), ""), " ", type_of(r[0]), " ", type_of(m), " ", type_of(null), "\n";
+    array empty = [];
+    echo "[", pop(empty), "] ", len(empty), "\n";
+    for (int i = 0; i < 100; i++) {
+        a[i] = i;
+    }
+    for (int i = 0; i < 100; i += 2) {
+        remove(a, i);
+    }
+    int sum = 0;
+    foreach (a as v) {
+        if (type_of(v) == "int") {
+            sum += v as int;
+        }
+    }
+    echo len(a), " ", sum, "\n";
+    return 0;
+}

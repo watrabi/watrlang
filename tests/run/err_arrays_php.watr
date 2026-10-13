@@ -1,0 +1,21 @@
+struct Vec { int x; }
+
+function main(): int {
+    array a = [1, 2];
+    Vec v = Vec { x: 1 };
+    a[] = v;
+    a[1.5] = 3;
+    a[0] += 1;
+    int n = a[0];
+    mixed m = a;
+    foreach (m as x) { }
+    foreach (5 as y) { }
+    mixed bad = mixed { tag: 1, bits: 2 };
+    int t = m->tag;
+    echo a[] , "\n";
+    bool lt = m < 3;
+    Vec w = m as Vec;
+    int* p = &n;
+    a["p"] = p;
+    return 0;
+}

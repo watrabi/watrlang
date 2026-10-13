@@ -39,8 +39,9 @@ The full plan is in [docs/DESIGN.md](docs/DESIGN.md).
 | 9. `defer`, enums, error unions (`T!E`, `?`, `??`) | done |
 | 10. Classes: methods, constructors, `static`, `private`, `__toString` | done |
 | 11. Garbage collector for objects and strings; `std/gc` | done |
-| 12. `foreach` and PHP-style arrays | next |
-| 13+. freestanding, a kernel, an optimizer, ... | planned |
+| 12. `foreach`, PHP-style `array`, `mixed`, `std/arrays` | done |
+| 13. Freestanding mode, inline asm, `volatile`, packed structs | next |
+| 14+. Boot a kernel, an optimizer, ... | planned |
 
 ## Error messages
 

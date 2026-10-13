@@ -547,3 +547,371 @@ function __rt_echo_f64(f64 x): void {
     usize n = __rt_fmt_f64(x, &buf[0]);
     __rt_out(&buf[0], n);
 }
+
+// ---- mixed: a tagged value -----------------------------------------------
+// tag: 0 null, 1 bool, 2 int, 3 float, 4 string (bits point to a boxed
+// {ptr, len}), 5 array, 16 + n an object of class n. The compiler converts
+// values to mixed through these functions, and back with __rt_as_*.
+
+const u64 __M_NULL = 0;
+const u64 __M_BOOL = 1;
+const u64 __M_INT = 2;
+const u64 __M_FLOAT = 3;
+const u64 __M_STRING = 4;
+const u64 __M_ARRAY = 5;
+const u64 __M_OBJECT = 16;
+
+function __rt_mixed_null(): mixed {
+    return mixed { tag: __M_NULL, bits: 0 };
+}
+
+function __rt_mixed_bool(bool b): mixed {
+    return mixed { tag: __M_BOOL, bits: b as u64 };
+}
+
+function __rt_mixed_int(i64 v): mixed {
+    return mixed { tag: __M_INT, bits: v as u64 };
+}
+
+function __rt_mixed_float(f64 v): mixed {
+    f64 copy = v;
+    return mixed { tag: __M_FLOAT, bits: *(&copy as u64*) };
+}
+
+function __rt_mixed_string(string s): mixed {
+    string* box = __rt_alloc(16) as string*;
+    *box = s;
+    return mixed { tag: __M_STRING, bits: box as u64 };
+}
+
+function __rt_mixed_array(array a): mixed {
+    if (a == null) {
+        return mixed { tag: __M_NULL, bits: 0 };
+    }
+    return mixed { tag: __M_ARRAY, bits: a as u64 };
+}
+
+function __rt_mixed_object(u64 tag, u64 obj): mixed {
+    if (obj == 0) {
+        return mixed { tag: __M_NULL, bits: 0 };
+    }
+    return mixed { tag: tag, bits: obj };
+}
+
+function __rt_mixed_type(mixed m): string {
+    if (m->tag == __M_NULL) { return "null"; }
+    if (m->tag == __M_BOOL) { return "bool"; }
+    if (m->tag == __M_INT) { return "int"; }
+    if (m->tag == __M_FLOAT) { return "float"; }
+    if (m->tag == __M_STRING) { return "string"; }
+    if (m->tag == __M_ARRAY) { return "array"; }
+    return "object";
+}
+
+// Panics at `where` (a "file:line:col" string) if m isn't `want`.
+function __rt_mixed_expect(mixed m, u64 tag, string want, string where): void {
+    if (m->tag != tag) {
+        __rt_panic(__rt_concat(__rt_concat(__rt_concat(__rt_concat(__rt_concat("panic at ", where), ": expected "), want),
+                                           ", found "), __rt_concat(__rt_mixed_type(m), "\n")));
+    }
+}
+
+function __rt_as_bool(mixed m, string where): bool {
+    __rt_mixed_expect(m, __M_BOOL, "bool", where);
+    return m->bits != 0;
+}
+
+function __rt_as_int(mixed m, string where): i64 {
+    __rt_mixed_expect(m, __M_INT, "int", where);
+    return m->bits as i64;
+}
+
+function __rt_as_float(mixed m, string where): f64 {
+    if (m->tag == __M_INT) {   // ints read as floats, like PHP
+        return (m->bits as i64) as f64;
+    }
+    __rt_mixed_expect(m, __M_FLOAT, "float", where);
+    u64 bits = m->bits;
+    return *(&bits as f64*);
+}
+
+function __rt_as_string(mixed m, string where): string {
+    __rt_mixed_expect(m, __M_STRING, "string", where);
+    return *(m->bits as string*);
+}
+
+// null reads as an empty array.
+function __rt_as_array(mixed m, string where): array {
+    if (m->tag == __M_NULL) {
+        return null;
+    }
+    __rt_mixed_expect(m, __M_ARRAY, "array", where);
+    return m->bits as array;
+}
+
+function __rt_as_object(mixed m, u64 tag, string class_name, string where): u64 {
+    if (m->tag == __M_NULL) {
+        return 0;
+    }
+    __rt_mixed_expect(m, tag, class_name, where);
+    return m->bits;
+}
+
+function __rt_mixed_to_string(mixed m): string {
+    if (m->tag == __M_NULL) { return ""; }
+    if (m->tag == __M_BOOL) { return m->bits != 0 ? "true" : "false"; }
+    if (m->tag == __M_INT) { return __rt_i64_to_string(m->bits as i64); }
+    if (m->tag == __M_FLOAT) {
+        u64 bits = m->bits;
+        return __rt_f64_to_string(*(&bits as f64*));
+    }
+    if (m->tag == __M_STRING) { return *(m->bits as string*); }
+    if (m->tag == __M_ARRAY) { return "Array"; }
+    return "Object";
+}
+
+// Strict equality, like PHP's ===: same type and same value.
+function __rt_mixed_eq(mixed a, mixed b): bool {
+    if (a->tag != b->tag) {
+        return false;
+    }
+    if (a->tag == __M_STRING) {
+        return __rt_str_eq(*(a->bits as string*), *(b->bits as string*));
+    }
+    if (a->tag == __M_FLOAT) {
+        u64 x = a->bits;
+        u64 y = b->bits;
+        return *(&x as f64*) == *(&y as f64*);
+    }
+    return a->bits == b->bits;
+}
+
+// ---- array: PHP's ordered map ------------------------------------------
+// Entries are kept in insertion order; removing one leaves a hole that's
+// skipped. A hash table of entry numbers finds keys. Keys are ints or
+// strings.
+
+struct __RtEntry {
+    mixed key;
+    mixed value;
+    u64 hash;
+    bool live;
+}
+
+struct __RtArray {
+    __RtEntry* entries;
+    usize used;          // entries in use, holes included
+    usize cap;
+    usize count;         // live entries
+    i64* table;          // entry number + 1; 0 = empty
+    usize table_cap;     // a power of two, at least twice `used`
+    i64 next_key;        // the key `a[] = v` uses
+}
+
+function __rt_array_new(usize cap): array {
+    __RtArray* a = __rt_alloc(sizeof(__RtArray)) as __RtArray*;
+    if (cap > 0) {
+        a->entries = __rt_alloc(cap * sizeof(__RtEntry)) as __RtEntry*;
+        a->cap = cap;
+    }
+    return a as array;
+}
+
+function __rt_array_null_write(): void {
+    __rt_panic("panic: writing to a null array (initialize it first, for example with [])\n");
+}
+
+function __rt_key_hash(mixed key): u64 {
+    if (key->tag == __M_STRING) {
+        string s = *(key->bits as string*);
+        u64 h = 14695981039346656037;
+        for (usize i = 0; i < s->len; i++) {
+            h = (h ^ s->ptr[i] as u64) * 1099511628211;
+        }
+        return h;
+    }
+    u64 x = key->bits + 11400714819323198485;   // splitmix64 finalizer
+    x = (x ^ (x >> 30)) * 13787848793156543929;
+    x = (x ^ (x >> 27)) * 10723151780598845931;
+    return x ^ (x >> 31);
+}
+
+function __rt_key_check(mixed key): mixed {
+    if (key->tag == __M_INT || key->tag == __M_STRING) {
+        return key;
+    }
+    if (key->tag == __M_BOOL) {   // like PHP: true is 1, false is 0
+        return mixed { tag: __M_INT, bits: key->bits };
+    }
+    __rt_panic(__rt_concat(__rt_concat("panic: array keys must be ints or strings, found ", __rt_mixed_type(key)), "\n"));
+    return key;
+}
+
+// The entry number of `key`, or -1.
+function __rt_array_find(__RtArray* a, mixed key, u64 hash): i64 {
+    if (a->table_cap == 0) {
+        return -1;
+    }
+    usize mask = a->table_cap - 1;
+    for (usize i = hash as usize & mask; ; i = (i + 1) & mask) {
+        i64 slot = a->table[i];
+        if (slot == 0) {
+            return -1;
+        }
+        __RtEntry* e = a->entries + (slot - 1);
+        if (e->hash == hash && e->live && __rt_mixed_eq(e->key, key)) {
+            return slot - 1;
+        }
+    }
+}
+
+function __rt_array_rehash(__RtArray* a, usize table_cap): void {
+    a->table = __rt_alloc_bytes(table_cap * 8) as i64*;
+    a->table_cap = table_cap;
+    usize mask = table_cap - 1;
+    for (usize n = 0; n < a->used; n++) {
+        __RtEntry* e = a->entries + n;
+        if (!e->live) {
+            continue;
+        }
+        usize i = e->hash as usize & mask;
+        while (a->table[i] != 0) {
+            i = (i + 1) & mask;
+        }
+        a->table[i] = (n + 1) as i64;
+    }
+}
+
+function __rt_array_add(__RtArray* a, mixed key, u64 hash, mixed value): void {
+    if (a->used == a->cap) {
+        if (a->count < a->used / 2) {   // mostly holes: squeeze them out
+            usize to = 0;
+            for (usize n = 0; n < a->used; n++) {
+                if (a->entries[n]->live) {
+                    a->entries[to] = a->entries[n];
+                    to++;
+                }
+            }
+            for (usize n = to; n < a->used; n++) {
+                a->entries[n]->live = false;
+            }
+            a->used = to;
+        } else {
+            usize cap = a->cap < 8 ? 8 : a->cap * 2;
+            __RtEntry* fresh = __rt_alloc(cap * sizeof(__RtEntry)) as __RtEntry*;
+            for (usize n = 0; n < a->used; n++) {
+                fresh[n] = a->entries[n];
+            }
+            a->entries = fresh;
+            a->cap = cap;
+        }
+        __rt_array_rehash(a, a->table_cap == 0 ? 16 : a->table_cap);
+    }
+    if ((a->used + 1) * 2 > a->table_cap) {
+        __rt_array_rehash(a, a->table_cap == 0 ? 16 : a->table_cap * 2);
+    }
+    __RtEntry* e = a->entries + a->used;
+    e->key = key;
+    e->value = value;
+    e->hash = hash;
+    e->live = true;
+    usize mask = a->table_cap - 1;
+    usize i = hash as usize & mask;
+    while (a->table[i] != 0) {
+        i = (i + 1) & mask;
+    }
+    a->table[i] = (a->used + 1) as i64;
+    a->used++;
+    a->count++;
+    if (key->tag == __M_INT && key->bits as i64 >= a->next_key) {
+        a->next_key = key->bits as i64 + 1;
+    }
+}
+
+function __rt_array_get(array arr, mixed key): mixed {
+    __RtArray* a = arr as __RtArray*;
+    if (a == null) {
+        return mixed { tag: __M_NULL, bits: 0 };
+    }
+    key = __rt_key_check(key);
+    i64 n = __rt_array_find(a, key, __rt_key_hash(key));
+    if (n < 0) {
+        return mixed { tag: __M_NULL, bits: 0 };
+    }
+    return a->entries[n]->value;
+}
+
+function __rt_array_set(array arr, mixed key, mixed value): void {
+    __RtArray* a = arr as __RtArray*;
+    if (a == null) {
+        __rt_array_null_write();
+    }
+    key = __rt_key_check(key);
+    u64 hash = __rt_key_hash(key);
+    i64 n = __rt_array_find(a, key, hash);
+    if (n >= 0) {
+        a->entries[n]->value = value;
+        return;
+    }
+    __rt_array_add(a, key, hash, value);
+}
+
+function __rt_array_push(array arr, mixed value): void {
+    __RtArray* a = arr as __RtArray*;
+    if (a == null) {
+        __rt_array_null_write();
+    }
+    mixed key = mixed { tag: __M_INT, bits: a->next_key as u64 };
+    __rt_array_add(a, key, __rt_key_hash(key), value);
+}
+
+function __rt_array_has(array arr, mixed key): bool {
+    __RtArray* a = arr as __RtArray*;
+    if (a == null) {
+        return false;
+    }
+    key = __rt_key_check(key);
+    return __rt_array_find(a, key, __rt_key_hash(key)) >= 0;
+}
+
+function __rt_array_remove(array arr, mixed key): bool {
+    __RtArray* a = arr as __RtArray*;
+    if (a == null) {
+        return false;
+    }
+    key = __rt_key_check(key);
+    i64 n = __rt_array_find(a, key, __rt_key_hash(key));
+    if (n < 0) {
+        return false;
+    }
+    a->entries[n]->live = false;
+    a->entries[n]->value = mixed { tag: __M_NULL, bits: 0 };
+    a->count--;   // its table slot stays, so probes for other keys still pass it
+    return true;
+}
+
+function __rt_array_len(array arr): usize {
+    __RtArray* a = arr as __RtArray*;
+    return a == null ? 0 : a->count;
+}
+
+// foreach walks entry numbers 0 .. __rt_array_slots(a), skipping holes.
+function __rt_array_slots(array arr): usize {
+    __RtArray* a = arr as __RtArray*;
+    return a == null ? 0 : a->used;
+}
+
+function __rt_array_live(array arr, usize n): bool {
+    __RtArray* a = arr as __RtArray*;
+    return n < a->used && a->entries[n]->live;
+}
+
+function __rt_array_key(array arr, usize n): mixed {
+    __RtArray* a = arr as __RtArray*;
+    return a->entries[n]->key;
+}
+
+function __rt_array_value(array arr, usize n): mixed {
+    __RtArray* a = arr as __RtArray*;
+    return a->entries[n]->value;
+}

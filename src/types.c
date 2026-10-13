@@ -8,12 +8,14 @@
 static Arena types_arena;
 static PtrVec derived;   /* interned pointer and array types */
 
-static Type builtin_storage[17];
+static Type builtin_storage[19];
+static Field mixed_fields[2];
 Type *ty_error, *ty_void, *ty_bool, *ty_null;
 Type *ty_int, *ty_i8, *ty_i16, *ty_i32, *ty_i64;
 Type *ty_u8, *ty_u16, *ty_u32, *ty_u64, *ty_usize;
 Type *ty_float, *ty_f32, *ty_f64;
 Type *ty_string;
+Type *ty_mixed, *ty_phparray;
 
 static Type *mk(int i, TypeKind kind, const char *name, uint32_t size, bool is_signed) {
     Type *t = &builtin_storage[i];
@@ -45,6 +47,14 @@ void types_init(void) {
     ty_f32   = mk(15, TY_FLOAT, "f32", 4, true);
     ty_string = mk(16, TY_STRING, "string", 16, false);
     ty_string->align = 8;
+    ty_mixed = mk(17, TY_MIXED, "mixed", 16, false);
+    ty_mixed->align = 8;
+    /* The runtime reads a mixed value's parts as `m->tag` and `m->bits`. */
+    mixed_fields[0] = (Field){"tag", {0}, ty_u64, 0, NULL, false};
+    mixed_fields[1] = (Field){"bits", {0}, ty_u64, 8, NULL, false};
+    ty_mixed->fields = mixed_fields;
+    ty_mixed->nfields = 2;
+    ty_phparray = mk(18, TY_PHPARRAY, "array", 8, false);
     ty_f64   = ty_float;  /* replaced below so `f64` keeps its own name */
     static Type f64_storage;
     f64_storage = *ty_float;
@@ -77,7 +87,9 @@ Type *type_builtin(TokenKind kw) {
     case TOK_KW_F32:     return ty_f32;
     case TOK_KW_F64:     return ty_f64;
     case TOK_KW_STRING_T: return ty_string;
-    default:             return NULL;   /* array: milestone 12 */
+    case TOK_KW_ARRAY_T: return ty_phparray;
+    case TOK_KW_MIXED_T: return ty_mixed;
+    default:             return NULL;
     }
 }
 
@@ -240,7 +252,7 @@ bool type_assignable(const Type *from, const Type *to) {
     if (type_equiv(from, to)) return true;
     if (from->kind == TY_INT && to->kind == TY_INT) return int_widens(from, to);
     if (from->kind == TY_FLOAT && to->kind == TY_FLOAT) return to->size >= from->size;
-    if (from->kind == TY_NULL && (to->kind == TY_PTR || to->kind == TY_CLASS)) return true;
+    if (from->kind == TY_NULL && (to->kind == TY_PTR || to->kind == TY_CLASS || to->kind == TY_PHPARRAY)) return true;
     if (from->kind == TY_PTR && to->kind == TY_PTR) {
         /* Adding qualifiers is fine; dropping them needs a cast. */
         if (from->base_const && !to->base_const) return false;
@@ -266,6 +278,9 @@ bool type_castable(const Type *from, const Type *to) {
     /* An object reference is an address: it converts to and from pointers. */
     if (from->kind == TY_CLASS && (to->kind == TY_PTR || (to->kind == TY_INT && to->size == 8))) return true;
     if (to->kind == TY_CLASS && from->kind == TY_PTR) return true;
+    if ((from->kind == TY_PHPARRAY && to->kind == TY_PTR) || (from->kind == TY_PTR && to->kind == TY_PHPARRAY)) return true;
+    if (from->kind == TY_PHPARRAY && to->kind == TY_INT && to->size == 8) return true;
+    if (from->kind == TY_INT && from->size == 8 && to->kind == TY_PHPARRAY) return true;
     return false;
 }
 

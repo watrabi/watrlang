@@ -35,6 +35,7 @@ typedef enum {
     TYPEX_ARRAY,        /* T[N]                        u.array */
     TYPEX_SLICE,        /* T[]                         u.array.elem */
     TYPEX_ERROR_UNION,  /* T!E                         u.error_union */
+    TYPEX_RESOLVED,     /* made by sema: an already known type   u.resolved */
 } TypeExprKind;
 
 struct TypeExpr {
@@ -48,6 +49,7 @@ struct TypeExpr {
         TypeExpr *pointee;
         struct { TypeExpr *elem; Expr *len; } array;
         struct { TypeExpr *value; TypeExpr *error; } error_union;
+        struct Type *resolved;
     } u;
 };
 
@@ -108,6 +110,7 @@ struct Expr {
     uint32_t field_offset;   /* EXPR_MEMBER */
     uint8_t builtin;         /* EXPR_CALL, EXPR_MEMBER: BUILTIN_* */
     bool via_pointer;        /* EXPR_MEMBER: obj is a pointer to the struct */
+    bool checked;            /* already checked; check() returns its type (for nodes sema reuses) */
 
     union {
         uint64_t int_val;
@@ -134,7 +137,15 @@ struct Expr {
         struct { TypeExpr *type; Expr *count; } alloc;
         TypeExpr *sizeof_type;
         Expr *try_expr;
-        struct { ArrayEntry **entries; size_t n; } array;
+        struct {
+            ArrayEntry **entries;
+            size_t n;
+            /* sema, for `array` literals: create the array into tmp, then make the calls */
+            Expr *create;
+            Expr **calls;
+            size_t ncalls;
+            struct Symbol *tmp;
+        } array;
         struct { const char *type_name; FieldInit **fields; size_t n; } struct_lit;
         struct { Expr **parts; size_t n; } interp;
     } u;

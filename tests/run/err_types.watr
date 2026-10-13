@@ -6,7 +6,7 @@ function main(): int {
     u8 small = 300;
     i32 a = 1;
     u32 b = 2;
-    int mixed = a + b;
+    int sum = a + b;
     int f = 1.5;
     bool flag = 5;
     if (a) { }

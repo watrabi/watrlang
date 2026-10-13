@@ -1,0 +1,105 @@
+// PHP-style arrays: ordered maps from int or string keys to mixed values.
+class Point {
+    public int x;
+    public int y;
+
+    public function __construct(int x, int y) {
+        this->x = x;
+        this->y = y;
+    }
+}
+
+class Bag {
+    public array items;    // starts as an empty array
+}
+
+function describe(mixed v): string {
+    if (v == null) {
+        return "null";
+    }
+    return "{v}";
+}
+
+function total(array prices): f64 {
+    f64 sum = 0.0;
+    foreach (prices as string _name => f64 price) {
+        sum += price;
+    }
+    return sum;
+}
+
+function main(): int {
+    array user = ["name" => "watr", "age" => 20, "admin" => false];
+    user[] = "appended";
+    user["age"] = (user["age"] as int) + 1;
+    echo "name: ", user["name"], ", age: ", user["age"] as int, ", count: ", len(user), "\n";
+    foreach (user as k => v) {
+        echo "  {k} => {v}\n";
+    }
+
+    array list = [10, 20, 30];
+    list[] = 40;
+    list[10] = 100;
+    list[] = 101;          // after the largest int key, like PHP
+    int sum = 0;
+    foreach (list as i => n) {
+        sum += n as int;
+        echo i, ":", n, " ";
+    }
+    echo "\nsum: ", sum, "\n";
+
+    echo "missing: ", describe(user["nope"]), "\n";
+    echo "equal: ", user["name"] == "watr", " ", list[0] == 10, " ", list[0] == "10", "\n";
+
+    array matrix = [[1, 2], [3, 4]];
+    matrix[1][0] = 30;     // the inner array is shared, so this changes it
+    echo "matrix: ", matrix[0][1] as int + matrix[1][0] as int, "\n";
+
+    array points = [];
+    points[] = new Point(1, 2);
+    points[] = new Point(3, 4);
+    int xs = 0;
+    foreach (points as Point p) {
+        xs += p->x;
+    }
+    echo "points: ", xs, ", second y: ", (points[1] as Point)->y, "\n";
+
+    Bag bag = new Bag;
+    bag->items[] = "first";
+    bag->items["k"] = 2.5;
+    echo "bag: ", len(bag->items), " ", bag->items[0], " ", bag->items["k"], "\n";
+
+    echo "total: ", total(["apple" => 1.5, "pear" => 2, "fig" => 0.25]), "\n";
+
+    array alias = list;    // arrays are shared, not copied
+    alias[0] = -1;
+    echo "shared: ", list[0], "\n";
+
+    mixed m = 42;
+    mixed f = 2.5;
+    mixed s = "str";
+    mixed nothing = null;
+    echo m, " ", f, " ", s, " [", nothing, "] ", m == 42, " ", m != 43, "\n";
+
+    int[4] fixed = [5, 6, 7, 8];
+    foreach (fixed as i => v) {
+        echo i, "=", v, " ";
+    }
+    foreach ("hey" as int i => ch) {
+        echo i, ":", ch, " ";
+    }
+    echo "\n";
+
+    array big = [];
+    for (int i = 0; i < 1000; i++) {
+        big["key" . i] = i * i;
+    }
+    int checksum = 0;
+    for (int i = 0; i < 1000; i += 7) {
+        checksum += big["key" . i] as int;
+    }
+    echo "big: ", len(big), " ", checksum, "\n";
+
+    echo user["age"] as string, "\n";   // panics: it's an int
+    return 0;
+}

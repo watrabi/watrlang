@@ -56,6 +56,9 @@ static void print_type(FILE *out, const TypeExpr *t) {
         print_expr(out, t->u.array.len);
         fputc(']', out);
         break;
+    case TYPEX_RESOLVED:   /* only made by sema, after printing */
+        fputs("<resolved>", out);
+        break;
     case TYPEX_SLICE:
         print_type(out, t->u.array.elem);
         fputs("[]", out);

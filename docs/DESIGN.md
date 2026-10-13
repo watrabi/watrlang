@@ -293,7 +293,7 @@ function outb(u16 port, u8 val): void {
     helpers, PI/E, and libm functions), `std/str` (substr, index_of,
     contains, starts_with, ends_with, to_upper, to_lower, trim, repeat,
     parse_int, from_cstr), `std/mem` (copy, set, equal), `std/gc`
-    (collect, live_bytes, heap_bytes, collections).
+    (collect, live_bytes, heap_bytes, collections), `std/arrays` (see below).
 - **Enums (milestone 9):** `enum Color { Red, Green = 5, Blue }` declares
   named integer constants with their own type. The underlying type is
   `i32` (like C) unless given: `enum Http: u16 { ... }`. Variants without
@@ -338,6 +338,40 @@ function outb(u16 port, u8 val): void {
   - Objects live on the garbage-collected heap (milestone 11). Code that
     manages memory by hand uses structs and `alloc`/`free`. Inheritance
     and interfaces are still deferred.
+- **Arrays and `mixed` (milestone 12):**
+  - `mixed` (PHP's name for "any type") holds null, a bool, an int, a
+    float, a string, an array or an object, with a tag saying which. It's
+    16 bytes, `{tag, bits}`; strings are boxed. Any of those types converts
+    to `mixed` implicitly; getting a value out takes `as`, which panics
+    with the location if the type is wrong (`m as int`, `m as Point`).
+    An int reads as a float too. `mixed` values print, interpolate and
+    join with `.`, and `==`/`!=` compare them strictly (same type and
+    value, like PHP's `===`).
+  - `array` is a reference to the map, like objects: assigning or passing
+    one shares it (`std/arrays::copy` makes a separate one). `array a;`
+    starts as an empty array, and so do array fields of classes; a null
+    array (in a global or struct) reads as empty, and writing to one
+    panics.
+  - `[1, 2]` and `["k" => v]` make arrays (a literal is a fixed array only
+    where a `T[N]` is expected). `a[k]` reads an element (null if there's
+    none), `a[k] = v` sets one (keeping its place if it exists), `a[] = v`
+    appends with one more than the largest int key so far, and `len(a)`
+    counts. Elements are `mixed`, so `a[k][j]` works on nested arrays.
+    Compound assignment (`a[k] += 1`) isn't allowed on elements.
+  - The map keeps entries in insertion order with a hash table of entry
+    numbers (linear probing); removing leaves a hole that's skipped, and
+    holes are squeezed out when the entries are full.
+  - `std/arrays`: has, remove, push, pop, keys, values, contains, key_of,
+    join, range, copy, merge, reverse, type_of. `tests/array_fuzz.py`
+    checks the map against a model of PHP's semantics.
+- **`foreach` (milestone 12):** `foreach (items as v)` or
+  `foreach (items as k => v)` loops over an `array` (k and v are `mixed`),
+  a fixed array (k is the `usize` index) or a string (v is each `u8`).
+  Bindings may declare a type, `foreach (scores as string name => int n)`,
+  which converts each one (checked at run time for arrays). The bindings
+  are copies; the loop sees elements appended during it. The compiler
+  rewrites `foreach` into a `for` loop, so `break` and `continue` work as
+  usual.
 - **`->` vs `.`:** `->` is *always* member access, auto-dereferencing
   pointers. `.` is *only* concatenation. They never conflict.
 - **Pointer declarations without a sigil:** `Foo* x;` could also parse as
@@ -466,7 +500,7 @@ Each milestone ends with tests passing and something you can run.
 | 9  | defer, enums, errors   | `defer`, `enum`, `Enum::Value`, `T!E`, `?`, `??`          |
 | 10 | Classes                | fields, methods, `__construct`, `static`, `__toString`    |
 | 11 | GC                     | mark-and-sweep for `new` objects and strings; `alloc` in the same heap |
-| 12 | foreach, arrays        | `foreach (x as k => v)`, PHP-style `array`                |
+| 12 | foreach, arrays        | `foreach (x as k => v)`, PHP-style `array`, `mixed`       |
 | 13 | Freestanding           | `--freestanding`, inline asm, `volatile`, `export`, packed/aligned structs |
 | 14 | **Boot a kernel**      | multiboot kernel in QEMU prints to VGA, written in watrlang |
 | 15 | Optimizer              | IR + register allocation                                  |
@@ -490,7 +524,8 @@ Each milestone ends with tests passing and something you can run.
   like PHP's: keys are `int` or `string`, values can be any type, and
   insertion order is kept. Values are stored tagged, and you read a typed
   value back out with a runtime-checked `as`. Because it needs the GC,
-  `array` is a compile error under `--no-gc` / `--freestanding`. Built in M12.
+  `array` will be a compile error under `--freestanding`. Built in M12;
+  see "Arrays and `mixed`" above for the details.
 
 ```php
 array user = ["name" => "watr", "age" => 20];

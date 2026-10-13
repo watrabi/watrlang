@@ -28,6 +28,8 @@ typedef enum {
     TY_ENUM,     /* named integer constants; represented as its base int type */
     TY_ERRUNION, /* T!E: {bool is_err; E err; T value} */
     TY_CLASS,    /* a reference (pointer) to a heap object; may be null */
+    TY_MIXED,    /* any value, tagged: {u64 tag; u64 bits}, 16 bytes */
+    TY_PHPARRAY, /* `array`: a reference to a GC'd ordered map; may be null */
 } TypeKind;
 
 typedef struct Type Type;
@@ -68,6 +70,7 @@ struct Type {
     size_t nvariants;
     struct Symbol *name_fn;  /* TY_ENUM: generated function returning a variant's name */
     int layout_state;        /* TY_STRUCT: 0 = not started, 1 = in progress, 2 = done */
+    uint32_t class_id;       /* TY_CLASS: identifies the class inside `mixed` values */
     uint32_t obj_size;       /* TY_CLASS: the object's size and alignment (the value is a pointer) */
     uint32_t obj_align;
     struct Symbol **methods; /* TY_CLASS */
@@ -79,10 +82,11 @@ extern Type *ty_int, *ty_i8, *ty_i16, *ty_i32, *ty_i64;
 extern Type *ty_u8, *ty_u16, *ty_u32, *ty_u64, *ty_usize;
 extern Type *ty_float, *ty_f32, *ty_f64;
 extern Type *ty_string;
+extern Type *ty_mixed, *ty_phparray;
 
 void  types_init(void);
 void  types_free(void);
-Type *type_builtin(TokenKind keyword);   /* NULL for `array` (not yet supported) */
+Type *type_builtin(TokenKind keyword);
 Type *type_ptr(Type *base, bool base_const, bool base_volatile);
 Type *type_array(Type *elem, uint64_t len);
 Type *type_new_struct(const char *name, const struct Decl *decl);
@@ -100,12 +104,12 @@ static inline bool type_is_ptr(const Type *t)     { return t->kind == TY_PTR; }
 static inline bool type_is_aggregate(const Type *t) { return t->kind == TY_ARRAY || t->kind == TY_STRUCT; }
 /* Handled by address in codegen: structs, arrays and strings. */
 static inline bool type_in_memory(const Type *t) {
-    return type_is_aggregate(t) || t->kind == TY_STRING || t->kind == TY_ERRUNION;
+    return type_is_aggregate(t) || t->kind == TY_STRING || t->kind == TY_ERRUNION || t->kind == TY_MIXED;
 }
 /* Lives in a general-purpose register: ints, enums, bools, pointers, null. */
 static inline bool type_in_gpr(const Type *t) {
     return t->kind == TY_INT || t->kind == TY_ENUM || t->kind == TY_BOOL || t->kind == TY_PTR || t->kind == TY_NULL ||
-           t->kind == TY_CLASS;
+           t->kind == TY_CLASS || t->kind == TY_PHPARRAY;
 }
 /* Integer representation with is_signed/size: ints and enums. */
 static inline bool type_is_intlike(const Type *t) { return t->kind == TY_INT || t->kind == TY_ENUM; }

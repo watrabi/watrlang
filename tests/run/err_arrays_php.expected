@@ -1,0 +1,111 @@
+error[E0366]: a value of type `Vec` can't be stored in an array
+ --> tests/run/err_arrays_php.watr:6:11
+  |
+6 |     a[] = v;
+  |           ^ not storable in `mixed`
+  |
+  = note: `mixed` holds null, bools, ints, floats, strings, arrays and objects
+  = help: use a class instead of a struct, or store the fields one by one
+
+error[E0366]: array keys must be ints or strings, found `f64`
+ --> tests/run/err_arrays_php.watr:7:7
+  |
+7 |     a[1.5] = 3;
+  |       ^^^ invalid key
+
+error[E0366]: `+=` doesn't work on array elements
+ --> tests/run/err_arrays_php.watr:8:5
+  |
+8 |     a[0] += 1;
+  |     ^^^^^^^^^ elements are `mixed`
+  |
+  = help: read, convert and store explicitly, like `a[k] = (a[k] as int) + 1;`
+
+error[E0309]: mismatched types: expected `int`, found `mixed`
+ --> tests/run/err_arrays_php.watr:9:13
+  |
+9 |     int n = a[0];
+  |     ---     ^^^^ expected `int`, found `mixed`
+  |     |
+  |     expected because of this type
+  |
+help: convert it with `as`, which checks the type at run time
+  |
+9 |     int n = a[0] as int;
+  |             ~~~~~~~~~~~
+
+error[E0367]: can't loop over a value of type `mixed`
+  --> tests/run/err_arrays_php.watr:11:14
+   |
+11 |     foreach (m as x) { }
+   |              ^ not iterable
+   |
+help: if it holds an array, convert it
+   |
+11 |     foreach ((m as array) as x) { }
+   |              ~~~~~~~~~~~~
+
+error[E0367]: can't loop over a value of type `int`
+  --> tests/run/err_arrays_php.watr:12:14
+   |
+12 |     foreach (5 as y) { }
+   |              ^ not iterable
+   |
+   = note: foreach works on `array`, fixed arrays (`T[N]`) and strings
+
+error[E0365]: `mixed` values can't be built from parts
+  --> tests/run/err_arrays_php.watr:13:17
+   |
+13 |     mixed bad = mixed { tag: 1, bits: 2 };
+   |                 ^^^^^^^^^^^^^^^^^^^^^^^^^ the representation of `mixed` is private to the runtime
+   |
+   = help: convert a value instead: `mixed m = 5;`
+
+error[E0318]: a `mixed` value has no fields
+  --> tests/run/err_arrays_php.watr:14:16
+   |
+14 |     int t = m->tag;
+   |             -  ^^^ can't use `->` here
+   |             |
+   |             this is `mixed`
+   |
+   = help: convert it to the type it holds first, like `(m as Point)->tag`
+
+error[E0366]: `a[]` can only be assigned to
+  --> tests/run/err_arrays_php.watr:15:10
+   |
+15 |     echo a[] , "\n";
+   |          ^^^ appends a new element
+   |
+   = help: write `a[] = value;` to append, or `a[key]` to read an element
+
+error[E0310]: can't compare `mixed` with `int`
+  --> tests/run/err_arrays_php.watr:16:15
+   |
+16 |     bool lt = m < 3;
+   |               ^^^^^
+   |               - `mixed`
+   |                   - `int`
+   |
+   = help: `mixed` values only compare with `==` and `!=`; convert with `as` first
+
+error[E0366]: a `mixed` value can't hold a `Vec`
+  --> tests/run/err_arrays_php.watr:17:13
+   |
+17 |     Vec w = m as Vec;
+   |             ^^^^^^^^ invalid cast
+   |
+   = note: `mixed` holds null, bools, ints, floats, strings, arrays and objects
+
+error[E0366]: a value of type `int*` can't be stored in an array
+  --> tests/run/err_arrays_php.watr:19:14
+   |
+19 |     a["p"] = p;
+   |              ^ not storable in `mixed`
+   |
+   = note: `mixed` holds null, bools, ints, floats, strings, arrays and objects
+
+error: could not compile `tests/run/err_arrays_php.watr` due to 12 previous errors
+Some errors have detailed explanations: E0366, E0309, E0367, E0365, E0318, E0310.
+For more information about an error, try `watrc --explain E0366`.
+compile failed: 1

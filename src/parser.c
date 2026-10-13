@@ -837,7 +837,9 @@ static Expr *parse_primary(Parser *p) {
     }
 
     case TOK_KW_STRING_T:
-        /* string { ptr: p, len: n } builds a string from raw parts. */
+    case TOK_KW_MIXED_T:
+        /* string { ptr: p, len: n } builds a string from raw parts; the
+         * runtime builds mixed values the same way. */
         if (peek_at(p, 1)->kind == TOK_LBRACE) return parse_struct_lit(p);
         /* fall through */
     default:

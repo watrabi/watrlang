@@ -948,6 +948,45 @@ static const Explanation explanations[] = {
      "other methods need an object: `obj->name(...)`. Structs have no\n"
      "methods."},
 
+    {"E0365",
+     "Inside the runtime, `mixed` values are built from a tag and bits;\n"
+     "that representation isn't available to programs.\n"
+     "\n"
+     "Convert a value instead:\n"
+     "\n"
+     "    mixed m = 42;\n"
+     "    mixed s = \"text\";"},
+
+    {"E0366",
+     "`mixed` (the type of `array` elements) holds null, bools, ints, floats,\n"
+     "strings, arrays and objects. Other values, like structs and raw\n"
+     "pointers, can't be stored in one, and array keys must be ints or\n"
+     "strings.\n"
+     "\n"
+     "    array a = [];\n"
+     "    a[\"pos\"] = new Point(1, 2);      // objects are fine\n"
+     "    a[] = 3.5;                       // so are floats\n"
+     "\n"
+     "Reading an element gives a `mixed`; convert it with `as`, which checks\n"
+     "the type at run time:\n"
+     "\n"
+     "    int n = a[\"count\"] as int;\n"
+     "\n"
+     "`a[]` appends, so it can only be assigned to. Compound assignments\n"
+     "like `a[k] += 1` don't work on elements; write\n"
+     "`a[k] = (a[k] as int) + 1;`."},
+
+    {"E0367",
+     "`foreach` loops over an `array`, a fixed array (`T[N]`) or a string.\n"
+     "\n"
+     "    foreach (names as i => name) { ... }   // i: usize, name: string\n"
+     "    foreach (text as ch) { ... }           // ch: u8\n"
+     "    foreach (map as k => v) { ... }        // k, v: mixed\n"
+     "\n"
+     "A `mixed` holding an array needs converting first: `m as array`.\n"
+     "Bindings can declare a type: `foreach (map as string k => int v)`\n"
+     "converts each key and value, checking at run time."},
+
     {"E0900",
      "This feature is part of watrlang's design but isn't implemented yet.\n"
      "The message names the milestone that will add it; docs/DESIGN.md has\n"
