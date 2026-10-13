@@ -11,6 +11,7 @@ for structure and style.
 4. [Low-level: a byte buffer with manual memory](#4-a-byte-buffer)
 5. [Parsing with error propagation](#5-parsing)
 6. [Calling C](#6-calling-c)
+7. [A recursive generic structure](#7-a-recursive-generic-structure)
 
 ## 1. Word frequency
 
@@ -397,6 +398,87 @@ function main(): int {
     printf("pid > 0: %d, version %d\n", getpid() > 0 ? 1 : 0, watr_version());
     string s = "C sees a NUL-terminated string";
     printf("%s (%zu bytes)\n", s->ptr, len(s));
+    return 0;
+}
+```
+
+## 7. A recursive generic structure
+
+A generic class can hold fields of its own type and recurse. Comparisons on
+`T` work for every type the tree is used with that supports `<`.
+
+```watr
+import "std/vec";
+
+class Tree<T> {
+    private T value;
+    private Tree<T> left;          // null until a child is added
+    private Tree<T> right;
+    private int count_;
+
+    public function __construct(T value) {
+        this->value = value;
+        this->count_ = 1;
+    }
+
+    // Adds v unless it's already there; true if it was added.
+    public function insert(T v): bool {
+        if (v == this->value) {
+            return false;
+        }
+        bool added;
+        if (v < this->value) {
+            if (this->left == null) {
+                this->left = new Tree<T>(v);
+                added = true;
+            } else {
+                added = this->left->insert(v);
+            }
+        } else {
+            if (this->right == null) {
+                this->right = new Tree<T>(v);
+                added = true;
+            } else {
+                added = this->right->insert(v);
+            }
+        }
+        if (added) {
+            this->count_++;
+        }
+        return added;
+    }
+
+    public function count(): int { return this->count_; }
+
+    public function collect(vec::Vec<T> out): void {
+        if (this->left != null) {
+            this->left->collect(out);
+        }
+        out->push(this->value);
+        if (this->right != null) {
+            this->right->collect(out);
+        }
+    }
+}
+
+function sorted<T>(Tree<T> t): vec::Vec<T> {
+    vec::Vec<T> out = new vec::Vec<T>();
+    t->collect(out);
+    return out;
+}
+
+function main(): int {
+    Tree<int> nums = new Tree<int>(50);
+    int[5] more = [30, 70, 20, 40, 70];     // 70 twice: added once
+    foreach (more as n) {
+        nums->insert(n);
+    }
+    echo sorted(nums)->join(" "), " (", nums->count(), " values)\n";
+
+    Tree<string> words = new Tree<string>("mango");
+    words->insert("apple");
+    words->insert("pear");
+    echo sorted(words)->join(", "), " costs $3\n";
     return 0;
 }
 ```

@@ -18,8 +18,8 @@ below are worth reading closely even when the syntax looks familiar.
    signature) rather than guessing: the language is small and specific.
    `references/examples.md` has complete idiomatic programs to model on.
 2. **Compile it if `watrc` is available** (`watrc prog.watr` writes
-   `./prog`; in the watrlang repo it is `build/watrc`, built with `make`).
-   Then run it. Compiling is the only reliable check, and it's cheap.
+   `./prog`, `-o name` picks another name; in the watrlang repo it is
+   `build/watrc`, built with `make`). Then run it. Compiling is the only reliable check, and it's cheap.
 3. **Fix errors from the messages.** watrc's diagnostics are Rust-style and
    precise: the code, the exact span, and usually a `help:` line with the
    corrected source. Apply the suggested fix rather than rewriting around
@@ -66,7 +66,10 @@ below are worth reading closely even when the syntax looks familiar.
     global), and a field and a method can't share a name.
 14. **Strings are immutable bytes.** `s[i]` is a `u8` (it prints as a
     number); `len(s)` is bytes. Build strings with `.`/`.=`/interpolation.
-    A literal `{` in a string must be written `\{`.
+    Escapes are `\n \t \r \0 \\ \" \' \xHH \{ \}`; a literal `{` must be
+    written `\{` (a `$` needs no escape). String positions in `std/str`
+    are `usize` (`substr(s, start, n)`) while `index_of` returns `int` (-1
+    when absent), so convert with `as usize` after checking it.
 15. **Arrays**: `int[5] a = [1, 2, 3, 4, 5];` is fixed-size and a literal
     must list every element. Array types read left to right: `int[3][4]` is
     4 rows of `int[3]`. For growable lists use `Vec<T>` (`std/vec`); for
@@ -74,6 +77,10 @@ below are worth reading closely even when the syntax looks familiar.
     elements are `mixed` and need `as` to read typed.
 16. **Keywords can't be names**, including type names: no variable or
     method called `int`, `string`, `float`, `array`, `echo`, `new`...
+17. **Return checking is exact.** A non-void function must not be able to
+    fall off its end, but a `while (true)` loop without `break` counts as
+    never ending: write no `return` after it (one there is warning W0002,
+    unreachable code). A `void!E` function may simply end; that's success.
 
 ## Cheat sheet
 
@@ -174,10 +181,10 @@ function main(): int {
 | pointers | `int* p = &x; *p = 1; p[2]; p + 1; p->field; null` |
 | manual memory | `int* buf = alloc(int, n); defer free(buf);` (zeroed) |
 | cleanup | `defer stmt;` runs at block exit, newest first |
-| errors | `T!E`; `return E::X;`; `v = f()?;`; `f() ?? d`; `r->ok`, `r->value`, `r->error`; `??` doesn't work on `void!E` (test `->ok`) |
-| inheritance | `class B extends A implements I, J`, `abstract`, `protected`, `parent::m()`, `parent::__construct(...)`, `x instanceof C`, `x as C` (checked downcast) |
+| errors | `T!E` where E is an enum and T is any type (int, string, a class, a struct...); `return E::X;`; `v = f()?;`; `f() ?? d`; `r->ok`, `r->value`, `r->error`; `??` doesn't work on `void!E` (test `->ok`) |
+| inheritance | `class B extends A implements I, J`, `abstract`, `protected`, `parent::m()`, `parent::__construct(...)`, `x instanceof C`, `x as C` (checked downcast); a subclass without its own `__construct` inherits the parent's |
 | interfaces | `interface I { function f(int a): int; }` |
-| generics | `function f<T>(T a): T`, `class Box<T>`, `struct Pair<A, B>`, `new Box<int>()`, `Pair<int, string> { first: 1, second: "a" }`, `f<u8>(x)` |
+| generics | `function f<T>(T a): T`, `class Box<T>`, `struct Pair<A, B>`, `new Box<int>()`, `Pair<int, string> { first: 1, second: "a" }`, `f<u8>(x)`. The body is checked per use, so `<`, `==`, `+` and interpolation work on T whenever the actual type supports them (numbers, strings, enums for `<`/`==`). Generic classes can refer to themselves (`Node<T> left;`) and recurse |
 | static method | `public static function make(): C` called as `C::make()` |
 | size/length | `sizeof(T)`, `len(array_or_string)` (both `usize`) |
 | modules | `import "std/str";` → `str::trim(s)` or unqualified `trim(s)`; `import "x" as y;`; `private` hides a top-level declaration |
@@ -194,7 +201,10 @@ Full signatures: `references/STDLIB.md`. Most used:
   `to_int(s)` → `int!ParseError`, `to_float`, `repeat`, `reverse`.
 - `std/vec`: `new vec::Vec<T>()`; `push`, `pop`, `get(i)`, `set(i, v)`,
   `len()`, `insert`, `remove(i)`, `contains`, `index_of`, `slice(a, b)`,
-  `join(sep)`, `reverse`, `clear`. Indexes are `int`.
+  `join(sep)`, `reverse`, `clear`. Indexes and `len()` are `int`, so in
+  `foreach (v as i => x)` the index `i` is an `int`. `v->join(", ")` works
+  for any printable element type; `str::join(parts, sep)` takes a
+  `Vec<string>`.
 - `std/map`: `new map::Map<K, V>()`; `set(k, v)`, `get(k)` → `V!MapError`,
   `get_or(k, d)`, `has`, `remove`, `keys()`, `values()`, `len()`.
 - `std/sort`: `sort::vec(v)`, `sort::vec_by(v, cmp)` where `cmp` implements
@@ -208,6 +218,14 @@ Full signatures: `references/STDLIB.md`. Most used:
 - `std/math`: `abs`, `min`, `max`, `clamp`, `sqrt`, `pow`, `floor`, `PI`.
 - `std/time`, `std/rand` (`new rand::Rng(seed)`, `r->range(lo, hi)`),
   `std/io` (`println`), `std/arrays` (PHP-array helpers).
+
+### Naming
+
+Fields and methods share one namespace per class, so a getter can't be
+named like its field. Prefer a plain noun for the method and a different
+field name (`private int count_;` with `public function count(): int`),
+or `get_`/`set_` methods. Unused results of non-error calls aren't
+warned about; unused locals and parameters are (prefix with `_`).
 
 ## Pitfalls checklist
 
