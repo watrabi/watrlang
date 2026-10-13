@@ -1,0 +1,62 @@
+// Inline assembly (Intel syntax) with register operands.
+function add(int a, int b): int {
+    int r;
+    asm("mov rax, rdi"
+        "add rax, rsi"
+        : in("rdi") a, in("rsi") b, out("rax") r);
+    return r;
+}
+
+function swap_bytes(u32 x): u32 {
+    u32 r = x;
+    asm("bswap eax" : inout("eax") r);
+    return r;
+}
+
+// write(1, p, n) straight through the kernel.
+function sys_write(const u8* p, usize n): i64 {
+    i64 written;
+    asm("syscall" : in("rax") 1, in("rdi") 1, in("rsi") p, in("rdx") n, out("rax") written);
+    return written;
+}
+
+// rbx is callee-saved: the compiler saves and restores it around the asm.
+function uses_rbx(u64 v): u64 {
+    u64 r;
+    asm("mov rbx, rdi"
+        "shl rbx, 4"
+        "mov rax, rbx"
+        : in("rdi") v, out("rax") r);
+    return r;
+}
+
+function scale(f64 x): f64 {
+    f64 r;
+    asm("addsd xmm0, xmm0" : inout("xmm0") x);
+    asm("movsd xmm1, xmm0" : in("xmm0") x, out("xmm1") r);
+    return r;
+}
+
+function is_odd(u64 v): bool {
+    bool odd;
+    asm("mov rax, rdi"
+        "and eax, 1"
+        : in("rdi") v, out("al") odd);
+    return odd;
+}
+
+struct Pair {
+    i32 lo;
+    i32 hi;
+}
+
+function main(): int {
+    echo add(40, 2), " ", swap_bytes(0x11223344), " ", uses_rbx(3), " ", scale(1.25), "\n";
+    echo is_odd(7), " ", is_odd(10), "\n";
+    i64 n = sys_write("raw syscall\n", 12);
+    Pair p;
+    asm("mov eax, 7" "mov edx, -9" : out("eax") p->lo, out("edx") p->hi);
+    echo n, " ", p->lo, " ", p->hi, "\n";
+    asm { "nop"; "nop" }
+    return 0;
+}

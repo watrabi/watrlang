@@ -1,0 +1,10 @@
+error[E0305]: a --freestanding program needs an entry point
+ --> tests/run/err_freestanding_entry.watr
+  |
+  = note: without an operating system there's no `main`; exported functions are what other code calls
+  = help: add one, like `export function kmain(): void { ... }`, and call it from your boot code
+
+error: could not compile `tests/run/err_freestanding_entry.watr` due to 1 previous error
+This error has a detailed explanation: E0305.
+For more information about an error, try `watrc --explain E0305`.
+compile failed: 1

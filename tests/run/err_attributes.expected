@@ -1,0 +1,26 @@
+error[E0119]: `#[packed]` can't be used on a function
+ --> tests/run/err_attributes.watr:1:1
+  |
+1 | #[packed]
+  | ^^^^^^^^^ not allowed here
+  |
+  = note: `#[packed]` applies to structs; `#[align(N)]` to structs and global variables
+
+error[E0119]: `align` needs a power of two from 1 to 4096
+ --> tests/run/err_attributes.watr:4:9
+  |
+4 | #[align(3)]
+  |         ^ not a valid alignment
+
+error[E0119]: unknown attribute `inline`
+ --> tests/run/err_attributes.watr:7:3
+  |
+7 | #[inline]
+  |   ^^^^^^ not an attribute
+  |
+  = note: attributes are `#[packed]` and `#[align(N)]`
+
+error: could not compile `tests/run/err_attributes.watr` due to 3 previous errors
+This error has a detailed explanation: E0119.
+For more information about an error, try `watrc --explain E0119`.
+compile failed: 1

@@ -1,0 +1,69 @@
+error[E0368]: `new` needs the garbage-collected heap, which --freestanding programs don't have
+ --> tests/run/err_freestanding.watr:5:13
+  |
+5 |     Box b = new Box;
+  |             ^^^^^^^ not available with --freestanding
+  |
+  = note: without an operating system there's no heap; echo, string literals, comparisons, structs and fixed arrays still work
+
+error[E0368]: `alloc` and `free` need the runtime heap, which --freestanding programs don't have
+ --> tests/run/err_freestanding.watr:6:14
+  |
+6 |     int* p = alloc(int);
+  |              ^^^^^^^^^^ not available with --freestanding
+  |
+  = note: without an operating system there's no heap; echo, string literals, comparisons, structs and fixed arrays still work
+
+error[E0368]: turning a value into a string needs the heap, which --freestanding programs don't have
+ --> tests/run/err_freestanding.watr:7:25
+  |
+7 |     string s = "n = " . 5;
+  |                         ^ not available with --freestanding
+  |
+  = note: without an operating system there's no heap; echo, string literals, comparisons, structs and fixed arrays still work
+
+error[E0368]: joining strings needs the heap, which --freestanding programs don't have
+ --> tests/run/err_freestanding.watr:7:16
+  |
+7 |     string s = "n = " . 5;
+  |                ^^^^^^^^^^ not available with --freestanding
+  |
+  = note: without an operating system there's no heap; echo, string literals, comparisons, structs and fixed arrays still work
+
+error[E0368]: `array` and `mixed` need the garbage-collected heap, which --freestanding programs don't have
+ --> tests/run/err_freestanding.watr:8:15
+  |
+8 |     array a = [1, 2];
+  |               ^^^^^^ not available with --freestanding
+  |
+  = note: without an operating system there's no heap; echo, string literals, comparisons, structs and fixed arrays still work
+
+error[E0368]: printing floats needs the C library, which --freestanding programs don't have
+  --> tests/run/err_freestanding.watr:10:10
+   |
+10 |     echo x, "\n";
+   |          ^ not available with --freestanding
+   |
+   = note: without an operating system there's no heap; echo, string literals, comparisons, structs and fixed arrays still work
+
+error[E0368]: `array` and `mixed` need the garbage-collected heap, which --freestanding programs don't have
+  --> tests/run/err_freestanding.watr:11:27
+   |
+11 |     echo "{b->v} {p} {s} {a}\n";
+   |                           ^ not available with --freestanding
+   |
+   = note: without an operating system there's no heap; echo, string literals, comparisons, structs and fixed arrays still work
+
+error[E0369]: `echo` needs a `watr_write` function in --freestanding programs
+  --> tests/run/err_freestanding.watr:10:10
+   |
+10 |     echo x, "\n";
+   |          ^ has nowhere to write
+   |
+   = help: define where output goes: `export function watr_write(const u8* p, usize n): void { ... }`
+   = note: for example, write the bytes to the VGA text buffer or a serial port
+
+error: could not compile `tests/run/err_freestanding.watr` due to 8 previous errors
+Some errors have detailed explanations: E0368, E0369.
+For more information about an error, try `watrc --explain E0368`.
+compile failed: 1

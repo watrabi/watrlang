@@ -35,7 +35,7 @@ static const struct {
 } puncts[] = {
     {"<<=", TOK_SHL_ASSIGN}, {">>=", TOK_SHR_ASSIGN}, {"...", TOK_ELLIPSIS},
 
-    {"->", TOK_ARROW}, {"=>", TOK_FATARROW}, {"::", TOK_COLONCOLON}, {"??", TOK_QQ},
+    {"->", TOK_ARROW}, {"=>", TOK_FATARROW}, {"::", TOK_COLONCOLON}, {"??", TOK_QQ}, {"#[", TOK_HASHBRACKET},
     {"++", TOK_PLUSPLUS}, {"--", TOK_MINUSMINUS},
     {"+=", TOK_PLUS_ASSIGN}, {"-=", TOK_MINUS_ASSIGN}, {"*=", TOK_STAR_ASSIGN},
     {"/=", TOK_SLASH_ASSIGN}, {"%=", TOK_PERCENT_ASSIGN}, {".=", TOK_DOT_ASSIGN},

@@ -238,6 +238,9 @@ struct Decl {
     bool is_export;
     bool is_extern;
     bool is_static;        /* class methods only */
+    bool packed;           /* #[packed] (structs) */
+    uint32_t align;        /* #[align(N)] (structs, globals); 0 = natural */
+    Loc attr_loc;          /* the attributes, for messages */
     Visibility vis;        /* class members only */
     struct Symbol *sym;    /* filled in by sema: functions and globals */
     struct Type *type;     /* filled in by sema: structs */

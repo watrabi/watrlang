@@ -1,0 +1,27 @@
+// Packed structs passed to and from C (unaligned fields go in memory).
+#[packed]
+struct Packed {
+    u8 tag;
+    u32 value;
+    u16 extra;
+}
+
+#[packed]
+struct Aligned {
+    u32 a;
+    u32 b;
+}
+
+extern function c_sum_packed(Packed p): i64;
+extern function c_make_packed(u8 t, u32 v, u16 e): Packed;
+extern function c_sum_aligned(Aligned a): i64;
+extern function c_size_packed(): i32;
+
+function main(): int {
+    Packed p = Packed { tag: 1, value: 100000, extra: 7 };
+    echo sizeof(Packed), " ", c_size_packed(), " ", c_sum_packed(p), "\n";
+    Packed q = c_make_packed(9, 123456, 65535);
+    echo q->tag, " ", q->value, " ", q->extra, "\n";
+    echo c_sum_aligned(Aligned { a: 4, b: 2 }), "\n";
+    return 0;
+}

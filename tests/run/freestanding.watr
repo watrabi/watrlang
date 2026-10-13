@@ -1,0 +1,56 @@
+// watrc-flags: --freestanding
+// No C library and no runtime heap: the program provides its own output
+// (here through Linux system calls, in a kernel through VGA or a serial port).
+
+enum Mode: u8 { Text = 1, Graphics = 2 }
+
+#[packed]
+struct Header {
+    u8 magic;
+    u32 length;     // at offset 1: no padding
+    u16 flags;
+}
+
+#[align(64)]
+struct CacheLine {
+    u64 value;
+}
+
+#[align(4096)]
+u8[4096] page;      // page-aligned, like a page table
+
+CacheLine line;
+
+export function watr_write(const u8* p, usize n): void {
+    i64 _r;
+    asm("syscall" : in("rax") 1, in("rdi") 1, in("rsi") p, in("rdx") n, out("rax") _r);
+}
+
+export function watr_panic(const u8* msg, usize n): void {
+    watr_write(msg, n);
+    asm("syscall" : in("rax") 60, in("rdi") 101);
+}
+
+function checksum(const u8* p, usize n): u32 {
+    u32 sum = 0;
+    for (usize i = 0; i < n; i++) {
+        sum = sum * 31 + p[i];
+    }
+    return sum;
+}
+
+export function kmain(): int {
+    echo "hello from a freestanding program\n";
+    Header h = Header { magic: 0x7F, length: 1000, flags: 3 };
+    echo "header: ", sizeof(Header), " bytes, length ", h->length, ", flags ", h->flags, "\n";
+    echo "aligned: ", sizeof(CacheLine), " ", (&line as u64) % 64 == 0, " ", (&page[0] as u64) % 4096 == 0, "\n";
+    Mode m = Mode::Graphics;
+    Mode odd = 9 as Mode;
+    echo "mode: ", m, " ", odd, "\n";
+    string s = "checksum me";
+    echo "checksum: ", checksum(s->ptr, len(s)), ", ", s == "checksum me", "\n";
+    int[3] xs = [1, 2, 3];
+    int i = 3;
+    echo xs[i], "\n";   // out of bounds: watr_panic
+    return 0;
+}

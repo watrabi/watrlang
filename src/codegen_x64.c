@@ -76,6 +76,7 @@ typedef struct {
     size_t nscopes, scopes_cap;
 
     bool libc;              /* linked with the C runtime */
+    bool freestanding;      /* no OS: the program supplies watr_write (and maybe watr_panic) */
     bool need_panic;        /* emit w.panic even without check sites */
     PtrVec panics;          /* PanicSite*: runtime check failure messages */
     PtrVec strings;         /* StringLit*: literals for .rodata */
@@ -149,11 +150,24 @@ static void classify_into(const Type *t, uint32_t off, Eightbyte eb[2]) {
     }
 }
 
+/* Does a packed struct have a field off its natural alignment? Those go
+ * in memory, as in C. */
+static bool has_unaligned_field(const Type *t) {
+    if (t->kind == TY_ARRAY) return has_unaligned_field(t->base);
+    if (t->kind != TY_STRUCT) return false;
+    for (size_t i = 0; i < t->nfields; i++) {
+        const Field *f = &t->fields[i];
+        uint32_t a = f->type->align ? f->type->align : 1;
+        if (f->offset % a != 0 || has_unaligned_field(f->type)) return true;
+    }
+    return false;
+}
+
 static Classification classify(const Type *t) {
     Classification c = {false, 0, {EB_NONE, EB_NONE}};
     if (t->kind == TY_VOID) return c;
     if (type_in_memory(t)) {
-        if (t->size > 16) {
+        if (t->size > 16 || has_unaligned_field(t)) {
             c.memory = true;
             return c;
         }
@@ -1281,6 +1295,91 @@ static void gen_var_decl(Gen *g, const VarDecl *vd) {
     }
 }
 
+static const char *const reg64[16] = {"rax", "rcx", "rdx", "rbx", "rsp", "rbp", "rsi", "rdi",
+                                     "r8",  "r9",  "r10", "r11", "r12", "r13", "r14", "r15"};
+
+/* Does the asm text mention register `r` (any width) as a whole word? */
+static bool asm_mentions(const StrBuf *line, int r) {
+    const char *t = line->data;
+    size_t n = line->len;
+    for (size_t i = 0; i < n; i++) {
+        if (i > 0 && ((t[i - 1] >= 'a' && t[i - 1] <= 'z') || (t[i - 1] >= '0' && t[i - 1] <= '9'))) continue;
+        size_t j = i;
+        while (j < n && ((t[j] >= 'a' && t[j] <= 'z') || (t[j] >= '0' && t[j] <= '9'))) j++;
+        if (j > i && asm_register(t + i, j - i) == r) return true;
+    }
+    return false;
+}
+
+/* Inline asm: inputs are evaluated into temporaries and loaded into their
+ * registers; the instructions run as written; outputs are saved and then
+ * stored. Callee-saved registers the asm uses are preserved around it. */
+static void gen_asm(Gen *g, const Stmt *s) {
+    size_t n = s->u.asm_.nops;
+    int *in_slot = xmalloc((n ? n : 1) * sizeof(int)), *out_slot = xmalloc((n ? n : 1) * sizeof(int));
+    for (size_t i = 0; i < n; i++) {
+        const AsmOperand *op = s->u.asm_.ops[i];
+        in_slot[i] = out_slot[i] = 0;
+        if (op->dir == ASM_OUT) continue;
+        gen_value(g, op->expr);
+        in_slot[i] = alloc_slot(g, 8, 8);
+        if (cls(op->expr->type) == CLS_SSE) emit(g, "movsd qword ptr [rbp - %d], xmm0", -in_slot[i]);
+        else emit(g, "mov qword ptr [rbp - %d], rax", -in_slot[i]);
+    }
+    static const int callee_saved[5] = {3, 12, 13, 14, 15};   /* rbx, r12-r15 */
+    bool save[5] = {false};
+    for (int k = 0; k < 5; k++) {
+        for (size_t i = 0; i < n; i++)
+            save[k] |= asm_register(s->u.asm_.ops[i]->reg.data, s->u.asm_.ops[i]->reg.len) == callee_saved[k];
+        for (size_t i = 0; i < s->u.asm_.nlines; i++) save[k] |= asm_mentions(s->u.asm_.lines[i], callee_saved[k]);
+        if (save[k]) emit(g, "push %s", reg64[callee_saved[k]]);
+    }
+    for (size_t i = 0; i < n; i++) {
+        const AsmOperand *op = s->u.asm_.ops[i];
+        if (op->dir == ASM_OUT) continue;
+        int r = asm_register(op->reg.data, op->reg.len);
+        if (r >= 16) emit(g, "movsd xmm%d, qword ptr [rbp - %d]", r - 16, -in_slot[i]);
+        else emit(g, "mov %s, qword ptr [rbp - %d]", reg64[r], -in_slot[i]);
+    }
+    fputs("    # asm\n", g->out);
+    for (size_t i = 0; i < s->u.asm_.nlines; i++) {
+        const StrBuf *line = s->u.asm_.lines[i];
+        fprintf(g->out, "    %.*s\n", (int)line->len, line->data);
+    }
+    fputs("    # end asm\n", g->out);
+    for (size_t i = 0; i < n; i++) {
+        const AsmOperand *op = s->u.asm_.ops[i];
+        if (op->dir == ASM_IN) continue;
+        int r = asm_register(op->reg.data, op->reg.len);
+        out_slot[i] = alloc_slot(g, 8, 8);
+        if (r >= 16) emit(g, "movsd qword ptr [rbp - %d], xmm%d", -out_slot[i], r - 16);
+        else emit(g, "mov qword ptr [rbp - %d], %s", -out_slot[i], reg64[r]);
+    }
+    for (int k = 4; k >= 0; k--)
+        if (save[k]) emit(g, "pop %s", reg64[callee_saved[k]]);
+    for (size_t i = 0; i < n; i++) {
+        const AsmOperand *op = s->u.asm_.ops[i];
+        if (op->dir == ASM_IN) continue;
+        const Type *t = op->expr->type;
+        gen_addr(g, op->expr);
+        emit(g, "mov rdx, rax");
+        if (cls(t) == CLS_SSE) {
+            emit(g, "movsd xmm0, qword ptr [rbp - %d]", -out_slot[i]);
+        } else {
+            emit(g, "mov rax, qword ptr [rbp - %d]", -out_slot[i]);
+            if (t->kind == TY_BOOL) {   /* any nonzero byte is true */
+                emit(g, "test al, al");
+                emit(g, "setne al");
+                emit(g, "movzx eax, al");
+            }
+            normalize(g, t);
+        }
+        emit_store(g, t, "rdx");
+    }
+    free(in_slot);
+    free(out_slot);
+}
+
 static void gen_stmt(Gen *g, const Stmt *s) {
     switch (s->kind) {
     case STMT_BLOCK:
@@ -1352,6 +1451,9 @@ static void gen_stmt(Gen *g, const Stmt *s) {
         emit_label(g, end);
         break;
     }
+    case STMT_ASM:
+        gen_asm(g, s);
+        break;
     case STMT_ECHO:   /* sema turned each value into a runtime call */
         for (size_t i = 0; i < s->u.echo.n; i++) gen_value(g, s->u.echo.exprs[i]);
         break;
@@ -1491,7 +1593,8 @@ static void emit_globals(Gen *g, const Program *prog) {
             if (!any) fprintf(g->out, "\n    .section %s\n", sections[sec]);
             any = true;
             if (v->is_export) fprintf(g->out, "    .globl %s\n", v->asm_name);
-            fprintf(g->out, "    .p2align %d\n%s:\n", log2_align(v->type->align), v->asm_name);
+            uint32_t align = v->align > v->type->align ? v->align : v->type->align;
+            fprintf(g->out, "    .p2align %d\n%s:\n", log2_align(align), v->asm_name);
             if (!v->init) {
                 fprintf(g->out, "    .zero %u\n", v->type->size);
                 continue;
@@ -1542,7 +1645,9 @@ static void emit_runtime_primitive(Gen *g, const char *name) {
     FILE *out = g->out;
     fprintf(out, "\n    .type w.%s, @function\nw.%s:\n", name, name);
     if (strcmp(name, "__rt_out") == 0) {
-        if (g->libc) {   /* through stdio, so output interleaves correctly with printf */
+        if (g->freestanding) {   /* the program's own output function */
+            fputs("    jmp watr_write\n", out);
+        } else if (g->libc) {   /* through stdio, so output interleaves correctly with printf */
             fputs("    sub rsp, 8\n"
                   "    mov rdx, rsi\n"
                   "    mov esi, 1\n"
@@ -1680,9 +1785,12 @@ void codegen_x64(const Module *m, const Program *prog, FILE *out) {
     g.out = out;
 
     g.libc = prog->needs_libc;
+    g.freestanding = prog->freestanding;
     fprintf(out, "# generated by watrc from %s\n", m->file->path);
     fputs("    .intel_syntax noprefix\n    .text\n", out);
-    if (g.libc) {
+    if (g.freestanding) {
+        /* No entry code: the program's boot code calls its exported functions. */
+    } else if (g.libc) {
         /* Linked with the C runtime: its startup code calls this `main`. */
         fputs("\n# C entry point: the C runtime calls this, and exits with its result.\n"
               "    .globl main\n"
@@ -1722,30 +1830,42 @@ void codegen_x64(const Module *m, const Program *prog, FILE *out) {
         /* w.panic(msg = rdi, len = rsi): print to stderr, exit with status 101. */
         fputs("\n# Runtime check failures.\n"
               "w.panic:\n", out);
-        if (g.libc)   /* flush stdout first, so output printed before the panic comes before it */
-            fputs("    mov rbx, rdi\n"   /* panic never returns, so rbx and r12 are free */
-                  "    mov r12, rsi\n"
-                  "    and rsp, -16\n"
-                  "    xor edi, edi\n"
-                  "    call fflush\n"
-                  "    mov rdi, rbx\n"
-                  "    mov rsi, r12\n",
+        if (g.freestanding) {   /* the program's watr_panic(msg, len) if it has one, else stop here */
+            fputs("    .weak watr_panic\n"
+                  "    movabs rax, offset watr_panic\n"
+                  "    test rax, rax\n"
+                  "    jz 1f\n"
+                  "    jmp rax\n"
+                  "1:  cli\n"
+                  "    hlt\n"
+                  "    jmp 1b\n",
                   out);
-        fputs("    mov rdx, rsi\n"
-              "    mov rsi, rdi\n"
-              "    mov edi, 2\n"
-              "    mov eax, 1\n"
-              "    syscall\n"
-              "    mov edi, 101\n",
-              out);
-        if (g.libc)   /* exit() flushes stdio buffers, so earlier printf output isn't lost */
-            fputs("    and rsp, -16\n"
-                  "    call exit\n",
+        } else {
+            if (g.libc)   /* flush stdout first, so output printed before the panic comes before it */
+                fputs("    mov rbx, rdi\n"   /* panic never returns, so rbx and r12 are free */
+                      "    mov r12, rsi\n"
+                      "    and rsp, -16\n"
+                      "    xor edi, edi\n"
+                      "    call fflush\n"
+                      "    mov rdi, rbx\n"
+                      "    mov rsi, r12\n",
+                      out);
+            fputs("    mov rdx, rsi\n"   /* write(2, msg, len) */
+                  "    mov rsi, rdi\n"
+                  "    mov edi, 2\n"
+                  "    mov eax, 1\n"
+                  "    syscall\n"
+                  "    mov edi, 101\n",
                   out);
-        else
-            fputs("    mov eax, 60\n"
-                  "    syscall\n",
-                  out);
+            if (g.libc)   /* exit() flushes stdio buffers, so earlier printf output isn't lost */
+                fputs("    and rsp, -16\n"
+                      "    call exit\n",
+                      out);
+            else
+                fputs("    mov eax, 60\n"
+                      "    syscall\n",
+                      out);
+        }
         fputs("\n    .section .rodata\n", out);
         for (size_t i = 0; i < g.panics.len; i++) {
             PanicSite *site = g.panics.items[i];

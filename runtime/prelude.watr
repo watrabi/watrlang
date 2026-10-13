@@ -535,7 +535,13 @@ function __rt_echo_i64(i64 v): void {
 }
 
 function __rt_echo_ptr(u64 v): void {
-    __rt_echo_str(__rt_ptr_to_string(v));
+    if (v == 0) {
+        __rt_out("null", 4);
+        return;
+    }
+    u8[20] buf;
+    usize start = __rt_fmt_hex(v, &buf[0]);
+    __rt_out(&buf[start], 20 - start);
 }
 
 function __rt_echo_bool(bool b): void {
@@ -914,4 +920,19 @@ function __rt_array_key(array arr, usize n): mixed {
 function __rt_array_value(array arr, usize n): mixed {
     __RtArray* a = arr as __RtArray*;
     return a->entries[n]->value;
+}
+
+// ---- without a heap -------------------------------------------------------
+
+u8[21] __rt_num_buf;
+
+// A number as text in a static buffer, for --freestanding programs (it's
+// overwritten by the next call).
+function __rt_static_num_to_string(i64 v): string {
+    usize start = __rt_fmt_u64(v < 0 ? 0 - (v as u64) : v as u64, &__rt_num_buf[1]);
+    if (v < 0) {
+        __rt_num_buf[start] = 45;   // -
+        return string { ptr: &__rt_num_buf[start], len: 21 - start };
+    }
+    return string { ptr: &__rt_num_buf[start + 1], len: 20 - start };
 }

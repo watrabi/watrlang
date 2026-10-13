@@ -295,6 +295,18 @@ static const Explanation explanations[] = {
      "\n"
      "    int x = 1 + ;   // error"},
 
+    {"E0119",
+     "Attributes go in `#[...]` right before a declaration. There are two:\n"
+     "\n"
+     "    #[packed]                 // struct fields with no padding\n"
+     "    struct Header { u8 tag; u32 length; }   // 5 bytes\n"
+     "\n"
+     "    #[align(4096)]            // raise the alignment (a power of two)\n"
+     "    u64[512] page_table;\n"
+     "\n"
+     "`#[packed]` applies to structs; `#[align(N)]` to structs and global\n"
+     "variables. They can be combined: `#[packed, align(8)]`."},
+
     {"E0200",
      "A variable name was used, but no variable with that name is in scope.\n"
      "\n"
@@ -986,6 +998,51 @@ static const Explanation explanations[] = {
      "A `mixed` holding an array needs converting first: `m as array`.\n"
      "Bindings can declare a type: `foreach (map as string k => int v)`\n"
      "converts each key and value, checking at run time."},
+
+    {"E0368",
+     "With `--freestanding` there is no operating system underneath, so\n"
+     "there's no heap and no C library. Features that need them are errors:\n"
+     "`new` and classes' objects, `alloc`/`free`, `array` and `mixed`, and\n"
+     "building strings at run time (`.`, interpolation outside `echo`,\n"
+     "number-to-string conversions). Printing floats needs the C library.\n"
+     "\n"
+     "What still works: functions, structs, enums, fixed arrays, pointers,\n"
+     "string literals and comparisons, `echo` (through your `watr_write`),\n"
+     "inline asm, and `volatile` memory access."},
+
+    {"E0369",
+     "In a `--freestanding` program, `echo` writes through a function the\n"
+     "program provides:\n"
+     "\n"
+     "    export function watr_write(const u8* p, usize n): void {\n"
+     "        // copy the bytes to the screen, a serial port, ...\n"
+     "    }\n"
+     "\n"
+     "Runtime checks that fail (like an out-of-bounds index) call\n"
+     "`watr_panic(const u8* msg, usize n)` if the program exports one, and\n"
+     "otherwise stop the CPU with `cli; hlt`."},
+
+    {"E0370",
+     "Stack frames are 16-byte aligned, so a value that needs more alignment\n"
+     "(from `#[align(32)]` or more) can't be a local variable, a parameter\n"
+     "or a return value.\n"
+     "\n"
+     "Make it a global, or pass a pointer to it."},
+
+    {"E0371",
+     "An inline asm operand is wrong. Operands move values into registers\n"
+     "before the instructions and out of them afterwards:\n"
+     "\n"
+     "    asm(\"out dx, al\" : in(\"dx\") port, in(\"al\") value);\n"
+     "    asm(\"rdtsc\" : out(\"eax\") lo, out(\"edx\") hi);\n"
+     "    asm(\"bswap eax\" : inout(\"eax\") x);\n"
+     "\n"
+     "Registers are rax..r15 at any width (`al`, `dx`, `ecx`, `r8d`), except\n"
+     "rsp and rbp, plus xmm0..xmm15 for floats. General registers take\n"
+     "integers, bools, pointers, enums and object references. `out` and\n"
+     "`inout` need something assignable. Each register can be one input and\n"
+     "one output. Callee-saved registers (rbx, r12-r15) that the asm uses\n"
+     "are saved and restored automatically."},
 
     {"E0900",
      "This feature is part of watrlang's design but isn't implemented yet.\n"

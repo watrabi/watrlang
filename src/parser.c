@@ -1238,6 +1238,7 @@ static AsmOperand *parse_asm_operand(Parser *p) {
     if (!expect(p, TOK_LPAREN, "before asm register name")) return NULL;
     if (!parse_plain_string(p, "an asm register", &op->reg)) return NULL;
     if (!expect(p, TOK_RPAREN, "after asm register name")) return NULL;
+    op->loc = span_to_prev(p, dir->loc);   /* `in("rax")` */
     op->expr = parse_expr_nested(p);
     return op->expr ? op : NULL;
 }
@@ -1689,6 +1690,43 @@ static Decl *parse_decl(Parser *p) {
         return d;
     }
 
+    /* #[packed], #[align(16)]: attributes for the next declaration. */
+    bool packed = false;
+    uint32_t align = 0;
+    Loc attr_loc = start;
+    while (check(p, TOK_HASHBRACKET)) {
+        advance(p);
+        do {
+            Token *name = expect_ident(p, "an attribute name");
+            if (!name) return NULL;
+            if (name->loc.len == 6 && memcmp(name->start, "packed", 6) == 0) {
+                packed = true;
+            } else if (name->loc.len == 5 && memcmp(name->start, "align", 5) == 0) {
+                if (!expect(p, TOK_LPAREN, "after `align`")) return NULL;
+                Token *n = cur(p);
+                uint64_t v = n->kind == TOK_INT ? n->v.int_val : 0;
+                if (n->kind != TOK_INT || v == 0 || (v & (v - 1)) != 0 || v > 4096) {
+                    Diag *e = perr_tok(p, "E0119", n, "`align` needs a power of two from 1 to 4096");
+                    diag_label(e, "not a valid alignment");
+                    diag_end(e);
+                    return NULL;
+                }
+                advance(p);
+                align = (uint32_t)v;
+                if (!expect(p, TOK_RPAREN, "after the alignment")) return NULL;
+            } else {
+                Diag *e = perr_tok(p, "E0119", name, "unknown attribute `%.*s`", (int)name->loc.len, name->start);
+                diag_label(e, "not an attribute");
+                diag_note(e, "attributes are `#[packed]` and `#[align(N)]`");
+                diag_end(e);
+                return NULL;
+            }
+        } while (accept(p, TOK_COMMA));
+        if (!expect(p, TOK_RBRACKET, "to close the attribute")) return NULL;
+        attr_loc = span_to_prev(p, start);
+    }
+    bool has_attrs = packed || align;
+
     /* `private` keeps a declaration inside its module. */
     bool is_private = accept(p, TOK_KW_PRIVATE);
     if (is_private && (check(p, TOK_KW_EXPORT) || check(p, TOK_KW_EXTERN) || check(p, TOK_KW_IMPORT))) {
@@ -1699,6 +1737,20 @@ static Decl *parse_decl(Parser *p) {
     }
     Decl *d = parse_decl_inner(p, start);
     if (d && is_private) d->vis = VIS_PRIVATE;
+    if (d && has_attrs) {
+        bool ok = d->kind == DECL_STRUCT || (d->kind == DECL_VAR && !packed);
+        if (!ok) {
+            /* The declaration itself parsed fine, so no recovery is needed. */
+            Diag *e = diag_start(DIAG_ERROR, "E0119", attr_loc, "`#[%s]` can't be used on %s", packed ? "packed" : "align",
+                                 d->kind == DECL_FUNC ? "a function" : d->kind == DECL_VAR ? "a variable" : "this declaration");
+            diag_label(e, "not allowed here");
+            diag_note(e, "`#[packed]` applies to structs; `#[align(N)]` to structs and global variables");
+            diag_end(e);
+        }
+        d->packed = packed;
+        d->align = align;
+        d->attr_loc = attr_loc;
+    }
     return d;
 }
 

@@ -24,6 +24,11 @@ static void usage(FILE *out) {
           "options:\n"
           "  -o <path>    write the output here\n"
           "  -S           write assembly (.s) instead of an executable\n"
+          "  -c           write an object file (.o) instead of an executable\n"
+          "  --freestanding  no C library, no runtime heap, no entry point: for\n"
+          "               kernels and other bare-metal code (see docs/DESIGN.md)\n"
+          "  -T <script>  link with this linker script (with --freestanding)\n"
+          "  -e <symbol>  the entry point (with --freestanding; default _start)\n"
           "  -v           show the assembler and linker commands\n"
           "  --explain <code>  explain an error code, e.g. --explain E0200\n"
           "  --tokens     print the token stream and exit\n"
@@ -86,7 +91,10 @@ int main(int argc, char **argv) {
     int dump_tokens = 0;
     int dump_ast = 0;
     int emit_asm = 0;
+    int emit_obj = 0;
     int verbose = 0;
+    bool freestanding = false;
+    const char *linker_script = NULL, *entry = NULL;
     const char *out_path = NULL;
     const char *link_inputs[argc > 0 ? argc : 1];   /* extra .c/.o/.a files to link */
     size_t nlink = 0;
@@ -120,6 +128,17 @@ int main(int argc, char **argv) {
             emit_asm = 1;
         } else if (strcmp(arg, "-v") == 0) {
             verbose = 1;
+        } else if (strcmp(arg, "-c") == 0) {
+            emit_obj = 1;
+        } else if (strcmp(arg, "--freestanding") == 0) {
+            freestanding = true;
+        } else if (strcmp(arg, "-T") == 0 || strcmp(arg, "-e") == 0) {
+            if (i + 1 >= argc) {
+                fprintf(stderr, "error: `%s` needs %s\n", arg, arg[1] == 'T' ? "a linker script" : "a symbol name");
+                return 2;
+            }
+            if (arg[1] == 'T') linker_script = argv[++i];
+            else entry = argv[++i];
         } else if (strcmp(arg, "-o") == 0) {
             if (i + 1 >= argc) {
                 fprintf(stderr, "error: `-o` needs a path\n");
@@ -130,10 +149,11 @@ int main(int argc, char **argv) {
             fprintf(stderr, "error: unknown option `%s`\n\n", arg);
             usage(stderr);
             return 2;
-        } else if (has_suffix(arg, ".c") || has_suffix(arg, ".o") || has_suffix(arg, ".a") || has_suffix(arg, ".so")) {
+        } else if (has_suffix(arg, ".c") || has_suffix(arg, ".o") || has_suffix(arg, ".a") || has_suffix(arg, ".so") ||
+                   has_suffix(arg, ".s") || has_suffix(arg, ".S")) {
             link_inputs[nlink++] = arg;
         } else if (path) {
-            fprintf(stderr, "error: only one .watr file is supported for now (imports are coming in milestone 8)\n");
+            fprintf(stderr, "error: give watrc one .watr file; it finds the others through `import`\n");
             return 2;
         } else {
             path = arg;
@@ -142,6 +162,10 @@ int main(int argc, char **argv) {
 
     if (!path) {
         usage(stderr);
+        return 2;
+    }
+    if ((linker_script || entry) && !freestanding) {
+        fprintf(stderr, "error: `-T` and `-e` only apply with `--freestanding`\n");
         return 2;
     }
 
@@ -164,6 +188,7 @@ int main(int argc, char **argv) {
         }
     } else {
         Program prog = {0};
+        prog.freestanding = freestanding;
         bool ok;
         if (dump_ast) {
             /* The tree is printed even after errors, to show how the parser recovered. */
@@ -193,11 +218,19 @@ int main(int argc, char **argv) {
             codegen_x64(m_root, &prog, asm_out);
             fclose(asm_out);
 
-            char *def = default_output(path, emit_asm ? ".s" : "");
+            char *def = default_output(path, emit_asm ? ".s" : emit_obj ? ".o" : "");
             const char *dest = out_path ? out_path : def;
-            bool built = emit_asm ? write_file(dest, asm_text, asm_len)
-                                  : toolchain_build_executable(asm_text, asm_len, dest, verbose,
-                                                               prog.needs_libc || nlink > 0, link_inputs, nlink);
+            BuildOptions opts = {0};
+            opts.mode = emit_obj ? BUILD_OBJECT
+                        : freestanding ? BUILD_FREESTANDING
+                        : prog.needs_libc || nlink > 0 ? BUILD_LIBC
+                                                        : BUILD_STATIC;
+            opts.verbose = verbose;
+            opts.linker_script = linker_script;
+            opts.entry = entry;
+            opts.extra = link_inputs;
+            opts.nextra = nlink;
+            bool built = emit_asm ? write_file(dest, asm_text, asm_len) : toolchain_build(asm_text, asm_len, dest, &opts);
             free(def);
             free(asm_text);
             if (!built) {

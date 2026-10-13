@@ -123,7 +123,7 @@ extern function malloc(usize n): void*;
 ### Kernel (freestanding)
 
 ```php
-// watrc --freestanding -T linker.ld kernel.watr
+// watrc --freestanding -T linker.ld kernel.watr boot.s
 volatile u16* VGA = 0xB8000 as volatile u16*;
 
 export function kmain(): void {
@@ -372,6 +372,36 @@ function outb(u16 port, u8 val): void {
   are copies; the loop sees elements appended during it. The compiler
   rewrites `foreach` into a `for` loop, so `break` and `continue` work as
   usual.
+- **Freestanding (milestone 13):** `watrc --freestanding` compiles for
+  bare metal: no C library, no runtime heap, and no entry code. There's
+  no `main`; exported functions are the entry points, called from the
+  program's boot code (an extra `.s` file, or C). The output is linked
+  with `ld -nostdlib`, with `-T script.ld` and `-e symbol` passed through;
+  `-c` writes just an object file.
+  - Anything that needs the heap is an error where it's used (E0368):
+    `new`, `alloc`/`free`, `array`/`mixed`, building strings at run time.
+    Printing floats needs libc. The rest of the language works.
+  - `echo` writes through `export function watr_write(const u8* p, usize n)`,
+    which the program provides (E0369 if it's missing). Failed runtime
+    checks call `watr_panic(msg, len)` if the program exports one, and
+    otherwise stop with `cli; hlt`.
+  - The generated code is position independent, never uses the red zone,
+    and keeps every value in memory, so `volatile` accesses are always
+    real loads and stores of the right width. Floats use SSE, which a
+    kernel must enable first.
+- **Inline asm (milestone 13):** `asm { "cli"; "hlt"; }` emits Intel-syntax
+  lines as written. `asm("..." "..." : in("dx") port, out("al") v,
+  inout("eax") x)` loads inputs into registers first and stores outputs
+  afterwards. Registers are rax..r15 at any width (not rsp/rbp) and
+  xmm0..xmm15 for floats. Callee-saved registers the asm mentions (rbx,
+  r12-r15) are saved and restored around it; others may be clobbered
+  freely, since watrlang keeps no values in registers between statements.
+- **Attributes (milestone 13):** `#[packed]` lays a struct out with no
+  padding (C's `__attribute__((packed))`; a packed struct with unaligned
+  fields is passed in memory, as gcc does). `#[align(N)]` raises the
+  alignment of a struct or a global to a power of two up to 4096, which
+  page tables need. Values aligned to more than 16 can't live on the
+  stack (E0370).
 - **`->` vs `.`:** `->` is *always* member access, auto-dereferencing
   pointers. `.` is *only* concatenation. They never conflict.
 - **Pointer declarations without a sigil:** `Foo* x;` could also parse as
@@ -501,7 +531,7 @@ Each milestone ends with tests passing and something you can run.
 | 10 | Classes                | fields, methods, `__construct`, `static`, `__toString`    |
 | 11 | GC                     | mark-and-sweep for `new` objects and strings; `alloc` in the same heap |
 | 12 | foreach, arrays        | `foreach (x as k => v)`, PHP-style `array`, `mixed`       |
-| 13 | Freestanding           | `--freestanding`, inline asm, `volatile`, `export`, packed/aligned structs |
+| 13 | Freestanding           | `--freestanding`, inline asm operands, `#[packed]`, `#[align(N)]`, `-c`, `-T` |
 | 14 | **Boot a kernel**      | multiboot kernel in QEMU prints to VGA, written in watrlang |
 | 15 | Optimizer              | IR + register allocation                                  |
 | ∞  | Self-hosting           | watrc rewritten in watrlang                               |

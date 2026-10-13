@@ -37,6 +37,8 @@ typedef struct {
     int fn_errors_before;
     bool needs_libc;
     int temps;          /* numbering for names sema invents (foreach) */
+    bool freestanding;  /* --freestanding: no heap, no libc, no main */
+    Loc cur_loc;        /* the expression being checked, for the call graph */
     uint32_t classes;   /* class ids handed out */
 } Sema;
 
@@ -603,7 +605,7 @@ static void layout_struct(Sema *S, Type *st) {
             ft->size = size > UINT32_MAX ? UINT32_MAX : (uint32_t)size;
             ft->align = ft->base->align ? ft->base->align : 1;
         }
-        uint32_t fa = ft->align ? ft->align : 1;
+        uint32_t fa = d->packed ? 1 : ft->align ? ft->align : 1;
         offset = (offset + fa - 1) & ~(fa - 1);
         Field *field = &st->fields[st->nfields++];
         field->name = f->name;
@@ -613,6 +615,8 @@ static void layout_struct(Sema *S, Type *st) {
         offset += ft->size;
         if (fa > align) align = fa;
     }
+    if (d->align > align) align = d->align;   /* #[align(N)] only raises it */
+    st->packed = d->packed;
     st->align = align;
     st->size = (offset + align - 1) & ~(align - 1);
     st->layout_state = 2;
@@ -924,10 +928,16 @@ static void add_callee(Sema *S, Symbol *callee) {
     if (fn->ncallees == fn->callees_cap) {
         size_t cap = fn->callees_cap ? fn->callees_cap * 2 : 8;
         Symbol **grown = arena_alloc(S->arena, cap * sizeof *grown);
-        if (fn->ncallees) memcpy(grown, fn->callees, fn->ncallees * sizeof *grown);
+        Loc *locs = arena_alloc(S->arena, cap * sizeof *locs);
+        if (fn->ncallees) {
+            memcpy(grown, fn->callees, fn->ncallees * sizeof *grown);
+            memcpy(locs, fn->callee_locs, fn->ncallees * sizeof *locs);
+        }
         fn->callees = grown;
+        fn->callee_locs = locs;
         fn->callees_cap = cap;
     }
+    fn->callee_locs[fn->ncallees] = S->cur_loc;
     fn->callees[fn->ncallees++] = callee;
 }
 
@@ -942,6 +952,7 @@ static Expr *new_node(Sema *S, ExprKind kind, Loc loc, Type *t) {
 /* A call to a runtime prelude function, with already-checked arguments. */
 static Expr *rt_call(Sema *S, const char *name, Loc loc, Expr **args, size_t n) {
     Symbol *fn = find_runtime_func(S, name);
+    S->cur_loc = loc;
     if (!fn) fatal("runtime function %s is missing", name);
     Expr *callee = new_node(S, EXPR_IDENT, loc, ty_error);
     callee->u.name = fn->name;
@@ -1079,7 +1090,9 @@ static Expr *enum_name_call(Sema *S, Expr *e) {
         fn->enum_type = et;
         Symbol *saved = S->fn;
         S->fn = fn;
-        add_callee(S, find_runtime_func(S, et->is_signed ? "__rt_i64_to_string" : "__rt_u64_to_string"));
+        /* Values that aren't a variant print as numbers; without a heap, from a static buffer. */
+        add_callee(S, find_runtime_func(S, S->freestanding ? "__rt_static_num_to_string"
+                                           : et->is_signed ? "__rt_i64_to_string" : "__rt_u64_to_string"));
         S->fn = saved;
         ptrvec_push(&S->enum_fns, fn);
         et->name_fn = fn;
@@ -2595,6 +2608,7 @@ static void report_assign_as_value(const Expr *e) {
 static Type *check(Sema *S, Expr **slot, Type *hint) {
     Expr *e = *slot;
     if (e->checked) return e->type;
+    S->cur_loc = e->loc;
     if (hint && is_err(hint)) hint = NULL;
     if (hint && hint->kind == TY_ERRUNION) hint = hint->base;   /* literals take the value type */
     switch (e->kind) {
@@ -3209,8 +3223,19 @@ static Expr *empty_array_lit(Sema *S, Loc loc) {
     return new_node(S, EXPR_ARRAY_LIT, loc, NULL);
 }
 
+/* The frame is only 16-byte aligned, so more-aligned values can't live there. */
+static void check_stack_align(Type *t, Loc loc, const char *what) {
+    if (t->align <= 16) return;
+    Diag *d = diag_start(DIAG_ERROR, "E0370", loc, "%s of type `%s` can't be on the stack", what, type_name(t));
+    diag_label(d, "needs %u-byte alignment", t->align);
+    diag_note(d, "stack frames are only 16-byte aligned");
+    diag_help(d, "make it a global and use a pointer to it");
+    diag_end(d);
+}
+
 static void check_var_decl(Sema *S, VarDecl *vd) {
     Type *t = resolve_type(S, vd->type, false);
+    if (!is_err(t)) check_stack_align(t, vd->type->loc, "a local variable");
     if (vd->type->is_const && !vd->init) report_missing_const_value(vd);
     if (t->kind == TY_PHPARRAY && !vd->init) vd->init = empty_array_lit(S, vd->loc);   /* `array a;` starts empty */
     if (vd->init) {
@@ -3432,6 +3457,80 @@ static void check_foreach(Sema *S, Stmt *s) {
     check_scoped(S, s);
 }
 
+/* ---- inline asm ---------------------------------------------------------------- */
+
+/* The register an asm operand names, as 0-15 for rax..r15 (any width) or
+ * 16-31 for xmm0..xmm15; -1 if it isn't one. */
+int asm_register(const char *name, size_t len) {
+    static const char *const regs[16][4] = {
+        {"rax", "eax", "ax", "al"},     {"rcx", "ecx", "cx", "cl"},     {"rdx", "edx", "dx", "dl"},
+        {"rbx", "ebx", "bx", "bl"},     {"rsp", "esp", "sp", "spl"},    {"rbp", "ebp", "bp", "bpl"},
+        {"rsi", "esi", "si", "sil"},    {"rdi", "edi", "di", "dil"},    {"r8", "r8d", "r8w", "r8b"},
+        {"r9", "r9d", "r9w", "r9b"},    {"r10", "r10d", "r10w", "r10b"}, {"r11", "r11d", "r11w", "r11b"},
+        {"r12", "r12d", "r12w", "r12b"}, {"r13", "r13d", "r13w", "r13b"}, {"r14", "r14d", "r14w", "r14b"},
+        {"r15", "r15d", "r15w", "r15b"},
+    };
+    for (int i = 0; i < 16; i++)
+        for (int w = 0; w < 4; w++)
+            if (strlen(regs[i][w]) == len && memcmp(regs[i][w], name, len) == 0) return i;
+    if (len >= 4 && len <= 5 && memcmp(name, "xmm", 3) == 0) {
+        int n = 0;
+        for (size_t i = 3; i < len; i++) {
+            if (name[i] < '0' || name[i] > '9') return -1;
+            n = n * 10 + (name[i] - '0');
+        }
+        if (n < 16 && !(len == 5 && name[3] == '0')) return 16 + n;
+    }
+    return -1;
+}
+
+/* asm("..." : in("rdx") port, out("al") value): values go into registers
+ * before the instructions and come out of them afterwards. */
+static void check_asm(Sema *S, Stmt *s) {
+    bool used_in[32] = {false}, used_out[32] = {false};
+    for (size_t i = 0; i < s->u.asm_.nops; i++) {
+        AsmOperand *op = s->u.asm_.ops[i];
+        int reg = asm_register(op->reg.data, op->reg.len);
+        bool writes = op->dir != ASM_IN, reads = op->dir != ASM_OUT;
+        Type *t;
+        if (writes) {
+            Expr *target = op->expr;
+            t = target->kind == EXPR_IDENT ? check_ident(S, target, op->dir == ASM_INOUT) : check(S, &op->expr, NULL);
+            if (!is_err(t) && !check_target(op->expr, "write to")) t = ty_error;
+        } else {
+            t = check(S, &op->expr, NULL);
+            if (!is_err(t) && !require_value(S, op->expr)) t = ty_error;
+        }
+        if (reg < 0 || reg == 4 || reg == 5) {
+            Diag *d = diag_start(DIAG_ERROR, "E0371", op->loc, "`%.*s` can't be used as an asm operand register",
+                                 (int)op->reg.len, op->reg.data);
+            diag_label(d, reg < 0 ? "not a register" : "the stack and frame pointers are off limits");
+            diag_note(d, "operands can use rax..r15 (any width, like `al` or `edx`) except rsp and rbp, and xmm0..xmm15");
+            diag_end(d);
+            continue;
+        }
+        if (is_err(t)) continue;
+        bool xmm = reg >= 16;
+        if (xmm ? !type_is_float(t) : !type_in_gpr(t)) {
+            Diag *d = diag_start(DIAG_ERROR, "E0371", op->expr->loc, "a value of type `%s` can't go in register `%.*s`",
+                                 type_name(t), (int)op->reg.len, op->reg.data);
+            diag_label(d, "this is `%s`", type_name(t));
+            diag_note(d, xmm ? "xmm registers take `f32` and `f64` values"
+                             : "general registers take integers, bools, pointers, enums and object references");
+            diag_end(d);
+            continue;
+        }
+        if ((reads && used_in[reg]) || (writes && used_out[reg])) {
+            Diag *d = diag_start(DIAG_ERROR, "E0371", op->loc, "register `%.*s` is used by two %s operands",
+                                 (int)op->reg.len, op->reg.data, reads ? "input" : "output");
+            diag_label(d, "used again here");
+            diag_end(d);
+        }
+        if (reads) used_in[reg] = true;
+        if (writes) used_out[reg] = true;
+    }
+}
+
 /* E0346 */
 static void report_defer_escape(const Stmt *s, const char *what) {
     Diag *d = diag_start(DIAG_ERROR, "E0346", s->loc, "`%s` can't jump out of a `defer`", what);
@@ -3548,7 +3647,7 @@ static void check_stmt(Sema *S, Stmt *s) {
         S->defer_loop_depth = saved_depth;
         break;
     }
-    case STMT_ASM:     not_yet(s->loc, "inline asm", 13); break;
+    case STMT_ASM:     check_asm(S, s); break;
     }
 }
 
@@ -3648,6 +3747,10 @@ static void check_function_body(Sema *S, Symbol *fn) {
  * can't, as in C. */
 static bool passable(Sema *S, Type *t, Loc loc, const char *what) {
     (void)S;
+    if (t->align > 16) {
+        check_stack_align(t, loc, t->kind == TY_STRUCT ? "a struct" : "a value");
+        return false;
+    }
     if (t->kind != TY_ARRAY) return true;
     Diag *d = diag_start(DIAG_ERROR, "E0335", loc, "arrays can't be %s by value", what);
     diag_label(d, "`%s` is an array", type_name(t));
@@ -3759,6 +3862,7 @@ static void declare_global(Sema *S, Decl *d) {
     vd->sym = g;
     set_asm_name(S, g, d);
     g->type = resolve_type(S, vd->type, false);
+    g->align = d->align;
     if (g->is_const && !vd->init) report_missing_const_value(vd);
 
     if (vd->init && !is_err(g->type)) {
@@ -3981,12 +4085,96 @@ static void check_duplicates(Sema *S) {
     }
 }
 
+/* What a runtime function that needs the heap (or libc) is used for. */
+static const char *heap_feature(const char *name) {
+    if (strcmp(name, "__rt_alloc") == 0) return "`new` needs the garbage-collected heap";
+    if (strcmp(name, "__rt_alloc_manual") == 0 || strcmp(name, "__rt_free") == 0)
+        return "`alloc` and `free` need the runtime heap";
+    if (strstr(name, "f64") || strstr(name, "fmt")) return "printing floats needs the C library";
+    if (strncmp(name, "__rt_mixed", 10) == 0 || strncmp(name, "__rt_array", 10) == 0 || strncmp(name, "__rt_as_", 8) == 0)
+        return "`array` and `mixed` need the garbage-collected heap";
+    if (strcmp(name, "__rt_concat") == 0) return "joining strings needs the heap";
+    if (strstr(name, "to_string")) return "turning a value into a string needs the heap";
+    if (strncmp(name, "__rt_gc", 7) == 0) return "the garbage collector isn't available";
+    return "this needs the runtime heap";
+}
+
+/* --freestanding: nothing reachable may need the heap or libc, and echo
+ * needs the program's `watr_write`. */
+static void check_freestanding(Sema *S) {
+    /* Runtime functions that need the heap or libc, directly or not. */
+    size_t n = S->funcs.len;
+    bool *heap = calloc(n ? n : 1, sizeof *heap);
+    if (!heap) fatal("out of memory");
+    for (size_t i = 0; i < n; i++) {
+        Symbol *fn = S->funcs.items[i];
+        heap[i] = fn->is_runtime &&
+                  (strcmp(fn->name, "__gc_alloc") == 0 || strcmp(fn->name, "__rt_mmap") == 0 ||
+                   strcmp(fn->name, "__rt_fmt_f64") == 0 || strcmp(fn->name, "__rt_gc_collect") == 0);
+    }
+    for (bool changed = true; changed;) {
+        changed = false;
+        for (size_t i = 0; i < n; i++) {
+            Symbol *fn = S->funcs.items[i];
+            if (heap[i] || !fn->is_runtime) continue;
+            for (size_t j = 0; j < fn->ncallees && !heap[i]; j++)
+                for (size_t k = 0; k < n; k++)
+                    if (heap[k] && S->funcs.items[k] == fn->callees[j]) heap[i] = true;
+            changed |= heap[i];
+        }
+    }
+    Loc echo_loc = {0};
+    for (size_t i = 0; i < n; i++) {
+        Symbol *fn = S->funcs.items[i];
+        if (!fn->reachable || fn->is_runtime) continue;
+        for (size_t j = 0; j < fn->ncallees; j++) {
+            Symbol *c = fn->callees[j];
+            if (!c->is_runtime) continue;
+            if (strncmp(c->name, "__rt_echo", 9) == 0 && !echo_loc.file) echo_loc = fn->callee_locs[j];
+            size_t k = 0;
+            while (k < n && S->funcs.items[k] != c) k++;
+            if (k == n || !heap[k]) continue;
+            Loc at = fn->callee_locs[j];
+            bool seen = false;   /* one error per feature per line */
+            for (size_t p = 0; p < j && !seen; p++) {
+                size_t q = 0;
+                while (q < n && S->funcs.items[q] != fn->callees[p]) q++;
+                seen = q < n && heap[q] && fn->callee_locs[p].file == at.file && fn->callee_locs[p].line == at.line &&
+                       strcmp(heap_feature(fn->callees[p]->name), heap_feature(c->name)) == 0;
+            }
+            if (seen) continue;
+            Diag *d = diag_start(DIAG_ERROR, "E0368", fn->callee_locs[j], "%s, which --freestanding programs don't have",
+                                 heap_feature(c->name));
+            diag_label(d, "not available with --freestanding");
+            diag_note(d, "without an operating system there's no heap; echo, string literals, comparisons, structs "
+                         "and fixed arrays still work");
+            diag_end(d);
+        }
+    }
+    free(heap);
+    if (echo_loc.file) {
+        bool has_write = false;
+        for (size_t i = 0; i < n; i++) {
+            Symbol *fn = S->funcs.items[i];
+            has_write |= fn->is_export && strcmp(fn->name, "watr_write") == 0;
+        }
+        if (!has_write) {
+            Diag *d = diag_start(DIAG_ERROR, "E0369", echo_loc, "`echo` needs a `watr_write` function in --freestanding programs");
+            diag_label(d, "has nowhere to write");
+            diag_help(d, "define where output goes: `export function watr_write(const u8* p, usize n): void { ... }`");
+            diag_note(d, "for example, write the bytes to the VGA text buffer or a serial port");
+            diag_end(d);
+        }
+    }
+}
+
 bool sema_check(Arena *arena, Module **mods, size_t nmods, Program *prog) {
     int errors_before = diag_error_count();
     Sema S = {0};
     S.arena = arena;
     S.mods = mods;
     S.nmods = nmods;
+    S.freestanding = prog->freestanding;
 
     /* One flat list of declarations; each knows its module through its file. */
     size_t total = 0;
@@ -4068,8 +4256,19 @@ bool sema_check(Arena *arena, Module **mods, size_t nmods, Program *prog) {
     }
 
     S.cur = 0;
-    Symbol *main_fn = find_in_module(&S.funcs, 0, "main");
-    if (!main_fn) {
+    Symbol *main_fn = S.freestanding ? NULL : find_in_module(&S.funcs, 0, "main");
+    if (S.freestanding) {
+        /* No main: exported functions are the entry points. */
+        bool any_export = false;
+        for (size_t i = 0; i < S.funcs.len; i++) any_export |= ((Symbol *)S.funcs.items[i])->is_export;
+        if (!any_export) {
+            Loc loc = {m->file, 0, 0, 0, 0};
+            Diag *d = diag_start(DIAG_ERROR, "E0305", loc, "a --freestanding program needs an entry point");
+            diag_note(d, "without an operating system there's no `main`; exported functions are what other code calls");
+            diag_help(d, "add one, like `export function kmain(): void { ... }`, and call it from your boot code");
+            diag_end(d);
+        }
+    } else if (!main_fn) {
         Loc loc = {m->file, 0, 0, 0, 0};
         Diag *d = diag_start(DIAG_ERROR, "E0305", loc, "`main` function not found in `%s`", m->file->path);
         diag_note(d, "a program starts running at `main`");
@@ -4116,6 +4315,10 @@ bool sema_check(Arena *arena, Module **mods, size_t nmods, Program *prog) {
         if (!fn->reachable) continue;
         if (fn->is_extern && !fn->is_runtime) S.needs_libc = true;   /* calls into C */
         if (fn->is_runtime && strcmp(fn->name, "__rt_fmt_f64") == 0) S.needs_libc = true;   /* snprintf */
+    }
+    if (S.freestanding) {
+        check_freestanding(&S);
+        S.needs_libc = false;
     }
     if (diag_error_count() == errors_before) {
         for (size_t i = 0; i < S.funcs.len; i++) {

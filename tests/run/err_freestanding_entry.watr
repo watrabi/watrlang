@@ -1,0 +1,2 @@
+// watrc-flags: --freestanding
+function helper(): int { return 1; }

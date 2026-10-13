@@ -76,35 +76,93 @@ static char *make_temp(void) {
     return path;
 }
 
-bool toolchain_build_executable(const char *asm_text, size_t asm_len, const char *out_path, bool verbose,
-                                bool libc, const char *const *extra, size_t nextra) {
+static bool has_suffix(const char *s, const char *suffix) {
+    size_t n = strlen(s), k = strlen(suffix);
+    return n > k && strcmp(s + n - k, suffix) == 0;
+}
+
+static const char *c_compiler(void) {
+    const char *cc = getenv("CC");
+    return cc && cc[0] ? cc : "cc";
+}
+
+bool toolchain_build(const char *asm_text, size_t asm_len, const char *out_path, const BuildOptions *o) {
     char *asm_path = make_temp();
     char *obj_path = asm_path ? make_temp() : NULL;
     bool ok = asm_path && obj_path && write_file(asm_path, asm_text, asm_len);
+    char **temps = xmalloc((o->nextra + 1) * sizeof *temps);   /* objects made from extra .s/.c files */
+    size_t ntemps = 0;
 
     if (ok) {
-        char *as_argv[] = {"as", "--64", "-o", obj_path, asm_path, NULL};
-        ok = run(as_argv, verbose);
+        char *as_argv[] = {"as", "--64", "-o", (char *)(o->mode == BUILD_OBJECT ? out_path : obj_path), asm_path, NULL};
+        ok = run(as_argv, o->verbose);
     }
-    if (ok && !libc) {
+    if (ok && o->mode == BUILD_STATIC) {
         char *ld_argv[] = {"ld", "-o", (char *)out_path, obj_path, NULL};
-        ok = run(ld_argv, verbose);
-    } else if (ok) {
-        const char *cc = getenv("CC");
-        if (!cc || !cc[0]) cc = "cc";
-        char **argv = xmalloc((nextra + 8) * sizeof *argv);
+        ok = run(ld_argv, o->verbose);
+    } else if (ok && o->mode == BUILD_FREESTANDING) {
+        char **argv = xmalloc((o->nextra + 16) * sizeof *argv);
         size_t n = 0;
-        argv[n++] = (char *)cc;
+        argv[n++] = "ld";
+        argv[n++] = "-static";
+        argv[n++] = "-nostdlib";
+        argv[n++] = "-z";
+        argv[n++] = "noexecstack";
+        if (o->linker_script) {
+            argv[n++] = "-T";
+            argv[n++] = (char *)o->linker_script;
+        }
+        if (o->entry) {
+            argv[n++] = "-e";
+            argv[n++] = (char *)o->entry;
+        }
         argv[n++] = "-o";
         argv[n++] = (char *)out_path;
         argv[n++] = obj_path;
-        for (size_t i = 0; i < nextra; i++) argv[n++] = (char *)extra[i];
+        for (size_t i = 0; ok && i < o->nextra; i++) {
+            const char *in = o->extra[i];
+            if (has_suffix(in, ".s") || has_suffix(in, ".S") || has_suffix(in, ".c")) {
+                char *tmp = make_temp();
+                if (!tmp) {
+                    ok = false;
+                    break;
+                }
+                temps[ntemps++] = tmp;
+                if (has_suffix(in, ".c")) {   /* C for a kernel: no libc, no red zone, no PIC */
+                    char *cc_argv[] = {(char *)c_compiler(), "-c", "-O2", "-ffreestanding", "-fno-pic", "-mno-red-zone",
+                                       "-fno-stack-protector", "-o", tmp, (char *)in, NULL};
+                    ok = run(cc_argv, o->verbose);
+                } else {
+                    char *as_argv[] = {"as", "--64", "-o", tmp, (char *)in, NULL};
+                    ok = run(as_argv, o->verbose);
+                }
+                argv[n++] = tmp;
+            } else {
+                argv[n++] = (char *)in;
+            }
+        }
+        argv[n] = NULL;
+        if (ok) ok = run(argv, o->verbose);
+        free(argv);
+    } else if (ok && o->mode == BUILD_LIBC) {
+        char **argv = xmalloc((o->nextra + 8) * sizeof *argv);
+        size_t n = 0;
+        argv[n++] = (char *)c_compiler();
+        argv[n++] = "-o";
+        argv[n++] = (char *)out_path;
+        argv[n++] = obj_path;
+        for (size_t i = 0; i < o->nextra; i++) argv[n++] = (char *)o->extra[i];
         argv[n++] = "-lm";
         argv[n] = NULL;
-        ok = run(argv, verbose);
+        ok = run(argv, o->verbose);
         free(argv);
     }
 
+    for (size_t i = 0; i < ntemps; i++) {
+        unlink(temps[i]);
+        free(temps[i]);
+    }
+    free(temps);
     if (asm_path) unlink(asm_path);
     if (obj_path) unlink(obj_path);
     free(asm_path);

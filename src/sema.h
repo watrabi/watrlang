@@ -38,6 +38,7 @@ typedef struct Symbol {
 
     /* functions: the call graph, for dropping code nothing uses */
     struct Symbol **callees;
+    Loc *callee_locs;           /* where each callee is first called */
     size_t ncallees, callees_cap;
     bool reachable;
     bool is_runtime;            /* from the runtime prelude */
@@ -53,6 +54,7 @@ typedef struct Symbol {
     struct StrReloc *relocs;    /* string literal addresses inside `init` */
     size_t nrelocs;
     bool has_value;             /* const scalar global whose value folds into constants */
+    uint32_t align;             /* #[align(N)] on a global; 0 = its type's alignment */
     uint64_t value_bits;        /* int/bool/pointer bits, or the float's bits */
 
     /* locals and parameters */
@@ -70,8 +72,13 @@ typedef struct {
     size_t nglobals;
     Symbol **enum_fns;          /* generated functions that turn an enum value into its name */
     size_t nenum_fns;
-    bool needs_libc;            /* uses extern symbols or alloc/free: link with the C runtime */
+    bool needs_libc;            /* uses extern C symbols or prints floats: link with the C runtime */
+    bool freestanding;          /* input: --freestanding (no libc, no heap, no entry point) */
 } Program;
+
+/* An inline asm operand register: 0-15 for rax..r15 (any width), 16-31
+ * for xmm0..xmm15, -1 if it isn't one. */
+int asm_register(const char *name, size_t len);
 
 /* Checks a whole program: mods[0] is the main file, the runtime prelude is
  * last. Returns false if errors were reported. */

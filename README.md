@@ -40,8 +40,9 @@ The full plan is in [docs/DESIGN.md](docs/DESIGN.md).
 | 10. Classes: methods, constructors, `static`, `private`, `__toString` | done |
 | 11. Garbage collector for objects and strings; `std/gc` | done |
 | 12. `foreach`, PHP-style `array`, `mixed`, `std/arrays` | done |
-| 13. Freestanding mode, inline asm, `volatile`, packed structs | next |
-| 14+. Boot a kernel, an optimizer, ... | planned |
+| 13. `--freestanding`, inline asm with operands, `#[packed]`, `#[align]` | done |
+| 14. Boot a kernel in QEMU | next |
+| 15. Optimizer | planned |
 
 ## Error messages
 

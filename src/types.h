@@ -70,6 +70,7 @@ struct Type {
     size_t nvariants;
     struct Symbol *name_fn;  /* TY_ENUM: generated function returning a variant's name */
     int layout_state;        /* TY_STRUCT: 0 = not started, 1 = in progress, 2 = done */
+    bool packed;             /* TY_STRUCT: #[packed], fields at any offset */
     uint32_t class_id;       /* TY_CLASS: identifies the class inside `mixed` values */
     uint32_t obj_size;       /* TY_CLASS: the object's size and alignment (the value is a pointer) */
     uint32_t obj_align;

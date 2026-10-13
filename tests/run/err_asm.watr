@@ -1,0 +1,21 @@
+struct S { int x; }
+
+#[align(32)]
+struct Wide { u64 a; }
+
+
+
+function main(): int {
+    int r;
+    S s;
+    f64 d = 1.0;
+    asm("nop" : in("rzz") r);
+    asm("nop" : in("rsp") r);
+    asm("nop" : in("rax") s);
+    asm("nop" : in("xmm0") r);
+    asm("nop" : out("rax") 5);
+    asm("nop" : in("rax") r, in("eax") r);
+    asm("nop" : out("xmm1") d, out("rax") r);
+    Wide w;
+    return r;
+}

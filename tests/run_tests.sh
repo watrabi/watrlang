@@ -30,7 +30,9 @@ for src in tests/lexer/*.watr tests/parser/*.watr tests/run/*.watr; do
             rm -f "$bin"
             extra=""
             [ -f "${src%.watr}.c" ] && extra="${src%.watr}.c"   # C code to link in
-            if compile_out=$("$WATRC" -o "$bin" "$src" $extra 2>&1); then
+            [ -f "${src%.watr}.s" ] && extra="$extra ${src%.watr}.s"   # and assembly
+            flags=$(sed -n 's|^// watrc-flags: ||p' "$src")      # e.g. --freestanding
+            if compile_out=$("$WATRC" $flags -o "$bin" "$src" $extra 2>&1); then
                 run_out=$(timeout 30 "$bin" 2>&1; echo "exit: $?")
                 # Keep warnings from a successful compile in the expected output.
                 if [ -n "$compile_out" ]; then

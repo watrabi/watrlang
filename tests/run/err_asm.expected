@@ -1,0 +1,59 @@
+error[E0371]: `rzz` can't be used as an asm operand register
+  --> tests/run/err_asm.watr:12:17
+   |
+12 |     asm("nop" : in("rzz") r);
+   |                 ^^^^^^^^^ not a register
+   |
+   = note: operands can use rax..r15 (any width, like `al` or `edx`) except rsp and rbp, and xmm0..xmm15
+
+error[E0371]: `rsp` can't be used as an asm operand register
+  --> tests/run/err_asm.watr:13:17
+   |
+13 |     asm("nop" : in("rsp") r);
+   |                 ^^^^^^^^^ the stack and frame pointers are off limits
+   |
+   = note: operands can use rax..r15 (any width, like `al` or `edx`) except rsp and rbp, and xmm0..xmm15
+
+error[E0371]: a value of type `S` can't go in register `rax`
+  --> tests/run/err_asm.watr:14:27
+   |
+14 |     asm("nop" : in("rax") s);
+   |                           ^ this is `S`
+   |
+   = note: general registers take integers, bools, pointers, enums and object references
+
+error[E0371]: a value of type `int` can't go in register `xmm0`
+  --> tests/run/err_asm.watr:15:28
+   |
+15 |     asm("nop" : in("xmm0") r);
+   |                            ^ this is `int`
+   |
+   = note: xmm registers take `f32` and `f64` values
+
+error[E0209]: invalid left-hand side: can't write to this
+  --> tests/run/err_asm.watr:16:28
+   |
+16 |     asm("nop" : out("rax") 5);
+   |                            ^ not something that can be assigned to
+   |
+   = note: only variables, fields, array elements and `*pointer` can be assigned
+
+error[E0371]: register `eax` is used by two input operands
+  --> tests/run/err_asm.watr:17:30
+   |
+17 |     asm("nop" : in("rax") r, in("eax") r);
+   |                              ^^^^^^^^^ used again here
+
+error[E0370]: a local variable of type `Wide` can't be on the stack
+  --> tests/run/err_asm.watr:19:5
+   |
+19 |     Wide w;
+   |     ^^^^ needs 32-byte alignment
+   |
+   = note: stack frames are only 16-byte aligned
+   = help: make it a global and use a pointer to it
+
+error: could not compile `tests/run/err_asm.watr` due to 7 previous errors
+Some errors have detailed explanations: E0371, E0209, E0370.
+For more information about an error, try `watrc --explain E0371`.
+compile failed: 1

@@ -1,0 +1,8 @@
+#[packed]
+function f(): void {}
+
+#[align(3)]
+struct Bad { u8 x; }
+
+#[inline]
+struct Worse { u8 x; }

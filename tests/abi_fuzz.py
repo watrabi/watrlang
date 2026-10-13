@@ -30,9 +30,10 @@ SCALARS = {
 
 
 class Struct:
-    def __init__(self, name, fields):
+    def __init__(self, name, fields, packed=False):
         self.name = name
         self.fields = fields   # (name, kind, arg) with kind "scalar"/"array"/"struct"
+        self.packed = packed   # #[packed] / __attribute__((packed))
 
 
 def gen_structs(rng, count):
@@ -47,7 +48,7 @@ def gen_structs(rng, count):
                 fields.append((f"f{i}", "array", (rng.choice(list(SCALARS)), rng.randint(1, 3))))
             else:
                 fields.append((f"f{i}", "scalar", rng.choice(list(SCALARS))))
-        structs.append(Struct(f"S{k}", fields))
+        structs.append(Struct(f"S{k}", fields, packed=rng.random() < 0.25))
     return structs
 
 
@@ -84,7 +85,7 @@ def w_path(var, parts):
 def c_source(structs):
     out = ["#include <stdint.h>", ""]
     for s in structs:
-        out.append(f"typedef struct {s.name} {{")
+        out.append(f"typedef struct {'__attribute__((packed)) ' if s.packed else ''}{s.name} {{")
         for name, kind, arg in s.fields:
             if kind == "scalar":
                 out.append(f"    {SCALARS[arg][0]} {name};")
@@ -126,6 +127,8 @@ def c_source(structs):
 def w_source(structs):
     out = []
     for s in structs:
+        if s.packed:
+            out.append("#[packed]")
         out.append(f"struct {s.name} {{")
         for name, kind, arg in s.fields:
             if kind == "scalar":

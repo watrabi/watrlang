@@ -31,6 +31,7 @@
     X(ARROW,     "->")          \
     X(FATARROW,  "=>")          \
     X(ELLIPSIS,  "...")         \
+    X(HASHBRACKET, "#[")        \
     /* operators */             \
     X(PLUS,      "+")           \
     X(MINUS,     "-")           \

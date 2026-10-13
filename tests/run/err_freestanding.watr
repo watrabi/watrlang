@@ -1,0 +1,12 @@
+// watrc-flags: --freestanding
+class Box { public int v; }
+
+export function entry(): void {
+    Box b = new Box;
+    int* p = alloc(int);
+    string s = "n = " . 5;
+    array a = [1, 2];
+    f64 x = 1.5;
+    echo x, "\n";
+    echo "{b->v} {p} {s} {a}\n";
+}
