@@ -13,5 +13,8 @@ function main(): int {
     echo helper(), " / ", geometry::helper(), "\n";
     echo "sides: ", SIDES, ", calls: ", geometry::calls, ", secret: ", uses_secret(), "\n";
     echo "upper: ", to_upper("mods"), ", q.x: ", q->x, ", p.y: ", p->y, "\n";
+    Shape sq = Shape::Square;
+    geometry::Shape pent = geometry::Shape::Pentagon;
+    echo "shapes: ", sq, " ", geometry::sides(pent), " ", pent, "\n";
     return 0;
 }

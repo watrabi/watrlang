@@ -1,0 +1,40 @@
+// Enums: named integer constants with their own type.
+enum Color { Red, Green, Blue }
+enum Http: u16 { Ok = 200, NotFound = 404, Teapot = 418, Next }
+enum Big: i64 { Low = -9000000000, High = 9000000000 }
+enum Flag: u8 { A = 1, B = 2, C = 4 }
+
+struct Pixel {
+    Color c;
+    u8 alpha;
+}
+
+const Color favorite = Color::Green;
+Pixel origin = Pixel { c: Color::Blue, alpha: 255 };
+
+function next(Color c): Color {
+    if (c == Color::Blue) {
+        return Color::Red;
+    }
+    return ((c as int) + 1) as Color;
+}
+
+function main(): int {
+    Color c = Color::Red;
+    echo c, " ", favorite, " ", origin->c, "\n";
+    for (int i = 0; i < 4; i++) {
+        echo "{c} ";
+        c = next(c);
+    }
+    echo "\n";
+    echo Http::Ok, " = ", Http::Ok as int, ", ", Http::Next, " = ", Http::Next as u16, "\n";
+    echo Big::Low, " ", Big::High as i64, "\n";
+    Color odd = 7 as Color;
+    echo "not a variant: ", odd, "\n";
+    string s = "flag " . Flag::C;
+    echo s, " size ", sizeof(Flag), " ", sizeof(Color), " ", sizeof(Pixel), "\n";
+    echo Color::Red < Color::Blue, " ", Color::Green != favorite, "\n";
+    Pixel p = Pixel { c: Color::Green };
+    echo p->c == favorite, "\n";
+    return Http::Teapot as int - 400;
+}

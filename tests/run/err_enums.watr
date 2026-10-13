@@ -1,0 +1,16 @@
+enum Color { Red, Green, Blue, Red }
+enum Bad: f64 { X }
+enum Small: u8 { A = 254, B, C }
+enum Neg: u8 { M = -1 }
+struct Point { int x; }
+
+function main(): int {
+    Color c = Color::Gren;
+    Color d = Color::Purple;
+    int n = c + 1;
+    bool same = c == 1;
+    Point p = Point::x;
+    Color e = Color { };
+    int k = Shape::Circle;
+    return 0;
+}

@@ -23,7 +23,8 @@ typedef struct {
     int cur;            /* the module whose code is being checked */
     PtrVec funcs;       /* Symbol* */
     PtrVec globals;     /* Symbol* */
-    PtrVec structs;     /* Type* */
+    PtrVec structs;     /* Type*: structs and enums */
+    PtrVec enum_fns;    /* Symbol*: generated enum-name functions */
 
     /* per function */
     Symbol *fn;
@@ -31,6 +32,8 @@ typedef struct {
     size_t *marks;
     size_t nmarks, marks_cap;
     int loop_depth;
+    bool in_defer;      /* checking the body of a `defer` */
+    int defer_loop_depth;   /* loop_depth where that body starts */
     int fn_errors_before;
     bool needs_libc;
 } Sema;
@@ -45,6 +48,9 @@ static void check_effect(Sema *S, Expr **slot);
 static bool both_values(Sema *S, const Expr *a, const Expr *b);
 static bool require_value(Sema *S, const Expr *e);
 static bool const_eval(Sema *S, const Expr *e, ConstVal *out, bool report);
+static bool coerce(Sema *S, Expr **slot, Type *to, const Loc *why, const char *why_text);
+static Type *check_coalesce(Sema *S, Expr *e, Type *hint);
+static const char *closest(const char *name, const char **candidates, size_t n);
 
 /* ---- small helpers ------------------------------------------------------- */
 
@@ -203,6 +209,21 @@ static void report_ambiguous(Sema *S, Loc loc, const char *name, const Symbol *a
 /* E0344 */
 static void report_unknown_module(Sema *S, Loc loc, const char *alias) {
     loc.len = (uint32_t)strlen(alias);   /* just the module part of `alias::name` */
+    if (alias[0] >= 'A' && alias[0] <= 'Z') {   /* probably meant an enum */
+        Diag *d = diag_start(DIAG_ERROR, "E0344", loc, "cannot find an enum or module named `%s`", alias);
+        diag_label(d, "not found");
+        const char *names[64];
+        size_t n = 0;
+        for (size_t i = 0; i < S->structs.len && n < 64; i++) {
+            Type *t = S->structs.items[i];
+            if (t->kind == TY_ENUM) names[n++] = t->name;
+        }
+        const char *guess = closest(alias, names, n);
+        if (guess) diag_fix(d, loc, guess, "an enum with a similar name exists");
+        else diag_help(d, "declare it: `enum %s { ... }`", alias);
+        diag_end(d);
+        return;
+    }
     Diag *d = diag_start(DIAG_ERROR, "E0344", loc, "`%s` isn't a module imported here", alias);
     diag_label(d, "unknown module");
     const Module *m = S->mods[S->cur];
@@ -220,7 +241,6 @@ static void report_unknown_module(Sema *S, Loc loc, const char *alias) {
     }
     if (guess) diag_fix(d, loc, guess, "a module with a similar name is imported");
     else if (n == 0) diag_help(d, "import it first, like `import \"std/%s\";`", alias);
-    else diag_note(d, "enums (Color::Red) are coming in milestone 12");
     diag_end(d);
 }
 
@@ -407,6 +427,21 @@ static const char *builtin_type_names[] = {"int", "float", "bool", "void", "i8",
                                            "u8", "u16", "u32", "u64", "usize", "f32", "f64"};
 
 static void report_unknown_type(Sema *S, Loc loc, const char *name) {
+    const char *sep = strstr(name, "::");
+    if (sep) {   /* geo::Point: maybe it exists but is private */
+        char alias[128];
+        snprintf(alias, sizeof alias, "%.*s", (int)(sep - name), name);
+        int mod = module_by_alias(S, alias);
+        for (size_t i = 0; mod >= 0 && i < S->structs.len; i++) {
+            Type *t = S->structs.items[i];
+            if (module_of(S, t->decl->loc.file) != mod || strcmp(t->name, sep + 2) != 0) continue;
+            Diag *d = diag_start(DIAG_ERROR, "E0345", loc, "`%s` is private", name);
+            diag_label(d, "not visible outside `%s`", S->mods[mod]->file->path);
+            diag_span(d, t->decl->name_loc, "declared `private` here");
+            diag_end(d);
+            return;
+        }
+    }
     Diag *d = diag_start(DIAG_ERROR, "E0322", loc, "cannot find type `%s`", name);
     diag_label(d, "not a known type");
     const char *names[64];
@@ -480,9 +515,27 @@ static Type *resolve_type(Sema *S, const TypeExpr *te, bool allow_void) {
     case TYPEX_SLICE:
         not_yet(te->loc, "slices (`T[]`)", 7);
         return ty_error;
-    case TYPEX_ERROR_UNION:
-        not_yet(te->loc, "error unions (`T!E`)", 9);
-        return ty_error;
+    case TYPEX_ERROR_UNION: {
+        Type *vt = resolve_type(S, te->u.error_union.value, true);
+        Type *et = resolve_type(S, te->u.error_union.error, false);
+        if (is_err(vt) || is_err(et)) return ty_error;
+        const char *why = NULL;
+        const TypeExpr *at = te->u.error_union.error;
+        if (et->kind != TY_ENUM) why = "the error type must be an enum";
+        else if (vt == et) why = "the value type and the error type must be different";
+        else if (vt->kind == TY_ERRUNION) { why = "error unions can't be nested"; at = te->u.error_union.value; }
+        else if (vt->kind == TY_ARRAY) { why = "arrays can't be returned or passed by value"; at = te->u.error_union.value; }
+        if (why) {
+            Diag *d = diag_start(DIAG_ERROR, "E0349", at->loc, "invalid error union type `%s!%s`", type_name(vt),
+                                 type_name(et));
+            diag_label(d, "%s", why);
+            if (et->kind != TY_ENUM)
+                diag_help(d, "declare the errors as an enum: `enum MyError { NotFound, Denied }`");
+            diag_end(d);
+            return ty_error;
+        }
+        return type_errunion(vt, et);
+    }
     }
     if (t->kind == TY_VOID && !allow_void) {
         Diag *d = diag_start(DIAG_ERROR, "E0330", te->loc, "`void` can't be used as a value type");
@@ -561,6 +614,58 @@ static void layout_struct(Sema *S, Type *st) {
     S->cur = saved_cur;
 }
 
+/* Gives each variant its value: written ones must be constant; the rest
+ * count up from the previous one, starting at 0. */
+static void check_enum_variants(Sema *S, Type *et) {
+    const Decl *d = et->decl;
+    size_t n = d->u.enum_.n;
+    et->variants = arena_alloc(S->arena, (n ? n : 1) * sizeof(EnumVariant));
+    et->nvariants = 0;
+    Type *base = et->base;
+    int64_t next = 0;
+    bool next_ok = true;   /* false once the previous value was the type's maximum */
+    for (size_t i = 0; i < n; i++) {
+        EnumItem *item = d->u.enum_.items[i];
+        for (size_t j = 0; j < et->nvariants; j++) {
+            if (strcmp(et->variants[j].name, item->name) == 0) {
+                Diag *e = diag_start(DIAG_ERROR, "E0351", item->loc, "variant `%s` is declared twice in enum `%s`",
+                                     item->name, et->name);
+                diag_label(e, "declared again here");
+                diag_span(e, et->variants[j].loc, "first declared here");
+                diag_end(e);
+            }
+        }
+        int64_t value = next;
+        if (item->value) {
+            Type *t = check(S, &item->value, base);
+            ConstVal cv;
+            if (is_err(t)) {
+                value = next;
+            } else if (!type_is_int(t) || !const_eval(S, item->value, &cv, false)) {
+                Diag *e = diag_start(DIAG_ERROR, "E0351", item->value->loc, "enum values must be constant integers");
+                diag_label(e, "not a constant integer");
+                diag_end(e);
+            } else if (!int_widens(t, base)) {
+                coerce(S, &item->value, base, &d->name_loc, "the enum's underlying type");
+            } else {
+                value = (int64_t)cv.bits;
+            }
+        } else if (!next_ok) {
+            Diag *e = diag_start(DIAG_ERROR, "E0351", item->loc, "the value of `%s` doesn't fit in `%s`", item->name,
+                                 type_name(base));
+            diag_label(e, "the previous variant already has the largest `%s`", type_name(base));
+            diag_help(e, "give it a value explicitly, or use a wider type: `enum %s: i64`", et->name);
+            diag_end(e);
+        }
+        EnumVariant *v = &et->variants[et->nvariants++];
+        v->name = item->name;
+        v->loc = item->loc;
+        v->value = (int64_t)int_normalize(base, (uint64_t)value);
+        next_ok = base->is_signed ? v->value != (int64_t)int_type_max(base) : (uint64_t)v->value != int_type_max(base);
+        next = (int64_t)((uint64_t)v->value + 1);
+    }
+}
+
 static const Field *find_field(const Type *st, const char *name) {
     for (size_t i = 0; i < st->nfields; i++)
         if (strcmp(st->fields[i].name, name) == 0) return &st->fields[i];
@@ -593,6 +698,7 @@ static void report_unknown_field(Sema *S, const Type *st, const char *name, Loc 
 
 /* A literal whose type isn't fixed yet and should adapt to the other side. */
 static bool is_literal(const Expr *e) {
+    if (e->type && e->type->kind == TY_ENUM) return false;   /* Color::Red, folded */
     if (e->kind == EXPR_INT || e->kind == EXPR_FLOAT || e->kind == EXPR_CHAR) return true;
     return e->kind == EXPR_UNARY && e->u.unary.op == TOK_MINUS &&
            (e->u.unary.operand->kind == EXPR_INT || e->u.unary.operand->kind == EXPR_FLOAT);
@@ -658,6 +764,11 @@ static void mismatch_help(Sema *S, Diag *d, const Expr *e, const Type *from, con
             diag_note(d, "`void*` doesn't convert to other pointers implicitly; use `as %s`", type_name(to));
     } else if (from->kind == TY_ARRAY && to->kind == TY_PTR) {
         diag_help(d, "to point at the first element, write `&arr[0]`");
+    } else if (from->kind == TY_ERRUNION && from->base->kind != TY_VOID && type_assignable(from->base, to)) {
+        fix_append(S, d, e, "?", "to pass the error on to the caller, add `?`");
+        diag_help(d, "to handle the error here instead: `??` gives a fallback value, and `->ok` says whether it succeeded");
+    } else if (to->kind == TY_ERRUNION && from->kind == TY_ENUM) {
+        diag_note(d, "this function's errors are `%s`, not `%s`", type_name(to->err), type_name(from));
     }
 }
 
@@ -672,6 +783,18 @@ static bool coerce(Sema *S, Expr **slot, Type *to, const Loc *why, const char *w
     if (type_assignable(from, to)) {
         if (from->kind == TY_FLOAT && to->kind == TY_FLOAT && from->size != to->size) *slot = wrap_cast(S, e, to);
         return true;
+    }
+    if (to->kind == TY_ERRUNION && from->kind != TY_ERRUNION) {
+        /* A value or an error becomes a T!E. */
+        if (from == to->err) {
+            *slot = wrap_cast(S, e, to);
+            return true;
+        }
+        if (to->base->kind != TY_VOID && type_assignable(from, to->base)) {
+            coerce(S, slot, to->base, why, why_text);
+            *slot = wrap_cast(S, *slot, to);
+            return true;
+        }
     }
     bool qual = from->kind == TY_PTR && to->kind == TY_PTR && type_equiv(from->base, to->base);
     Diag *d = diag_start(DIAG_ERROR, qual ? "E0326" : "E0309", e->loc, "mismatched types: expected `%s`, found `%s`",
@@ -825,9 +948,50 @@ static Expr *convert(Sema *S, Expr *e, Type *t) {
 static void report_not_stringable(const Expr *e, const char *context) {
     Diag *d = diag_start(DIAG_ERROR, "E0338", e->loc, "a value of type `%s` can't be %s", type_name(e->type), context);
     diag_label(d, "no text form");
-    diag_note(d, "strings, numbers, bools and pointers can be printed and joined with `.`");
-    if (e->type->kind == TY_STRUCT) diag_help(d, "print the fields you want instead, like `\"{v->x}, {v->y}\"`");
+    diag_note(d, "strings, numbers, bools, enums and pointers can be printed and joined with `.`");
+    if (e->type->kind == TY_ERRUNION)
+        diag_help(d, "unwrap it first: `?` passes the error on, `??` gives a fallback value");
+    else if (e->type->kind == TY_STRUCT) diag_help(d, "print the fields you want instead, like `\"{v->x}, {v->y}\"`");
     diag_end(d);
+}
+
+/* A call to the generated function that names a variant of enum `e`'s
+ * type ("Red"); values that aren't a variant print as numbers. */
+static Expr *enum_name_call(Sema *S, Expr *e) {
+    Type *et = e->type;
+    if (!et->name_fn) {
+        Symbol *fn = new_symbol(S, SYM_FUNC, et->name, et->decl->name_loc);
+        fn->module = module_of(S, et->decl->loc.file);
+        const char *prefix = S->mods[fn->module]->prefix;
+        size_t n = strlen(prefix) + strlen(et->name) + 8;
+        char *name = arena_alloc(S->arena, n);
+        snprintf(name, n, "w.enum.%s%s", prefix, et->name);
+        fn->asm_name = name;
+        fn->type = ty_string;
+        fn->nparams = 1;
+        fn->param_types = arena_alloc(S->arena, sizeof(Type *));
+        fn->param_types[0] = et;
+        fn->is_runtime = true;
+        fn->enum_type = et;
+        Symbol *saved = S->fn;
+        S->fn = fn;
+        add_callee(S, find_runtime_func(S, et->is_signed ? "__rt_i64_to_string" : "__rt_u64_to_string"));
+        S->fn = saved;
+        ptrvec_push(&S->enum_fns, fn);
+        et->name_fn = fn;
+    }
+    Symbol *fn = et->name_fn;
+    Expr *callee = new_node(S, EXPR_IDENT, e->loc, ty_error);
+    callee->u.name = fn->name;
+    callee->sym = fn;
+    Expr *call = new_node(S, EXPR_CALL, e->loc, ty_string);
+    call->sym = fn;
+    call->u.call.callee = callee;
+    call->u.call.nargs = 1;
+    call->u.call.args = arena_alloc(S->arena, sizeof(Expr *));
+    call->u.call.args[0] = e;
+    add_callee(S, fn);
+    return call;
 }
 
 /* The text form of a checked expression, as a `string` expression:
@@ -844,6 +1008,8 @@ static Expr *stringify(Sema *S, Expr *e, const char *context) {
         return rt_call1(S, "__rt_f64_to_string", convert(S, e, ty_f64));
     case TY_BOOL:
         return rt_call1(S, "__rt_bool_to_string", e);
+    case TY_ENUM:
+        return enum_name_call(S, e);
     case TY_PTR:
     case TY_NULL:
         return rt_call1(S, "__rt_ptr_to_string", convert(S, e, ty_u64));
@@ -865,6 +1031,7 @@ static Expr *echo_call(Sema *S, Expr *e) {
         return rt_call1(S, "__rt_echo_u64", convert(S, e, ty_u64));
     case TY_FLOAT: return rt_call1(S, "__rt_echo_f64", convert(S, e, ty_f64));
     case TY_BOOL: return rt_call1(S, "__rt_echo_bool", e);
+    case TY_ENUM: return rt_call1(S, "__rt_echo_str", enum_name_call(S, e));
     case TY_PTR:
     case TY_NULL: return rt_call1(S, "__rt_echo_ptr", convert(S, e, ty_u64));
     case TY_ERROR: return NULL;
@@ -938,6 +1105,7 @@ static LvalueKind lvalue_kind(const Expr *e) {
     case EXPR_MEMBER: {
         const Type *ot = e->u.member.object->type;
         if (ot->kind == TY_STRING || (ot->kind == TY_PTR && ot->base->kind == TY_STRING)) return LV_STRING;
+        if (e->builtin != BUILTIN_NONE) return LV_NONE;   /* parts of an error union */
         if (e->via_pointer) return ot->base_const ? LV_CONST_PTR : LV_MUT;
         return lvalue_kind(e->u.member.object);
     }
@@ -1207,6 +1375,7 @@ static Type *check_binary(Sema *S, Expr **slot, Type *hint) {
     Expr **lhs = &e->u.binary.lhs, **rhs = &e->u.binary.rhs;
 
     if (op == TOK_DOT) return check_concat(S, slot);
+    if (op == TOK_QQ) return check_coalesce(S, e, hint);
 
     if (op == TOK_ANDAND || op == TOK_OROR) {
         require_bool(S, lhs, "each side of `&&` and `||`");
@@ -1287,6 +1456,7 @@ static Type *check_binary(Sema *S, Expr **slot, Type *hint) {
             return set_type(e, ty_bool);
         }
         if (eq && lt->kind == TY_BOOL && rt->kind == TY_BOOL) return set_type(e, ty_bool);
+        if (lt->kind == TY_ENUM && lt == rt) return set_type(e, ty_bool);
         bool lp = lt->kind == TY_PTR || lt->kind == TY_NULL, rp = rt->kind == TY_PTR || rt->kind == TY_NULL;
         if (lp && rp && (eq || (lt->kind == TY_PTR && rt->kind == TY_PTR)) &&
             (type_assignable(lt, rt) || type_assignable(rt, lt) ||
@@ -1296,6 +1466,10 @@ static Type *check_binary(Sema *S, Expr **slot, Type *hint) {
         diag_span(d, (*lhs)->loc, "`%s`", type_name(lt));
         diag_span(d, (*rhs)->loc, "`%s`", type_name(rt));
         if (type_is_aggregate(lt)) diag_note(d, "structs and arrays can't be compared with operators");
+        else if (lt->kind == TY_ERRUNION || rt->kind == TY_ERRUNION)
+            diag_help(d, "unwrap the error union first, with `?` or `??`");
+        else if (lt->kind == TY_ENUM || rt->kind == TY_ENUM)
+            diag_help(d, "an enum compares only with the same enum; convert with `as` to compare numbers");
         else if (type_is_numeric(lt) != type_is_numeric(rt)) diag_help(d, "convert one side with `as`");
         diag_end(d);
         return set_type(e, ty_error);
@@ -1312,6 +1486,10 @@ static Type *check_binary(Sema *S, Expr **slot, Type *hint) {
         diag_label(d, "not a number");
         if (bad->type->kind == TY_BOOL && (op == TOK_PLUS || op == TOK_STAR))
             diag_help(d, "to count `true` as 1, convert with `as int`");
+        else if (bad->type->kind == TY_ENUM)
+            fix_append(S, d, bad, " as int", "enums don't do arithmetic; convert to an integer first");
+        else if (bad->type->kind == TY_ERRUNION)
+            diag_help(d, "unwrap the error union first, with `?` or `??`");
         diag_end(d);
         return set_type(e, ty_error);
     }
@@ -1326,6 +1504,84 @@ static Type *check_binary(Sema *S, Expr **slot, Type *hint) {
     widen_to(S, lhs, t);
     widen_to(S, rhs, t);
     return set_type(e, t);
+}
+
+/* E0350: `what` needs an error union operand. */
+static bool require_errunion(const Expr *e, const char *what) {
+    Type *t = e->type;
+    if (t->kind == TY_ERRUNION) return true;
+    Diag *d = diag_start(DIAG_ERROR, "E0350", e->loc, "%s needs an error union, found `%s`", what, type_name(t));
+    diag_label(d, "this can't fail");
+    diag_note(d, "error unions are written `T!E`, like `int!IoError`");
+    diag_end(d);
+    return false;
+}
+
+/* r ?? fallback: r's value, or the fallback if r is an error. */
+static Type *check_coalesce(Sema *S, Expr *e, Type *hint) {
+    Type *lt = check(S, &e->u.binary.lhs, NULL);
+    Expr *lhs = e->u.binary.lhs;
+    if (is_err(lt) || !require_value(S, lhs) || !require_errunion(lhs, "`??`")) {
+        check(S, &e->u.binary.rhs, hint);
+        return set_type(e, ty_error);
+    }
+    if (lt->base->kind == TY_VOID) {
+        Diag *d = diag_start(DIAG_ERROR, "E0350", e->loc, "`??` needs a value to fall back from, but `%s` has none",
+                             type_name(lt));
+        diag_label(d, "`void` results have no value");
+        diag_help(d, "check `->ok` instead, or pass the error on with `?`");
+        diag_end(d);
+        check(S, &e->u.binary.rhs, NULL);
+        return set_type(e, ty_error);
+    }
+    check(S, &e->u.binary.rhs, lt->base);
+    char why[160];
+    snprintf(why, sizeof why, "this is `%s`, so the fallback must be a `%s`", type_name(lt), type_name(lt->base));
+    coerce(S, &e->u.binary.rhs, lt->base, &lhs->loc, why);
+    return set_type(e, lt->base);
+}
+
+/* r?: r's value, or return r's error from the current function. */
+static Type *check_try(Sema *S, Expr *e) {
+    Type *t = check(S, &e->u.try_expr, NULL);
+    Expr *inner = e->u.try_expr;
+    if (is_err(t) || !require_value(S, inner) || !require_errunion(inner, "`?`")) return set_type(e, ty_error);
+    const Decl *fd = S->fn->decl;
+    Type *rt = S->fn->type;
+    Loc q = loc_at(e->loc.file, e->loc.offset + e->loc.len - 1, 1);
+    if (S->in_defer) {
+        Diag *d = diag_start(DIAG_ERROR, "E0346", q, "`?` can't be used inside `defer`");
+        diag_label(d, "this would return from the function");
+        diag_note(d, "deferred code runs while its block is already exiting, so it must run to its end");
+        diag_end(d);
+        return set_type(e, ty_error);
+    }
+    if (is_err(rt)) return set_type(e, t->base);
+    if (rt->kind != TY_ERRUNION) {
+        Diag *d = diag_start(DIAG_ERROR, "E0347", q, "`?` can only be used in a function that returns an error union");
+        diag_label(d, "this returns the error from `%s`", fd->name);
+        diag_span(d, ret_type_loc(fd), "`%s` returns `%s`", fd->name, type_name(rt));
+        if (fd->u.func.ret && strcmp(fd->name, "main") != 0) {
+            char fixed[256];
+            snprintf(fixed, sizeof fixed, "%s!%s", type_name(rt), type_name(t->err));
+            diag_fix(d, fd->u.func.ret->loc, fixed, "make `%s` return errors too", fd->name);
+        } else if (t->base->kind != TY_VOID) {
+            diag_help(d, "handle the error here: `??` gives a fallback value, and `->ok` says whether it succeeded");
+        }
+        diag_end(d);
+        return set_type(e, ty_error);
+    }
+    if (rt->err != t->err) {
+        Diag *d = diag_start(DIAG_ERROR, "E0348", q, "`?` can't pass on `%s` errors from a function that returns `%s` errors",
+                             type_name(t->err), type_name(rt->err));
+        diag_label(d, "this error is of type `%s`", type_name(t->err));
+        diag_span(d, ret_type_loc(fd), "`%s` returns `%s`", fd->name, type_name(rt));
+        diag_help(d, "check `->ok` and return one of `%s`'s errors yourself, like `return %s::...;`", type_name(rt->err),
+                  type_name(rt->err));
+        diag_end(d);
+        return set_type(e, ty_error);
+    }
+    return set_type(e, t->base);
 }
 
 static Type *check_ternary(Sema *S, Expr *e, Type *hint) {
@@ -1527,9 +1783,33 @@ static Type *check_member(Sema *S, Expr *e) {
     if (is_err(t)) return set_type(e, ty_error);
     Type *st = t;
     e->via_pointer = false;
-    if (t->kind == TY_PTR && (t->base->kind == TY_STRUCT || t->base->kind == TY_STRING)) {
+    if (t->kind == TY_PTR && (t->base->kind == TY_STRUCT || t->base->kind == TY_STRING || t->base->kind == TY_ERRUNION)) {
         st = t->base;
         e->via_pointer = true;
+    }
+    if (st->kind == TY_ERRUNION) {   /* r->ok, r->value, r->error */
+        const char *name = e->u.member.name;
+        const char *field = strcmp(name, "ok") == 0 ? "is_err" : strcmp(name, "error") == 0 ? "err" : name;
+        const Field *f = strcmp(name, "ok") == 0 || strcmp(name, "error") == 0 ||
+                                 (strcmp(name, "value") == 0 && st->base->kind != TY_VOID)
+                             ? find_field(st, field)
+                             : NULL;
+        if (!f) {
+            Diag *d = diag_start(DIAG_ERROR, "E0317", e->u.member.name_loc, "`%s` has no field named `%s`",
+                                 type_name(st), name);
+            diag_label(d, "unknown field");
+            if (strcmp(name, "value") == 0) diag_note(d, "a `void` result has no value; check `->ok` instead");
+            else diag_note(d, "an error union has `ok` (bool), `value` and `error`");
+            diag_end(d);
+            return set_type(e, ty_error);
+        }
+        e->field_offset = f->offset;
+        if (strcmp(name, "ok") == 0) {
+            e->builtin = BUILTIN_EU_OK;
+            return set_type(e, ty_bool);
+        }
+        e->builtin = strcmp(name, "value") == 0 ? BUILTIN_EU_VALUE : BUILTIN_EU_ERROR;
+        return set_type(e, f->type);
     }
     if (st->kind == TY_STRING) {   /* string is {const u8* ptr; usize len} */
         const char *name = e->u.member.name;
@@ -1652,8 +1932,16 @@ static Type *check_string_lit(Sema *S, Expr *e) {
 static Type *check_struct_lit(Sema *S, Expr *e) {
     if (strcmp(e->u.struct_lit.type_name, "string") == 0) return check_string_lit(S, e);
     Type *st = find_struct(S, e->u.struct_lit.type_name);
+    if (st && st->kind != TY_STRUCT) {
+        Diag *d = diag_start(DIAG_ERROR, "E0352", e->loc, "`%s` is an enum, not a struct", st->name);
+        diag_label(d, "can't be built with `{ ... }`");
+        diag_help(d, "name a variant instead, like `%s::%s`", st->name, st->nvariants ? st->variants[0].name : "Variant");
+        diag_end(d);
+        st = NULL;
+    }
     if (!st) {
-        report_unknown_type(S, e->loc, e->u.struct_lit.type_name);
+        if (!find_struct(S, e->u.struct_lit.type_name))
+            report_unknown_type(S, e->loc, e->u.struct_lit.type_name);
         for (size_t i = 0; i < e->u.struct_lit.n; i++) check(S, &e->u.struct_lit.fields[i]->value, NULL);
         return set_type(e, ty_error);
     }
@@ -1711,6 +1999,53 @@ static Type *check_array_lit(Sema *S, Expr *e, Type *hint) {
     return set_type(e, hint);
 }
 
+/* Enum::Variant folds to the variant's value, typed as the enum. */
+static Type *check_enum_value(Sema *S, Expr *e, Type *et) {
+    const char *scope = e->u.scope.scope, *name = e->u.scope.member;
+    Loc scope_loc = e->loc;
+    scope_loc.len = (uint32_t)strlen(scope);
+    if (!et) {
+        report_unknown_type(S, scope_loc, scope);
+        return set_type(e, ty_error);
+    }
+    if (et->kind != TY_ENUM) {
+        Diag *d = diag_start(DIAG_ERROR, "E0352", scope_loc, "`%s` is a struct, not an enum", scope);
+        diag_label(d, "`::` names an enum variant or something in a module");
+        diag_span(d, et->decl->name_loc, "`%s` is declared here", et->name);
+        diag_end(d);
+        return set_type(e, ty_error);
+    }
+    for (size_t i = 0; i < et->nvariants; i++) {
+        if (strcmp(et->variants[i].name, name) == 0) {
+            e->kind = EXPR_INT;
+            e->u.int_val = (uint64_t)et->variants[i].value;
+            return set_type(e, et);
+        }
+    }
+    Loc name_loc = e->loc;
+    name_loc.offset += name_loc.len - (uint32_t)strlen(name);
+    name_loc.col += name_loc.len - (uint32_t)strlen(name);
+    name_loc.len = (uint32_t)strlen(name);
+    Diag *d = diag_start(DIAG_ERROR, "E0352", name_loc, "enum `%s` has no variant named `%s`", et->name, name);
+    diag_label(d, "unknown variant");
+    const char *names[64];
+    size_t n = 0;
+    for (size_t i = 0; i < et->nvariants && n < 64; i++) names[n++] = et->variants[i].name;
+    const char *guess = closest(name, names, n);
+    if (guess) {
+        diag_fix(d, name_loc, guess, "a variant with a similar name exists");
+    } else if (n) {
+        char list[256] = "";
+        size_t used = 0;
+        for (size_t i = 0; i < n && used < sizeof list - 40; i++)
+            used += (size_t)snprintf(list + used, sizeof list - used, "%s`%s`", i ? ", " : "", names[i]);
+        diag_note(d, "the variants are %s", list);
+    }
+    diag_span(d, et->decl->name_loc, "`%s` is declared here", et->name);
+    diag_end(d);
+    return set_type(e, ty_error);
+}
+
 static void report_assign_as_value(const Expr *e) {
     Diag *d = diag_start(DIAG_ERROR, "E0210", e->loc, "an assignment can't be used as a value");
     diag_label(d, "assignment used as a value");
@@ -1734,6 +2069,7 @@ static void report_assign_as_value(const Expr *e) {
 static Type *check(Sema *S, Expr **slot, Type *hint) {
     Expr *e = *slot;
     if (hint && is_err(hint)) hint = NULL;
+    if (hint && hint->kind == TY_ERRUNION) hint = hint->base;   /* literals take the value type */
     switch (e->kind) {
     case EXPR_INT:
     case EXPR_CHAR:
@@ -1776,7 +2112,12 @@ static Type *check(Sema *S, Expr **slot, Type *hint) {
     case EXPR_ASSIGN:
         report_assign_as_value(e);
         return set_type(e, ty_error);
-    case EXPR_SCOPE: {   /* module::global */
+    case EXPR_SCOPE: {   /* Enum::Variant, module::Enum::Variant, or module::global */
+        const char *scope = e->u.scope.scope;
+        if (strstr(scope, "::") || module_by_alias(S, scope) < 0) {
+            Type *et = find_struct(S, scope);
+            if (et || strstr(scope, "::")) return check_enum_value(S, e, et);
+        }
         Symbol *g = find_qualified(S, &S->globals, e->loc, e->u.scope.scope, e->u.scope.member, "global variable");
         if (!g) return set_type(e, ty_error);
         e->kind = EXPR_IDENT;
@@ -1819,7 +2160,8 @@ static Type *check(Sema *S, Expr **slot, Type *hint) {
         }
         return set_type(e, type_ptr(t, false, false));
     }
-    case EXPR_TRY:        not_yet(e->loc, "error propagation with `?`", 9); break;
+    case EXPR_TRY:
+        return check_try(S, e);
     }
     return set_type(e, ty_error);
 }
@@ -1961,7 +2303,17 @@ static void check_effect(Sema *S, Expr **slot) {
         check_assign(S, e);
         return;
     }
-    check(S, slot, NULL);
+    Type *t = check(S, slot, NULL);
+    if (t->kind == TY_ERRUNION) {
+        Diag *d = diag_start(DIAG_WARNING, "W0005", e->loc, "this result may be an error, which is being ignored");
+        diag_label(d, "returns `%s`", type_name(t));
+        if (S->fn && S->fn->type->kind == TY_ERRUNION && S->fn->type->err == t->err)
+            fix_append(S, d, e, "?", "to pass the error on to the caller, add `?`");
+        else
+            diag_help(d, "check it: `if (!r->ok) { ... }`, or pass it on with `?`");
+        diag_note(d, "to ignore it on purpose, store it in a variable whose name starts with `_`");
+        diag_end(d);
+    }
     /* A bare `x++;` writes x without reading it, for the unused warning. */
     bool incdec = (e->kind == EXPR_POSTFIX || e->kind == EXPR_UNARY) &&
                   (e->u.unary.op == TOK_PLUSPLUS || e->u.unary.op == TOK_MINUSMINUS);
@@ -2182,6 +2534,14 @@ static bool const_init(Sema *S, const Expr *e, const Type *t, unsigned char *buf
         }
         return ok;
     }
+    if (e->kind == EXPR_CAST && e->implicit && t->kind == TY_ERRUNION) {
+        /* A T!E global starts as a value or an error. */
+        const Expr *inner = e->u.cast.expr;
+        bool is_error = inner->type == t->err;
+        buf[0] = is_error;
+        const Field *f = find_field(t, is_error ? "err" : "value");
+        return const_init(S, inner, f->type, buf + f->offset);
+    }
     if (e->kind == EXPR_ARRAY_LIT && t->kind == TY_ARRAY) {
         bool ok = true;
         for (size_t i = 0; i < e->u.array.n && i < t->len; i++)
@@ -2268,6 +2628,14 @@ static void check_dangling_return(const Expr *e) {
     diag_end(d);
 }
 
+/* E0346 */
+static void report_defer_escape(const Stmt *s, const char *what) {
+    Diag *d = diag_start(DIAG_ERROR, "E0346", s->loc, "`%s` can't jump out of a `defer`", what);
+    diag_label(d, "this would leave the deferred code early");
+    diag_note(d, "deferred code runs while its block is already exiting, so it must run to its end");
+    diag_end(d);
+}
+
 static void check_stmt(Sema *S, Stmt *s) {
     const Decl *fn = S->fn->decl;
     switch (s->kind) {
@@ -2282,6 +2650,7 @@ static void check_stmt(Sema *S, Stmt *s) {
         break;
     case STMT_RETURN: {
         Type *rt = S->fn->type;
+        if (S->in_defer) report_defer_escape(s, "return");
         if (s->u.expr) {
             Type *t = check(S, &s->u.expr, rt->kind == TY_VOID ? NULL : rt);
             if (rt->kind == TY_VOID && !is_err(t)) {
@@ -2299,7 +2668,7 @@ static void check_stmt(Sema *S, Stmt *s) {
                 Loc rl = ret_type_loc(fn);
                 if (coerce(S, &s->u.expr, rt, &rl, why)) check_dangling_return(s->u.expr);
             }
-        } else if (rt->kind != TY_VOID && !is_err(rt)) {
+        } else if (rt->kind != TY_VOID && !is_err(rt) && !(rt->kind == TY_ERRUNION && rt->base->kind == TY_VOID)) {
             Diag *d = diag_start(DIAG_ERROR, "E0303", s->loc, "missing return value in function `%s`", fn->name);
             diag_label(d, "expected a `%s` value", type_name(rt));
             diag_span(d, ret_type_loc(fn), "`%s` is declared to return `%s`", fn->name, type_name(rt));
@@ -2332,7 +2701,9 @@ static void check_stmt(Sema *S, Stmt *s) {
         break;
     case STMT_BREAK:
     case STMT_CONTINUE:
-        if (S->loop_depth == 0) {
+        if (S->in_defer && S->loop_depth == S->defer_loop_depth) {
+            report_defer_escape(s, s->kind == STMT_BREAK ? "break" : "continue");
+        } else if (S->loop_depth == 0) {
             bool is_break = s->kind == STMT_BREAK;
             Diag *d = diag_start(DIAG_ERROR, "E0212", s->loc, "`%s` outside of a loop", is_break ? "break" : "continue");
             diag_label(d, "can only be used inside a loop");
@@ -2363,7 +2734,16 @@ static void check_stmt(Sema *S, Stmt *s) {
         s->u.echo.exprs = (Expr **)ptrvec_finish(&calls, S->arena, &s->u.echo.n);
         break;
     }
-    case STMT_DEFER:   not_yet(s->loc, "`defer`", 9); break;
+    case STMT_DEFER: {
+        bool saved_in = S->in_defer;
+        int saved_depth = S->defer_loop_depth;
+        S->in_defer = true;
+        S->defer_loop_depth = S->loop_depth;
+        check_scoped(S, s->u.defer_body);
+        S->in_defer = saved_in;
+        S->defer_loop_depth = saved_depth;
+        break;
+    }
     case STMT_ASM:     not_yet(s->loc, "inline asm", 13); break;
     }
 }
@@ -2429,6 +2809,7 @@ static void check_function_body(Sema *S, Symbol *fn) {
     S->locals.len = 0;
     S->nmarks = 0;
     S->loop_depth = 0;
+    S->in_defer = false;
 
     push_scope(S);
     for (size_t i = 0; i < d->u.func.nparams; i++) {
@@ -2440,7 +2821,8 @@ static void check_function_body(Sema *S, Symbol *fn) {
     check_stmt_list(S, b->u.block.stmts, b->u.block.n);
     pop_scope(S);
 
-    if (fn->type->kind != TY_VOID && !is_err(fn->type) && falls_through(S, b)) {
+    bool void_result = fn->type->kind == TY_VOID || (fn->type->kind == TY_ERRUNION && fn->type->base->kind == TY_VOID);
+    if (!void_result && !is_err(fn->type) && falls_through(S, b)) {
         Loc closing = loc_at(b->loc.file, b->loc.offset + b->loc.len - 1, 1);
         Diag *e = diag_start(DIAG_ERROR, "E0304", closing, "function `%s` can reach its end without returning a value",
                              d->name);
@@ -2596,7 +2978,7 @@ static void check_duplicates(Sema *S) {
     Module *m = S->mod;
     for (size_t i = 0; i < m->n; i++) {
         const Decl *d = m->decls[i];
-        bool is_type = d->kind == DECL_STRUCT;
+        bool is_type = d->kind == DECL_STRUCT || d->kind == DECL_ENUM;
         bool is_value = d->kind == DECL_FUNC || d->kind == DECL_VAR;
         if (!is_type && !is_value) continue;
         for (size_t j = 0; j < i; j++) {
@@ -2613,7 +2995,8 @@ static void check_duplicates(Sema *S) {
                 }
                 continue;
             }
-            bool same_space = is_type ? prev->kind == DECL_STRUCT : (prev->kind == DECL_FUNC || prev->kind == DECL_VAR);
+            bool same_space = is_type ? (prev->kind == DECL_STRUCT || prev->kind == DECL_ENUM)
+                                      : (prev->kind == DECL_FUNC || prev->kind == DECL_VAR);
             if (!same_space || strcmp(prev->name, d->name) != 0) continue;
             Diag *e = diag_start(DIAG_ERROR, "E0202", d->name_loc, "the name `%s` is defined more than once", d->name);
             diag_label(e, "`%s` redefined here", d->name);
@@ -2648,25 +3031,42 @@ bool sema_check(Arena *arena, Module **mods, size_t nmods, Program *prog) {
         Decl *d = m->decls[i];
         S.cur = module_of(&S, d->loc.file);
         switch (d->kind) {
-        case DECL_STRUCT: {
+        case DECL_STRUCT:
+        case DECL_ENUM: {
             bool dup = false;
             for (size_t j = 0; j < S.structs.len; j++) {
                 Type *t = S.structs.items[j];
                 dup |= t->decl->loc.file == d->loc.file && strcmp(t->name, d->name) == 0;
             }
-            if (!dup) {
+            if (dup) break;
+            if (d->kind == DECL_STRUCT) {
                 d->type = type_new_struct(d->name, d);
-                ptrvec_push(&S.structs, d->type);
+            } else {
+                Type *base = d->u.enum_.base ? resolve_type(&S, d->u.enum_.base, false) : ty_i32;
+                if (!is_err(base) && base->kind != TY_INT) {
+                    Diag *e = diag_start(DIAG_ERROR, "E0351", d->u.enum_.base->loc,
+                                         "an enum's underlying type must be an integer type, found `%s`",
+                                         type_name(base));
+                    diag_label(e, "not an integer type");
+                    diag_end(e);
+                    base = ty_error;
+                }
+                d->type = type_new_enum(d->name, d, is_err(base) ? ty_i32 : base);
             }
+            ptrvec_push(&S.structs, d->type);
             break;
         }
         case DECL_IMPORT: break;   /* handled by the module loader */
         case DECL_CLASS:  not_yet(d->loc, "classes", 10); break;
-        case DECL_ENUM:   not_yet(d->loc, "enums", 12); break;
         default: break;
         }
     }
-    for (size_t i = 0; i < S.structs.len; i++) layout_struct(&S, S.structs.items[i]);
+    for (size_t i = 0; i < S.structs.len; i++) {
+        Type *t = S.structs.items[i];
+        S.cur = module_of(&S, t->decl->loc.file);
+        if (t->kind == TY_STRUCT) layout_struct(&S, t);
+        else check_enum_variants(&S, t);
+    }
 
     for (size_t i = 0; i < m->n; i++) {
         Decl *d = m->decls[i];
@@ -2747,6 +3147,7 @@ bool sema_check(Arena *arena, Module **mods, size_t nmods, Program *prog) {
     prog->needs_libc = S.needs_libc;
     prog->funcs = (Symbol **)ptrvec_finish(&S.funcs, arena, &prog->nfuncs);
     prog->globals = (Symbol **)ptrvec_finish(&S.globals, arena, &prog->nglobals);
+    prog->enum_fns = (Symbol **)ptrvec_finish(&S.enum_fns, arena, &prog->nenum_fns);
     free(S.structs.items);
     free(S.locals.items);
     free(S.marks);

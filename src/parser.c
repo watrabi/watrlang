@@ -38,6 +38,7 @@ enum {
     BP_NONE = 0,
     BP_ASSIGN,      /* = += -= ... (right-assoc) */
     BP_TERNARY,     /* ?: (right-assoc) */
+    BP_COALESCE,    /* ?? (right-assoc) */
     BP_OR,          /* || */
     BP_AND,         /* && */
     BP_CMP,         /* == != < > <= >= (can't be chained) */
@@ -762,6 +763,17 @@ static Expr *parse_primary(Parser *p) {
             e = new_expr(p, EXPR_SCOPE, span_to_prev(p, t->loc));
             e->u.scope.scope = tok_name(p, t);
             e->u.scope.member = tok_name(p, member);
+            if (check(p, TOK_COLONCOLON) && peek_at(p, 1)->kind == TOK_IDENT) {
+                /* module::Enum::Variant */
+                advance(p);
+                Token *variant = advance(p);
+                size_t n = strlen(e->u.scope.scope) + strlen(e->u.scope.member) + 3;
+                char *full = arena_alloc(p->arena, n);
+                snprintf(full, n, "%s::%s", e->u.scope.scope, e->u.scope.member);
+                e->u.scope.scope = full;
+                e->u.scope.member = tok_name(p, variant);
+                e->loc = span_to_prev(p, t->loc);
+            }
             return e;
         }
         if (next == TOK_LBRACE &&
@@ -946,6 +958,7 @@ static int infix_bp(Parser *p, TokenKind k) {
     if (is_cmp_op(k)) return BP_CMP;
     switch (k) {
     case TOK_QUESTION:   return BP_TERNARY;
+    case TOK_QQ:         return BP_COALESCE;
     case TOK_OROR:       return BP_OR;
     case TOK_ANDAND:     return BP_AND;
     case TOK_DOT:        return BP_CONCAT;
@@ -1051,6 +1064,14 @@ static Expr *parse_expr_bp_inner(Parser *p, int min_bp) {
             e->u.ternary.cond = lhs;
             e->u.ternary.then_expr = then_expr;
             e->u.ternary.else_expr = else_expr;
+            lhs = e;
+        } else if (bp == BP_COALESCE) {
+            Expr *rhs = parse_expr_bp(p, BP_COALESCE);  /* right-assoc: a ?? b ?? c */
+            if (!rhs) return NULL;
+            Expr *e = new_expr(p, EXPR_BINARY, span_to_prev(p, lhs->loc));
+            e->u.binary.op = TOK_QQ;
+            e->u.binary.lhs = lhs;
+            e->u.binary.rhs = rhs;
             lhs = e;
         } else if (bp == BP_AS) {
             TypeExpr *ty = parse_type(p, true);

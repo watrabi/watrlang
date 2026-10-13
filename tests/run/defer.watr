@@ -1,0 +1,77 @@
+// defer runs a statement when its block exits, newest first.
+enum E { Fail }
+
+function f(int n): int {
+    defer echo "f done\n";
+    if (n > 0) {
+        defer echo "  inner\n";
+        echo "  positive\n";
+        return n * 2;
+    }
+    defer echo "  not positive\n";
+    return 0;
+}
+
+function loops(): void {
+    for (int i = 0; i < 4; i++) {
+        defer echo "  end of iteration {i}\n";
+        if (i == 1) {
+            continue;
+        }
+        if (i == 3) {
+            break;
+        }
+        echo "  body {i}\n";
+    }
+}
+
+function may_fail(bool fail): int!E {
+    if (fail) {
+        return E::Fail;
+    }
+    return 7;
+}
+
+function chain(bool fail): int!E {
+    defer echo "  chain cleanup\n";
+    int v = may_fail(fail)?;
+    echo "  got {v}\n";
+    return v + 1;
+}
+
+int counter = 0;
+
+function value_before_defer(): int {
+    defer counter = 100;
+    counter = 5;
+    return counter;
+}
+
+function nested(): void {
+    defer {
+        echo "  outer defer: ";
+        for (int i = 0; i < 3; i++) {
+            if (i == 2) {
+                break;
+            }
+            echo i;
+        }
+        echo "\n";
+    }
+    {
+        defer echo "  block exit\n";
+        echo "  in block\n";
+    }
+    echo "  after block\n";
+}
+
+function main(): int {
+    echo f(3), "\n";
+    echo f(-1), "\n";
+    loops();
+    echo chain(false) ?? -1, "\n";
+    echo chain(true) ?? -1, "\n";
+    echo value_before_defer(), " ", counter, "\n";
+    nested();
+    return 0;
+}

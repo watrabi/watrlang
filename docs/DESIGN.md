@@ -294,6 +294,34 @@ function outb(u16 port, u8 val): void {
     helpers, PI/E, and libm functions), `std/str` (substr, index_of,
     contains, starts_with, ends_with, to_upper, to_lower, trim, repeat,
     parse_int, from_cstr), `std/mem` (copy, set, equal).
+- **Enums (milestone 9):** `enum Color { Red, Green = 5, Blue }` declares
+  named integer constants with their own type. The underlying type is
+  `i32` (like C) unless given: `enum Http: u16 { ... }`. Variants without
+  a value count up from the previous one, starting at 0. Values are
+  written `Color::Red` (or `mod::Color::Red` from another module).
+  - An enum compares (`==`, `<`, ...) only with the same enum, and does no
+    arithmetic; `as` converts to and from integers.
+  - `echo`, interpolation and `.` print the variant's name (`Red`); a
+    value that isn't a variant (from `as`) prints as its number. Each enum
+    that's printed gets a small generated function for this.
+- **Error unions (milestone 9):** `T!E` holds either a `T` or an error
+  from enum `E`; `void!E` is "fine, or an error". It's laid out like
+  `struct { bool is_err; E err; T value; }` and passed like that struct.
+  - A `T` or an `E` converts to `T!E` implicitly, so `return 5;` and
+    `return ParseError::Empty;` both work in an `int!ParseError` function.
+    A `void!E` function that reaches its end succeeds.
+  - `r?` gives r's value, or returns r's error from the current function
+    (which must return an error union with the same `E`), running defers.
+  - `r ?? fallback` gives r's value, or `fallback` if r is an error.
+  - `r->ok` is true for a value; `r->value` and `r->error` read the parts
+    and panic if the other one is there. None of them can be assigned.
+  - Throwing away an error union result (`save();`) is warning W0005.
+- **`defer` (milestone 9):** `defer stmt;` runs `stmt` when the enclosing
+  block exits: at its closing brace, or through `return`, `break`,
+  `continue` or `?`. Several defers run newest first. A defer only runs if
+  control reached it. `return`'s value is computed before defers run.
+  Deferred code can't itself `return`, `break`/`continue` out of the defer,
+  or use `?` (E0346).
 - **`->` vs `.`:** `->` is *always* member access, auto-dereferencing
   pointers. `.` is *only* concatenation. They never conflict.
 - **Pointer declarations without a sigil:** `Foo* x;` could also parse as
@@ -398,10 +426,10 @@ Each milestone ends with tests passing and something you can run.
 | 6  | C FFI                  | `extern function printf(...)` prints via libc             |
 | 7  | Strings + echo         | literals, `echo`, `len`, slices                           |
 | 8  | Modules                | `import`, multi-file programs, a start on `std/`          |
-| 9  | defer + error unions   | `defer`, `T!E`, `?`                                       |
+| 9  | defer, enums, errors   | `defer`, `enum`, `Enum::Value`, `T!E`, `?`, `??`          |
 | 10 | Classes                | fields, methods, `__construct`, `->`                      |
 | 11 | GC                     | `new`, `.` concat, interpolation, mark-and-sweep          |
-| 12 | foreach, enums, arrays | `foreach (x as k => v)`, `enum`, `Enum::Value`, PHP-style `array` |
+| 12 | foreach, arrays        | `foreach (x as k => v)`, PHP-style `array`                |
 | 13 | Freestanding           | `--freestanding`, inline asm, `volatile`, `export`, packed/aligned structs |
 | 14 | **Boot a kernel**      | multiboot kernel in QEMU prints to VGA, written in watrlang |
 | 15 | Optimizer              | IR + register allocation                                  |

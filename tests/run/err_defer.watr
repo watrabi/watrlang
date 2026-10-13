@@ -1,0 +1,26 @@
+enum E { Fail }
+
+function f(): int!E {
+    return 1;
+}
+
+function g(): int!E {
+    defer {
+        int v = f()?;
+    }
+    while (true) {
+        defer break;
+        defer {
+            for (int i = 0; i < 3; i++) {
+                if (i == 1) { continue; }
+            }
+        }
+    }
+    defer { return 3; }
+    return 0;
+}
+
+function main(): int {
+    int!E r = g();
+    return r ?? 0;
+}

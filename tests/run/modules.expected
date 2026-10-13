@@ -2,4 +2,5 @@ area: 6 hectare: 10000
 main helper / geometry helper
 sides: 4, calls: 1, secret: 42
 upper: MODS, q.x: 3, p.y: 0
+shapes: Square 5 Pentagon
 exit: 0

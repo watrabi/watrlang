@@ -30,3 +30,10 @@ function uses_secret(): int {
 function helper(): string {
     return "geometry helper";
 }
+
+enum Shape { Triangle = 3, Square, Pentagon }
+private enum Hidden { Secret }
+
+function sides(Shape s): int {
+    return s as int;
+}

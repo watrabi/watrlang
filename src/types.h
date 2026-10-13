@@ -25,6 +25,8 @@ typedef enum {
     TY_ARRAY,
     TY_STRUCT,
     TY_STRING,   /* immutable {const u8* ptr; usize len}, 16 bytes */
+    TY_ENUM,     /* named integer constants; represented as its base int type */
+    TY_ERRUNION, /* T!E: {bool is_err; E err; T value} */
 } TypeKind;
 
 typedef struct Type Type;
@@ -36,6 +38,12 @@ typedef struct {
     Type *type;
     uint32_t offset;
 } Field;
+
+typedef struct {
+    const char *name;
+    Loc loc;
+    int64_t value;
+} EnumVariant;
 
 struct Type {
     TypeKind kind;
@@ -49,9 +57,13 @@ struct Type {
     bool base_volatile;      /* TY_PTR: `volatile T*` */
     uint64_t len;            /* TY_ARRAY */
 
-    const struct Decl *decl; /* TY_STRUCT */
-    Field *fields;
+    const struct Decl *decl; /* TY_STRUCT, TY_ENUM */
+    Field *fields;           /* TY_STRUCT; TY_ERRUNION: is_err, err, value */
     size_t nfields;
+    Type *err;               /* TY_ERRUNION: the error enum (base is the value type) */
+    EnumVariant *variants;   /* TY_ENUM */
+    size_t nvariants;
+    struct Symbol *name_fn;  /* TY_ENUM: generated function returning a variant's name */
     int layout_state;        /* TY_STRUCT: 0 = not started, 1 = in progress, 2 = done */
 };
 
@@ -67,6 +79,8 @@ Type *type_builtin(TokenKind keyword);   /* NULL for `array` (not yet supported)
 Type *type_ptr(Type *base, bool base_const, bool base_volatile);
 Type *type_array(Type *elem, uint64_t len);
 Type *type_new_struct(const char *name, const struct Decl *decl);
+Type *type_new_enum(const char *name, const struct Decl *decl, Type *base);
+Type *type_errunion(Type *value, Type *err);
 
 /* "u8", "const u8*", "Vec2[4]" */
 const char *type_name(const Type *t);
@@ -77,11 +91,15 @@ static inline bool type_is_numeric(const Type *t) { return t->kind == TY_INT || 
 static inline bool type_is_ptr(const Type *t)     { return t->kind == TY_PTR; }
 static inline bool type_is_aggregate(const Type *t) { return t->kind == TY_ARRAY || t->kind == TY_STRUCT; }
 /* Handled by address in codegen: structs, arrays and strings. */
-static inline bool type_in_memory(const Type *t) { return type_is_aggregate(t) || t->kind == TY_STRING; }
-/* Lives in a general-purpose register: ints, bools, pointers, null. */
-static inline bool type_in_gpr(const Type *t) {
-    return t->kind == TY_INT || t->kind == TY_BOOL || t->kind == TY_PTR || t->kind == TY_NULL;
+static inline bool type_in_memory(const Type *t) {
+    return type_is_aggregate(t) || t->kind == TY_STRING || t->kind == TY_ERRUNION;
 }
+/* Lives in a general-purpose register: ints, enums, bools, pointers, null. */
+static inline bool type_in_gpr(const Type *t) {
+    return t->kind == TY_INT || t->kind == TY_ENUM || t->kind == TY_BOOL || t->kind == TY_PTR || t->kind == TY_NULL;
+}
+/* Integer representation with is_signed/size: ints and enums. */
+static inline bool type_is_intlike(const Type *t) { return t->kind == TY_INT || t->kind == TY_ENUM; }
 
 /* Same representation and meaning: `int` ~ `i64`, `int*` ~ `i64*`. */
 bool type_equiv(const Type *a, const Type *b);

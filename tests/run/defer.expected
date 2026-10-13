@@ -1,0 +1,24 @@
+  positive
+  inner
+f done
+6
+  not positive
+f done
+0
+  body 0
+  end of iteration 0
+  end of iteration 1
+  body 2
+  end of iteration 2
+  end of iteration 3
+  got 7
+  chain cleanup
+8
+  chain cleanup
+-1
+5 100
+  in block
+  block exit
+  after block
+  outer defer: 01
+exit: 0

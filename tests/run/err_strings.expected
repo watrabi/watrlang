@@ -20,7 +20,7 @@ error[E0338]: a value of type `V` can't be printed with `echo`
 10 |     echo v, "\n";
    |          ^ no text form
    |
-   = note: strings, numbers, bools and pointers can be printed and joined with `.`
+   = note: strings, numbers, bools, enums and pointers can be printed and joined with `.`
    = help: print the fields you want instead, like `"{v->x}, {v->y}"`
 
 error[E0338]: a value of type `V` can't be joined with `.`
@@ -29,7 +29,7 @@ error[E0338]: a value of type `V` can't be joined with `.`
 11 |     string t = "v = " . v;
    |                         ^ no text form
    |
-   = note: strings, numbers, bools and pointers can be printed and joined with `.`
+   = note: strings, numbers, bools, enums and pointers can be printed and joined with `.`
    = help: print the fields you want instead, like `"{v->x}, {v->y}"`
 
 error[E0310]: `.=` needs a string, found `int`

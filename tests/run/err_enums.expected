@@ -1,0 +1,103 @@
+error[E0351]: an enum's underlying type must be an integer type, found `f64`
+ --> tests/run/err_enums.watr:2:11
+  |
+2 | enum Bad: f64 { X }
+  |           ^^^ not an integer type
+
+error[E0351]: variant `Red` is declared twice in enum `Color`
+ --> tests/run/err_enums.watr:1:32
+  |
+1 | enum Color { Red, Green, Blue, Red }
+  |              ---               ^^^ declared again here
+  |              |
+  |              first declared here
+
+error[E0351]: the value of `C` doesn't fit in `u8`
+ --> tests/run/err_enums.watr:3:30
+  |
+3 | enum Small: u8 { A = 254, B, C }
+  |                              ^ the previous variant already has the largest `u8`
+  |
+  = help: give it a value explicitly, or use a wider type: `enum Small: i64`
+
+error[E0328]: `u8` can't hold negative numbers
+ --> tests/run/err_enums.watr:4:21
+  |
+4 | enum Neg: u8 { M = -1 }
+  |                     ^ negative value for an unsigned type
+
+error[E0352]: enum `Color` has no variant named `Gren`
+ --> tests/run/err_enums.watr:8:22
+  |
+1 | enum Color { Red, Green, Blue, Red }
+  |      ----- `Color` is declared here
+...
+8 |     Color c = Color::Gren;
+  |                      ^^^^ unknown variant
+  |
+help: a variant with a similar name exists
+  |
+8 |     Color c = Color::Green;
+  |                      ~~~~~
+
+error[E0352]: enum `Color` has no variant named `Purple`
+ --> tests/run/err_enums.watr:9:22
+  |
+1 | enum Color { Red, Green, Blue, Red }
+  |      ----- `Color` is declared here
+...
+9 |     Color d = Color::Purple;
+  |                      ^^^^^^ unknown variant
+  |
+  = note: the variants are `Red`, `Green`, `Blue`, `Red`
+
+error[E0310]: `+` needs numbers, found `Color`
+  --> tests/run/err_enums.watr:10:13
+   |
+10 |     int n = c + 1;
+   |             ^ not a number
+   |
+help: enums don't do arithmetic; convert to an integer first
+   |
+10 |     int n = c as int + 1;
+   |             ~~~~~~~~
+
+error[E0310]: can't compare `Color` with `int`
+  --> tests/run/err_enums.watr:11:17
+   |
+11 |     bool same = c == 1;
+   |                 ^^^^^^
+   |                 - `Color`
+   |                      - `int`
+   |
+   = help: an enum compares only with the same enum; convert with `as` to compare numbers
+
+error[E0352]: `Point` is a struct, not an enum
+  --> tests/run/err_enums.watr:12:15
+   |
+ 5 | struct Point { int x; }
+   |        ----- `Point` is declared here
+...
+12 |     Point p = Point::x;
+   |               ^^^^^ `::` names an enum variant or something in a module
+
+error[E0352]: `Color` is an enum, not a struct
+  --> tests/run/err_enums.watr:13:15
+   |
+13 |     Color e = Color { };
+   |               ^^^^^^^^^ can't be built with `{ ... }`
+   |
+   = help: name a variant instead, like `Color::Red`
+
+error[E0344]: cannot find an enum or module named `Shape`
+  --> tests/run/err_enums.watr:14:13
+   |
+14 |     int k = Shape::Circle;
+   |             ^^^^^ not found
+   |
+   = help: declare it: `enum Shape { ... }`
+
+error: could not compile `tests/run/err_enums.watr` due to 11 previous errors
+Some errors have detailed explanations: E0351, E0328, E0352, E0310, E0344.
+For more information about an error, try `watrc --explain E0351`.
+compile failed: 1

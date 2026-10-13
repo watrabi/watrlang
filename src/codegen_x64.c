@@ -45,6 +45,7 @@ static const Reg *const arg_regs[6] = {&R_RDI, &R_RSI, &R_RDX, &R_RCX, &R_R8, &R
 typedef struct {
     int break_label;
     int continue_label;
+    size_t scopes;          /* defer scopes open outside the loop */
 } Loop;
 
 typedef struct {
@@ -69,6 +70,10 @@ typedef struct {
     size_t nloops, loops_cap;
     const Symbol *fn;
     int hidden_slot;        /* where the caller's return buffer pointer is kept (struct returns) */
+    int ret_slot;           /* where `return` leaves the value for the epilogue */
+    PtrVec defers;          /* Stmt*: deferred statements of the open blocks, innermost last */
+    size_t *scopes;         /* per open block: where its defers start in `defers` */
+    size_t nscopes, scopes_cap;
 
     bool libc;              /* linked with the C runtime */
     bool need_panic;        /* emit w.panic even without check sites */
@@ -103,7 +108,8 @@ static ValClass cls(const Type *t) {
     case TY_FLOAT: return CLS_SSE;
     case TY_ARRAY:
     case TY_STRUCT:
-    case TY_STRING: return CLS_MEM;
+    case TY_STRING:
+    case TY_ERRUNION: return CLS_MEM;
     case TY_VOID: return CLS_NONE;
     default: return CLS_GPR;
     }
@@ -122,6 +128,7 @@ typedef struct {
 static void classify_into(const Type *t, uint32_t off, Eightbyte eb[2]) {
     switch (t->kind) {
     case TY_STRUCT:
+    case TY_ERRUNION:
         for (size_t i = 0; i < t->nfields; i++) classify_into(t->fields[i].type, off + t->fields[i].offset, eb);
         break;
     case TY_ARRAY:
@@ -200,7 +207,7 @@ static void pop_value(Gen *g, const Type *t, const char *reg, int xmm) {
 
 /* Re-establishes the invariant that rax holds `t` sign/zero-extended. */
 static void normalize(Gen *g, const Type *t) {
-    if (t->kind != TY_INT) return;
+    if (!type_is_intlike(t)) return;
     switch (t->size) {
     case 1: emit(g, t->is_signed ? "movsx rax, al" : "movzx eax, al"); break;
     case 2: emit(g, t->is_signed ? "movsx rax, ax" : "movzx eax, ax"); break;
@@ -224,7 +231,7 @@ static void emit_load(Gen *g, const Type *t, const char *addr) {
     case CLS_GPR:
         break;
     }
-    bool sgn = t->kind == TY_INT && t->is_signed;
+    bool sgn = type_is_intlike(t) && t->is_signed;
     switch (t->size) {
     case 1: emit(g, "%s %s, byte ptr [%s]", sgn ? "movsx" : "movzx", sgn ? "rax" : "eax", addr); break;
     case 2: emit(g, "%s %s, word ptr [%s]", sgn ? "movsx" : "movzx", sgn ? "rax" : "eax", addr); break;
@@ -344,6 +351,88 @@ static void emit_panic_call(Gen *g, int label) {
 /* ---- expressions --------------------------------------------------------- */
 
 static void gen_value(Gen *g, const Expr *e);
+static void gen_body(Gen *g, const Stmt *s);
+
+/* A field of an error union type ("is_err", "err", "value"). */
+static const Field *eu_field(const Type *t, const char *name) {
+    for (size_t i = 0; i < t->nfields; i++)
+        if (strcmp(t->fields[i].name, name) == 0) return &t->fields[i];
+    fatal("codegen: error union without field %s", name);
+}
+
+/* Emits the deferred statements registered since `from`, newest first.
+ * They stay registered: other exits from the same blocks run them too. */
+static void emit_defers(Gen *g, size_t from) {
+    for (size_t i = g->defers.len; i-- > from;) gen_body(g, g->defers.items[i]);
+}
+
+/* Leaves the function: the return value is already in the return slot. */
+static void emit_return_jump(Gen *g) {
+    emit_defers(g, 0);
+    emit(g, "jmp .L%d", g->ret_label);
+}
+
+/* r->ok, r->value, r->error */
+static void gen_eu_member(Gen *g, const Expr *e) {
+    gen_value(g, e->u.member.object);   /* the error union's address, either way */
+    if (e->builtin == BUILTIN_EU_OK) {
+        emit(g, "movzx eax, byte ptr [rax]");
+        emit(g, "xor eax, 1");
+        return;
+    }
+    bool want_value = e->builtin == BUILTIN_EU_VALUE;
+    int site = add_panic(g, e, want_value ? "`->value` of a result that holds an error"
+                                          : "`->error` of a result that holds a value");
+    int ok = new_label(g);
+    emit(g, "cmp byte ptr [rax], 0");
+    emit(g, "%s .L%d", want_value ? "je" : "jne", ok);
+    emit_panic_call(g, site);
+    emit_label(g, ok);
+    char addr[64];
+    snprintf(addr, sizeof addr, "rax + %u", e->field_offset);
+    emit_load(g, e->type, addr);
+}
+
+/* r?: on an error, return it from this function (running defers);
+ * otherwise produce the value. */
+static void gen_try(Gen *g, const Expr *e) {
+    const Expr *inner = e->u.try_expr;
+    const Type *it = inner->type, *rt = g->fn->type;
+    gen_value(g, inner);
+    int ok = new_label(g);
+    emit(g, "cmp byte ptr [rax], 0");
+    emit(g, "je .L%d", ok);
+
+    char addr[64];
+    snprintf(addr, sizeof addr, "rax + %u", eu_field(it, "err")->offset);
+    emit_load(g, it->err, addr);
+    emit(g, "mov rcx, rax");
+    /* Build the function's result in place: zeroed, is_err = 1, err. */
+    bool memory = classify(rt).memory;
+    if (memory) emit(g, "mov rdx, qword ptr [rbp - %d]", -g->hidden_slot);
+    for (uint32_t k = 0; k < rt->size;) {
+        uint32_t n = rt->size - k >= 8 ? 8 : rt->size - k >= 4 ? 4 : rt->size - k >= 2 ? 2 : 1;
+        if (memory) emit(g, "mov %s ptr [rdx + %u], 0", size_ptr(n), k);
+        else emit(g, "mov %s ptr [rbp - %d], 0", size_ptr(n), -g->ret_slot - (int)k);
+        k += n;
+    }
+    uint32_t err_off = eu_field(rt, "err")->offset;
+    uint32_t esize = rt->err->size;
+    if (memory) {
+        emit(g, "mov byte ptr [rdx], 1");
+        emit(g, "mov %s ptr [rdx + %u], %s", size_ptr(esize), err_off, reg_of_size(&R_RCX, esize));
+    } else {
+        emit(g, "mov byte ptr [rbp - %d], 1", -g->ret_slot);
+        emit(g, "mov %s ptr [rbp - %d], %s", size_ptr(esize), -g->ret_slot - (int)err_off, reg_of_size(&R_RCX, esize));
+    }
+    emit_return_jump(g);
+
+    emit_label(g, ok);
+    if (it->base->kind != TY_VOID) {
+        snprintf(addr, sizeof addr, "rax + %u", eu_field(it, "value")->offset);
+        emit_load(g, it->base, addr);
+    }
+}
 
 /* rcx = rcx * n, for pointer arithmetic and indexing. */
 static void emit_scale(Gen *g, const char *reg, uint32_t n) {
@@ -518,7 +607,7 @@ static void gen_compare(Gen *g, const Expr *e) {
     /* Values are extended to 64 bits, so one 64-bit compare works for any
      * width. If either side is signed, the common type is signed (sema only
      * widens unsigned into a larger signed type); pointers compare unsigned. */
-    bool sgn = (lt->kind == TY_INT && lt->is_signed) || (rt->kind == TY_INT && rt->is_signed);
+    bool sgn = (type_is_intlike(lt) && lt->is_signed) || (type_is_intlike(rt) && rt->is_signed);
     const char *setcc = "sete";
     switch (op) {
     case TOK_EQ: setcc = "sete"; break;
@@ -538,6 +627,7 @@ static void gen_binary(Gen *g, const Expr *e) {
     TokenKind op = e->u.binary.op;
     const Expr *l = e->u.binary.lhs, *r = e->u.binary.rhs;
     const Type *t = e->type;
+    char buf[64];
 
     if (op == TOK_ANDAND || op == TOK_OROR) {
         gen_logical(g, e);
@@ -545,6 +635,19 @@ static void gen_binary(Gen *g, const Expr *e) {
     }
     if (op == TOK_EQ || op == TOK_NE || op == TOK_LT || op == TOK_GT || op == TOK_LE || op == TOK_GE) {
         gen_compare(g, e);
+        return;
+    }
+    if (op == TOK_QQ) {   /* r ?? fallback */
+        int fallback = new_label(g), end = new_label(g);
+        gen_value(g, l);
+        emit(g, "cmp byte ptr [rax], 0");
+        emit(g, "jne .L%d", fallback);
+        snprintf(buf, sizeof buf, "rax + %u", eu_field(l->type, "value")->offset);
+        emit_load(g, t, buf);
+        emit(g, "jmp .L%d", end);
+        emit_label(g, fallback);
+        gen_value(g, r);
+        emit_label(g, end);
         return;
     }
 
@@ -614,6 +717,19 @@ static void gen_incdec(Gen *g, const Expr *e, bool prefix) {
 static void gen_cast(Gen *g, const Expr *e) {
     const Expr *inner = e->u.cast.expr;
     const Type *from = inner->type, *to = e->type;
+    if (to->kind == TY_ERRUNION) {   /* wrap a value or an error */
+        int slot = alloc_slot(g, to->size, to->align);
+        zero_memory(g, slot, to->size);
+        gen_value(g, inner);
+        bool is_error = from == to->err;
+        const Field *f = eu_field(to, is_error ? "err" : "value");
+        char addr[64];
+        snprintf(addr, sizeof addr, "rbp - %d", -slot - (int)f->offset);
+        emit_store(g, f->type, addr);
+        if (is_error) emit(g, "mov byte ptr [rbp - %d], 1", -slot);
+        emit(g, "lea rax, [rbp - %d]", -slot);
+        return;
+    }
     gen_value(g, inner);
 
     if (type_is_float(from) && type_is_float(to)) {
@@ -938,9 +1054,19 @@ static void gen_value(Gen *g, const Expr *e) {
         gen_call(g, e);
         return;
     case EXPR_MEMBER:
+        if (e->builtin != BUILTIN_NONE) {
+            gen_eu_member(g, e);
+            return;
+        }
+        gen_addr(g, e);
+        if (cls(t) != CLS_MEM) emit_load(g, t, "rax");
+        return;
     case EXPR_INDEX:
         gen_addr(g, e);
         if (cls(t) != CLS_MEM) emit_load(g, t, "rax");
+        return;
+    case EXPR_TRY:
+        gen_try(g, e);
         return;
     case EXPR_CAST:
         gen_cast(g, e);
@@ -1036,6 +1162,7 @@ static void push_loop(Gen *g, int break_label, int continue_label) {
     }
     g->loops[g->nloops].break_label = break_label;
     g->loops[g->nloops].continue_label = continue_label;
+    g->loops[g->nloops].scopes = g->nscopes;
     g->nloops++;
 }
 
@@ -1045,11 +1172,44 @@ static void gen_jump_if_false(Gen *g, const Expr *cond, int label) {
     emit(g, "je .L%d", label);
 }
 
+/* A block (or a single statement used as one): runs its defers, newest
+ * first, when control reaches its end. */
 static void gen_body(Gen *g, const Stmt *s) {
+    if (g->nscopes == g->scopes_cap) {
+        g->scopes_cap = g->scopes_cap ? g->scopes_cap * 2 : 16;
+        size_t *grown = realloc(g->scopes, g->scopes_cap * sizeof *grown);
+        if (!grown) fatal("out of memory");
+        g->scopes = grown;
+    }
+    size_t mark = g->defers.len;
+    g->scopes[g->nscopes++] = mark;
     if (s->kind == STMT_BLOCK)
         for (size_t i = 0; i < s->u.block.n; i++) gen_stmt(g, s->u.block.stmts[i]);
     else
         gen_stmt(g, s);
+    emit_defers(g, mark);
+    g->defers.len = mark;
+    g->nscopes--;
+}
+
+/* Puts the value being returned (in rax/xmm0) where the epilogue expects it. */
+static void store_return_value(Gen *g) {
+    const Type *rt = g->fn->type;
+    if (classify(rt).memory) {   /* straight into the caller's buffer */
+        emit(g, "mov rdi, qword ptr [rbp - %d]", -g->hidden_slot);
+        emit(g, "mov rsi, rax");
+        emit(g, "mov ecx, %u", rt->size);
+        emit(g, "rep movsb");
+    } else if (type_in_memory(rt)) {
+        emit(g, "lea rdi, [rbp - %d]", -g->ret_slot);
+        emit(g, "mov rsi, rax");
+        emit(g, "mov ecx, %u", rt->size);
+        emit(g, "rep movsb");
+    } else if (cls(rt) == CLS_SSE) {
+        emit(g, "movsd qword ptr [rbp - %d], xmm0", -g->ret_slot);
+    } else if (cls(rt) == CLS_GPR) {
+        emit(g, "mov qword ptr [rbp - %d], rax", -g->ret_slot);
+    }
 }
 
 static void gen_var_decl(Gen *g, const VarDecl *vd) {
@@ -1079,33 +1239,12 @@ static void gen_stmt(Gen *g, const Stmt *s) {
     case STMT_RETURN:
         if (s->u.expr) {
             gen_value(g, s->u.expr);
-            const Type *rt = g->fn->type;
-            if (type_in_memory(rt)) {
-                Classification c = classify(rt);
-                if (c.memory) {
-                    /* Copy into the caller's buffer and return its address. */
-                    emit(g, "mov rdi, qword ptr [rbp - %d]", -g->hidden_slot);
-                    emit(g, "mov rsi, rax");
-                    emit(g, "mov ecx, %u", rt->size);
-                    emit(g, "rep movsb");
-                    emit(g, "mov rax, qword ptr [rbp - %d]", -g->hidden_slot);
-                } else {
-                    /* Copy to a 16-byte temp so loading whole eightbytes
-                     * can't read past the end of the source. */
-                    int slot = alloc_slot(g, 16, 8);
-                    emit(g, "lea rdi, [rbp - %d]", -slot);
-                    emit(g, "mov rsi, rax");
-                    emit(g, "mov ecx, %u", rt->size);
-                    emit(g, "rep movsb");
-                    int gi = 0, si = 0;
-                    for (int j = 0; j < c.n; j++) {
-                        if (c.eb[j] == EB_INT) emit(g, "mov %s, qword ptr [rbp - %d]", gi++ ? "rdx" : "rax", -slot - 8 * j);
-                        else emit(g, "movsd xmm%d, qword ptr [rbp - %d]", si++, -slot - 8 * j);
-                    }
-                }
-            }
+            store_return_value(g);
         }
-        emit(g, "jmp .L%d", g->ret_label);
+        emit_return_jump(g);
+        break;
+    case STMT_DEFER:   /* runs when its block exits */
+        ptrvec_push(&g->defers, s->u.defer_body);
         break;
     case STMT_IF: {
         int else_label = new_label(g), end_label = new_label(g);
@@ -1163,6 +1302,7 @@ static void gen_stmt(Gen *g, const Stmt *s) {
     case STMT_BREAK:
     case STMT_CONTINUE: {
         const Loop *loop = &g->loops[g->nloops - 1];
+        if (loop->scopes < g->nscopes) emit_defers(g, g->scopes[loop->scopes]);
         emit(g, "jmp .L%d", s->kind == STMT_BREAK ? loop->break_label : loop->continue_label);
         break;
     }
@@ -1192,10 +1332,20 @@ static void gen_function(Gen *g, const Symbol *fn) {
      * put them. This must place arguments exactly like gen_call. */
     int ngpr = 0, nsse = 0, stack = 16;
     g->fn = fn;
-    if (classify(fn->type).memory) {
+    g->defers.len = 0;
+    g->nscopes = 0;
+    Classification ret = classify(fn->type);
+    if (ret.memory) {
         g->hidden_slot = alloc_slot(g, 8, 8);
         emit(g, "mov qword ptr [rbp - %d], rdi", -g->hidden_slot);
         ngpr = 1;
+    } else if (fn->type->kind != TY_VOID) {
+        g->ret_slot = alloc_slot(g, 16, 8);
+        /* `void!E` functions succeed by reaching their end: is_err = 0. */
+        if (fn->type->kind == TY_ERRUNION) {
+            emit(g, "mov qword ptr [rbp - %d], 0", -g->ret_slot);
+            emit(g, "mov qword ptr [rbp - %d], 0", -g->ret_slot - 8);
+        }
     }
     for (size_t i = 0; i < d->u.func.nparams; i++) {
         Symbol *p = d->u.func.params[i]->sym;
@@ -1233,6 +1383,19 @@ static void gen_function(Gen *g, const Symbol *fn) {
     fwrite(body, 1, body_len, g->out);
     free(body);
     emit_label(g, g->ret_label);
+    if (ret.memory) {
+        emit(g, "mov rax, qword ptr [rbp - %d]", -g->hidden_slot);
+    } else if (type_in_memory(fn->type)) {
+        int gi = 0, si = 0;
+        for (int j = 0; j < ret.n; j++) {
+            if (ret.eb[j] == EB_INT) emit(g, "mov %s, qword ptr [rbp - %d]", gi++ ? "rdx" : "rax", -g->ret_slot - 8 * j);
+            else emit(g, "movsd xmm%d, qword ptr [rbp - %d]", si++, -g->ret_slot - 8 * j);
+        }
+    } else if (cls(fn->type) == CLS_SSE) {
+        emit(g, "movsd xmm0, qword ptr [rbp - %d]", -g->ret_slot);
+    } else if (cls(fn->type) == CLS_GPR) {
+        emit(g, "mov rax, qword ptr [rbp - %d]", -g->ret_slot);
+    }
     emit(g, "leave");
     emit(g, "ret");
     fprintf(g->out, "    .size %s, .-%s\n", name, name);
@@ -1357,6 +1520,35 @@ static void emit_runtime_primitive(Gen *g, const char *name) {
     }
 }
 
+/* string name(E v): the variant's name, or the number if v isn't one. */
+static void emit_enum_name_fn(Gen *g, const Symbol *fn) {
+    const Type *et = fn->enum_type;
+    const char *name = fn->asm_name;
+    fprintf(g->out, "\n    .type %s, @function\n%s:\n", name, name);
+    int *labels = xmalloc((et->nvariants ? et->nvariants : 1) * sizeof *labels);
+    for (size_t i = 0; i < et->nvariants; i++) {
+        int64_t v = et->variants[i].value;
+        labels[i] = new_label(g);
+        if (v >= INT32_MIN && v <= INT32_MAX) {
+            emit(g, "cmp rdi, %lld", (long long)v);
+        } else {
+            emit(g, "movabs rax, %lld", (long long)v);
+            emit(g, "cmp rdi, rax");
+        }
+        emit(g, "je .L%d", labels[i]);
+    }
+    emit(g, "jmp %s", fn->callees[0]->asm_name);   /* not a variant: the number */
+    for (size_t i = 0; i < et->nvariants; i++) {
+        StrBuf text = {et->variants[i].name, strlen(et->variants[i].name)};
+        emit_label(g, labels[i]);
+        emit(g, "lea rax, [rip + .Lstr%d]", string_label(g, text));
+        emit(g, "mov edx, %zu", text.len);
+        emit(g, "ret");
+    }
+    fprintf(g->out, "    .size %s, .-%s\n", name, name);
+    free(labels);
+}
+
 static void emit_ascii(FILE *out, const char *s) {
     fputs("    .ascii \"", out);
     for (; *s; s++) {
@@ -1407,11 +1599,23 @@ void codegen_x64(const Module *m, const Program *prog, FILE *out) {
         else if (fn->is_runtime) emit_runtime_primitive(&g, fn->name);
     }
 
+    for (size_t i = 0; i < prog->nenum_fns; i++)
+        if (prog->enum_fns[i]->reachable) emit_enum_name_fn(&g, prog->enum_fns[i]);
+
     if (g.panics.len || g.need_panic) {
         /* w.panic(msg = rdi, len = rsi): print to stderr, exit with status 101. */
         fputs("\n# Runtime check failures.\n"
-              "w.panic:\n"
-              "    mov rdx, rsi\n"
+              "w.panic:\n", out);
+        if (g.libc)   /* flush stdout first, so output printed before the panic comes before it */
+            fputs("    mov rbx, rdi\n"   /* panic never returns, so rbx and r12 are free */
+                  "    mov r12, rsi\n"
+                  "    and rsp, -16\n"
+                  "    xor edi, edi\n"
+                  "    call fflush\n"
+                  "    mov rdi, rbx\n"
+                  "    mov rsi, r12\n",
+                  out);
+        fputs("    mov rdx, rsi\n"
               "    mov rsi, rdi\n"
               "    mov edi, 2\n"
               "    mov eax, 1\n"
@@ -1456,4 +1660,6 @@ void codegen_x64(const Module *m, const Program *prog, FILE *out) {
     free(g.panics.items);
     free(g.strings.items);
     free(g.loops);
+    free(g.defers.items);
+    free(g.scopes);
 }

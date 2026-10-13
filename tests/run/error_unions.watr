@@ -1,0 +1,90 @@
+// Error unions: T!E holds a T or an error from enum E.
+enum ParseError { Empty, BadDigit, TooBig }
+enum IoError { NotFound }
+
+function parse(string s): int!ParseError {
+    if (len(s) == 0) {
+        return ParseError::Empty;
+    }
+    int n = 0;
+    for (usize i = 0; i < len(s); i++) {
+        u8 ch = s[i];
+        if (ch < '0' || ch > '9') {
+            return ParseError::BadDigit;
+        }
+        n = n * 10 + (ch - '0') as int;
+        if (n > 1000000) {
+            return ParseError::TooBig;
+        }
+    }
+    return n;
+}
+
+function sum(string a, string b): int!ParseError {
+    return parse(a)? + parse(b)?;
+}
+
+function check(int n): void!ParseError {
+    if (n > 100) {
+        return ParseError::TooBig;
+    }
+}
+
+function twice(string s): string!ParseError {
+    int n = parse(s)?;
+    return "{n * 2}";
+}
+
+struct Big {
+    int a;
+    int b;
+    int c;
+}
+
+function big(bool fail): Big!IoError {
+    if (fail) {
+        return IoError::NotFound;
+    }
+    return Big { a: 1, b: 2, c: 3 };
+}
+
+function ratio(int a, int b): f64!ParseError {
+    if (b == 0) {
+        return ParseError::Empty;
+    }
+    return a as f64 / b as f64;
+}
+
+function show(int!ParseError r): void {
+    if (r->ok) {
+        echo "ok ", r->value, "\n";
+    } else {
+        echo "error ", r->error, "\n";
+    }
+}
+
+int!ParseError global_ok = 42;
+int!ParseError global_err = ParseError::TooBig;
+
+function main(): int {
+    show(parse("123"));
+    show(parse(""));
+    show(parse("12x"));
+    show(parse("99999999"));
+    show(sum("40", "2"));
+    show(sum("40", "x"));
+    echo parse("x") ?? -1, " ", parse("7") ?? -1, "\n";
+    echo check(5)->ok, " ", check(500)->error, "\n";
+    echo twice("21") ?? "?", " ", twice("") ?? "?", "\n";
+    Big!IoError b = big(false);
+    echo b->value->a + b->value->b + b->value->c, " ", big(true)->ok, "\n";
+    echo ratio(1, 4) ?? 0.0, " ", ratio(1, 0)->ok, "\n";
+    show(global_ok);
+    show(global_err);
+    int!ParseError* p = &global_ok;
+    echo p->value, "\n";
+    int!ParseError _ignored = parse("x");
+    echo parse("5") ?? parse("6") ?? 0, "\n";
+    echo parse("y")->value, "\n";   // panics
+    return 0;
+}

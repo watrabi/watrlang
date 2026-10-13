@@ -1,0 +1,170 @@
+error[E0349]: invalid error union type `int!S`
+  --> tests/run/err_error_unions.watr:23:24
+   |
+23 | function bad_types(int!S a, E!E b, int!E!E c): void {
+   |                        ^ the error type must be an enum
+   |
+   = help: declare the errors as an enum: `enum MyError { NotFound, Denied }`
+
+error[E0349]: invalid error union type `E!E`
+  --> tests/run/err_error_unions.watr:23:31
+   |
+23 | function bad_types(int!S a, E!E b, int!E!E c): void {
+   |                               ^ the value type and the error type must be different
+
+error[E0349]: invalid error union type `int!E!E`
+  --> tests/run/err_error_unions.watr:23:36
+   |
+23 | function bad_types(int!S a, E!E b, int!E!E c): void {
+   |                                    ^^^^^ error unions can't be nested
+
+error[E0348]: `?` can't pass on `E` errors from a function that returns `Other` errors
+  --> tests/run/err_error_unions.watr:14:16
+   |
+13 | function wrong_err(): int!Other {
+   |                       --------- `wrong_err` returns `int!Other`
+14 |     int v = f()?;
+   |                ^ this error is of type `E`
+   |
+   = help: check `->ok` and return one of `Other`'s errors yourself, like `return Other::...;`
+
+error[E0347]: `?` can only be used in a function that returns an error union
+  --> tests/run/err_error_unions.watr:19:16
+   |
+18 | function plain(): int {
+   |                   --- `plain` returns `int`
+19 |     int v = f()?;
+   |                ^ this returns the error from `plain`
+   |
+help: make `plain` return errors too
+   |
+18 | function plain(): int!E {
+   |                   ~~~~~
+
+warning[W0001]: unused parameter `a`
+  --> tests/run/err_error_unions.watr:23:26
+   |
+23 | function bad_types(int!S a, E!E b, int!E!E c): void {
+   |                          ^ never used
+   |
+help: if this is intentional, prefix it with an underscore
+   |
+23 | function bad_types(int!S _a, E!E b, int!E!E c): void {
+   |                          ~~
+
+warning[W0001]: unused parameter `b`
+  --> tests/run/err_error_unions.watr:23:33
+   |
+23 | function bad_types(int!S a, E!E b, int!E!E c): void {
+   |                                 ^ never used
+   |
+help: if this is intentional, prefix it with an underscore
+   |
+23 | function bad_types(int!S a, E!E _b, int!E!E c): void {
+   |                                 ~~
+
+warning[W0001]: unused parameter `c`
+  --> tests/run/err_error_unions.watr:23:44
+   |
+23 | function bad_types(int!S a, E!E b, int!E!E c): void {
+   |                                            ^ never used
+   |
+help: if this is intentional, prefix it with an underscore
+   |
+23 | function bad_types(int!S a, E!E b, int!E!E _c): void {
+   |                                            ~~
+
+error[E0309]: mismatched types: expected `int`, found `int!E`
+  --> tests/run/err_error_unions.watr:27:13
+   |
+27 |     int x = f();
+   |     ---     ^^^ expected `int`, found `int!E`
+   |     |
+   |     expected because of this type
+   |
+   = help: to handle the error here instead: `??` gives a fallback value, and `->ok` says whether it succeeded
+help: to pass the error on to the caller, add `?`
+   |
+27 |     int x = f()?;
+   |             ~~~~
+
+error[E0350]: `??` needs an error union, found `int`
+  --> tests/run/err_error_unions.watr:28:13
+   |
+28 |     int y = 5 ?? 0;
+   |             ^ this can't fail
+   |
+   = note: error unions are written `T!E`, like `int!IoError`
+
+error[E0350]: `??` needs a value to fall back from, but `void!E` has none
+  --> tests/run/err_error_unions.watr:29:5
+   |
+29 |     g() ?? 1;
+   |     ^^^^^^^^ `void` results have no value
+   |
+   = help: check `->ok` instead, or pass the error on with `?`
+
+warning[W0005]: this result may be an error, which is being ignored
+  --> tests/run/err_error_unions.watr:30:5
+   |
+30 |     f();
+   |     ^^^ returns `int!E`
+   |
+   = help: check it: `if (!r->ok) { ... }`, or pass it on with `?`
+   = note: to ignore it on purpose, store it in a variable whose name starts with `_`
+
+error[E0317]: `void!E` has no field named `value`
+  --> tests/run/err_error_unions.watr:31:18
+   |
+31 |     int z = g()->value;
+   |                  ^^^^^ unknown field
+   |
+   = note: a `void` result has no value; check `->ok` instead
+
+error[E0317]: `int!E` has no field named `size`
+  --> tests/run/err_error_unions.watr:32:18
+   |
+32 |     int w = f()->size;
+   |                  ^^^^ unknown field
+   |
+   = note: an error union has `ok` (bool), `value` and `error`
+
+error[E0209]: invalid left-hand side: can't assign to this
+  --> tests/run/err_error_unions.watr:33:5
+   |
+33 |     f()->value = 3;
+   |     ^^^^^^^^^^ not something that can be assigned to
+   |
+   = note: only variables, fields, array elements and `*pointer` can be assigned
+
+error[E0338]: a value of type `int!E` can't be printed with `echo`
+  --> tests/run/err_error_unions.watr:34:10
+   |
+34 |     echo f(), "\n";
+   |          ^^^ no text form
+   |
+   = note: strings, numbers, bools, enums and pointers can be printed and joined with `.`
+   = help: unwrap it first: `?` passes the error on, `??` gives a fallback value
+
+error[E0309]: mismatched types: expected `int!E`, found `Other`
+  --> tests/run/err_error_unions.watr:35:15
+   |
+35 |     int!E r = Other::Nope;
+   |     -----     ^^^^^^^^^^^ expected `int!E`, found `Other`
+   |     |
+   |     expected because of this type
+   |
+   = note: this function's errors are `E`, not `Other`
+
+error[E0310]: `+` needs numbers, found `int!E`
+  --> tests/run/err_error_unions.watr:36:12
+   |
+36 |     return f() + 1;
+   |            ^^^ not a number
+   |
+   = help: unwrap the error union first, with `?` or `??`
+
+error: could not compile `tests/run/err_error_unions.watr` due to 14 previous errors; 4 warnings emitted
+Some errors have detailed explanations: E0349, E0348, E0347, W0001, E0309, E0350, W0005, E0317, E0209, E0338, E0310.
+For more information about an error, try `watrc --explain E0349`.
+compile failed: 1

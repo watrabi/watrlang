@@ -113,6 +113,50 @@ Type *type_array(Type *elem, uint64_t len) {
     return t;
 }
 
+Type *type_new_enum(const char *name, const struct Decl *decl, Type *base) {
+    Type *t = ARENA_NEW(&types_arena, Type);
+    t->kind = TY_ENUM;
+    t->name = name;
+    t->decl = decl;
+    t->size = base->size;
+    t->align = base->align;
+    t->is_signed = base->is_signed;
+    t->base = base;
+    return t;
+}
+
+/* T!E: laid out like struct { bool is_err; E err; T value; }, so it's
+ * passed and returned like that struct. */
+Type *type_errunion(Type *value, Type *err) {
+    for (size_t i = 0; i < derived.len; i++) {
+        Type *t = derived.items[i];
+        if (t->kind == TY_ERRUNION && t->base == value && t->err == err) return t;
+    }
+    Type *t = ARENA_NEW(&types_arena, Type);
+    t->kind = TY_ERRUNION;
+    t->base = value;
+    t->err = err;
+    t->fields = ARENA_ARRAY(&types_arena, Field, 3);
+    uint32_t offset = 0, align = 1;
+    Type *types[3] = {ty_bool, err, value};
+    const char *names[3] = {"is_err", "err", "value"};
+    for (int i = 0; i < 3; i++) {
+        if (types[i]->kind == TY_VOID) continue;
+        uint32_t a = types[i]->align ? types[i]->align : 1;
+        offset = (offset + a - 1) & ~(a - 1);
+        Field *f = &t->fields[t->nfields++];
+        f->name = names[i];
+        f->type = types[i];
+        f->offset = offset;
+        offset += types[i]->size;
+        if (a > align) align = a;
+    }
+    t->align = align;
+    t->size = (offset + align - 1) & ~(align - 1);
+    ptrvec_push(&derived, t);
+    return t;
+}
+
 Type *type_new_struct(const char *name, const struct Decl *decl) {
     Type *t = ARENA_NEW(&types_arena, Type);
     t->kind = TY_STRUCT;
@@ -134,6 +178,11 @@ static void append_name(char *buf, size_t cap, size_t *len, const Type *t) {
     case TY_ARRAY:
         append_name(buf, cap, len, t->base);
         if (*len < cap) *len += (size_t)snprintf(buf + *len, cap - *len, "[%llu]", (unsigned long long)t->len);
+        break;
+    case TY_ERRUNION:
+        append_name(buf, cap, len, t->base);
+        if (*len < cap) *len += (size_t)snprintf(buf + *len, cap - *len, "!");
+        if (*len < cap) append_name(buf, cap, len, t->err);
         break;
     default:
         *len += (size_t)snprintf(buf + *len, cap - *len, "%s", t->name);
@@ -162,6 +211,8 @@ bool type_equiv(const Type *a, const Type *b) {
         return a->base_const == b->base_const && a->base_volatile == b->base_volatile && type_equiv(a->base, b->base);
     case TY_ARRAY:
         return a->len == b->len && type_equiv(a->base, b->base);
+    case TY_ERRUNION:
+        return a->err == b->err && type_equiv(a->base, b->base);
     default:
         return false;
     }
@@ -196,6 +247,8 @@ bool type_castable(const Type *from, const Type *to) {
     bool from_num = type_is_numeric(from), to_num = type_is_numeric(to);
     if (from_num && to_num) return true;
     if (from->kind == TY_BOOL && to->kind == TY_INT) return true;
+    if (from->kind == TY_ENUM && (to->kind == TY_INT || to->kind == TY_ENUM)) return true;
+    if (from->kind == TY_INT && to->kind == TY_ENUM) return true;
     if (from->kind == TY_PTR && to->kind == TY_PTR) return true;
     if (from->kind == TY_PTR && to->kind == TY_INT) return to->size == 8;
     if (from->kind == TY_INT && to->kind == TY_PTR) return from->size == 8;

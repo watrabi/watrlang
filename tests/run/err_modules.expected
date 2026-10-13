@@ -51,7 +51,42 @@ error[E0345]: `str::is_space` is private
 64 | private function is_space(u8 c): bool {
    |                  -------- declared `private` here
 
-error: could not compile `tests/run/err_modules.watr` due to 5 previous errors
-Some errors have detailed explanations: E0341, E0345, E0344.
+error[E0345]: `geometry::Hidden` is private
+  --> tests/run/err_modules.watr:11:5
+   |
+11 |     geometry::Hidden h = geometry::Hidden::Secret;
+   |     ^^^^^^^^^^^^^^^^ not visible outside `tests/run/mods/geometry.watr`
+  ::: tests/run/mods/geometry.watr:35:14
+   |
+35 | private enum Hidden { Secret }
+   |              ------ declared `private` here
+
+error[E0345]: `geometry::Hidden` is private
+  --> tests/run/err_modules.watr:11:26
+   |
+11 |     geometry::Hidden h = geometry::Hidden::Secret;
+   |                          ^^^^^^^^^^^^^^^^ not visible outside `tests/run/mods/geometry.watr`
+  ::: tests/run/mods/geometry.watr:35:14
+   |
+35 | private enum Hidden { Secret }
+   |              ------ declared `private` here
+
+error[E0352]: enum `Shape` has no variant named `Hexagon`
+  --> tests/run/err_modules.watr:12:30
+   |
+12 |     int w = geometry::Shape::Hexagon as int;
+   |                              ^^^^^^^ unknown variant
+  ::: tests/run/mods/geometry.watr:34:6
+   |
+34 | enum Shape { Triangle = 3, Square, Pentagon }
+   |      ----- `Shape` is declared here
+   |
+help: a variant with a similar name exists
+   |
+12 |     int w = geometry::Shape::Pentagon as int;
+   |                              ~~~~~~~~
+
+error: could not compile `tests/run/err_modules.watr` due to 8 previous errors
+Some errors have detailed explanations: E0341, E0345, E0344, E0352.
 For more information about an error, try `watrc --explain E0341`.
 compile failed: 1

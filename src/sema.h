@@ -43,6 +43,7 @@ typedef struct Symbol {
     bool is_runtime;            /* from the runtime prelude */
     int module;                 /* index of the defining module */
     bool is_private;            /* `private`: invisible to importing modules */
+    Type *enum_type;            /* generated enum-name functions: the enum (decl is NULL) */
 
     /* globals */
     unsigned char *init;        /* initial bytes (type->size of them); NULL = all zero */
@@ -64,6 +65,8 @@ typedef struct {
     size_t nfuncs;
     Symbol **globals;
     size_t nglobals;
+    Symbol **enum_fns;          /* generated functions that turn an enum value into its name */
+    size_t nenum_fns;
     bool needs_libc;            /* uses extern symbols or alloc/free: link with the C runtime */
 } Program;
 

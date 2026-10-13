@@ -1,0 +1,17 @@
+ok 123
+error Empty
+error BadDigit
+error TooBig
+ok 42
+error BadDigit
+-1 7
+true TooBig
+42 ?
+6 false
+0.25 false
+ok 42
+error TooBig
+42
+5
+panic at tests/run/error_unions.watr:88:10: `->value` of a result that holds an error
+exit: 101

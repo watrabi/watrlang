@@ -1,0 +1,28 @@
+error[E0346]: `?` can't be used inside `defer`
+ --> tests/run/err_defer.watr:9:20
+  |
+9 |         int v = f()?;
+  |                    ^ this would return from the function
+  |
+  = note: deferred code runs while its block is already exiting, so it must run to its end
+
+error[E0346]: `break` can't jump out of a `defer`
+  --> tests/run/err_defer.watr:12:15
+   |
+12 |         defer break;
+   |               ^^^^^ this would leave the deferred code early
+   |
+   = note: deferred code runs while its block is already exiting, so it must run to its end
+
+error[E0346]: `return` can't jump out of a `defer`
+  --> tests/run/err_defer.watr:19:13
+   |
+19 |     defer { return 3; }
+   |             ^^^^^^^^^ this would leave the deferred code early
+   |
+   = note: deferred code runs while its block is already exiting, so it must run to its end
+
+error: could not compile `tests/run/err_defer.watr` due to 3 previous errors
+This error has a detailed explanation: E0346.
+For more information about an error, try `watrc --explain E0346`.
+compile failed: 1

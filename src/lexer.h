@@ -27,6 +27,7 @@
     X(COLON,     ":")           \
     X(COLONCOLON, "::")         \
     X(QUESTION,  "?")           \
+    X(QQ,        "??")          \
     X(ARROW,     "->")          \
     X(FATARROW,  "=>")          \
     X(ELLIPSIS,  "...")         \

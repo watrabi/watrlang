@@ -36,8 +36,9 @@ The full plan is in [docs/DESIGN.md](docs/DESIGN.md).
 | 6. C interop: `extern`/`export`, libc, structs by value, `alloc`/`free` | done |
 | 7. Strings, `echo`, interpolation; runtime written in watrlang | done |
 | 8. Modules, `private`, a first standard library | done |
-| 9. `defer` and error unions (`T!E`, `?`) | next |
-| 10+. Classes, GC, foreach/enums, freestanding, ... | planned |
+| 9. `defer`, enums, error unions (`T!E`, `?`, `??`) | done |
+| 10. Classes | next |
+| 11+. GC, foreach and PHP arrays, freestanding, a kernel, ... | planned |
 
 ## Error messages
 

@@ -794,16 +794,103 @@ static const Explanation explanations[] = {
      "    import \"b/util\" as butil;   // ok"},
 
     {"E0344",
-     "The part before `::` isn't the name of a module imported by this file.\n"
+     "The part before `::` isn't the name of a module imported by this file,\n"
+     "or of an enum.\n"
      "\n"
      "A module goes by the last part of its path (`std/math` is `math`),\n"
-     "or by the name given with `as`."},
+     "or by the name given with `as`. `Color::Red` names a variant of\n"
+     "`enum Color`; an enum from another module is `colors::Color::Red`."},
 
     {"E0345",
      "`module::name` refers to something the module doesn't have, or that\n"
      "it declares `private`.\n"
      "\n"
      "`private` keeps a function, struct or global inside its own file."},
+
+    {"E0346",
+     "`return`, `break`, `continue` and `?` can't jump out of a `defer`.\n"
+     "\n"
+     "    defer {\n"
+     "        if (failed) return;   // error\n"
+     "    }\n"
+     "\n"
+     "Deferred code runs while its block is already exiting (because of a\n"
+     "`return`, a `break`, or reaching the closing brace), so it must run to\n"
+     "its end. Loops inside the deferred code can still use `break` and\n"
+     "`continue` for themselves."},
+
+    {"E0347",
+     "`expr?` returns the error from the current function when `expr` holds\n"
+     "one, so it only works in a function that itself returns an error union.\n"
+     "\n"
+     "    function load(): int {\n"
+     "        int n = parse(text)?;   // error: load() returns plain `int`\n"
+     "    }\n"
+     "\n"
+     "Either make the function return errors too (`int!ParseError`), or deal\n"
+     "with the error where it happens:\n"
+     "\n"
+     "    int n = parse(text) ?? 0;          // a fallback value\n"
+     "    int!ParseError r = parse(text);\n"
+     "    if (!r->ok) { ... }                // or check it"},
+
+    {"E0348",
+     "`?` passes an error on unchanged, so the expression's error enum must\n"
+     "be the same as the one the function returns.\n"
+     "\n"
+     "    function open_config(): Config!ConfigError {\n"
+     "        string text = read_file(path)?;   // error: read_file has IoError\n"
+     "    }\n"
+     "\n"
+     "Check the result yourself and return an error of the right type:\n"
+     "\n"
+     "    string!IoError r = read_file(path);\n"
+     "    if (!r->ok) return ConfigError::Unreadable;"},
+
+    {"E0349",
+     "An error union `T!E` holds either a value of type `T` or an error of\n"
+     "type `E`. `E` must be an enum listing the possible errors:\n"
+     "\n"
+     "    enum IoError { NotFound, Denied }\n"
+     "    function read(): string!IoError { ... }\n"
+     "\n"
+     "`T` and `E` must be different types (otherwise a value and an error\n"
+     "couldn't be told apart), `T` can't itself be an error union, and it\n"
+     "can't be a fixed array. `void!E` is a result that is either fine or an\n"
+     "error."},
+
+    {"E0350",
+     "`??` and `?` work on error unions (`T!E`); this value can't fail.\n"
+     "\n"
+     "    int n = 5 ?? 0;       // error: 5 is never an error\n"
+     "\n"
+     "`??` also needs a value to fall back from, so it doesn't work on\n"
+     "`void!E` results; check `->ok` for those."},
+
+    {"E0351",
+     "Something is wrong in an enum declaration:\n"
+     "\n"
+     "- a variant name is used twice,\n"
+     "- a value isn't a constant integer, or doesn't fit the enum's type,\n"
+     "- a variant without a value would come after the largest value the\n"
+     "  type holds,\n"
+     "- the underlying type isn't an integer type.\n"
+     "\n"
+     "    enum Color: u8 { Red = 1, Green, Blue = 255 }\n"
+     "\n"
+     "Variants without a value are one more than the previous variant (the\n"
+     "first is 0). The underlying type is `i32` unless one is given, which\n"
+     "matches C enums."},
+
+    {"E0352",
+     "`Name::Variant` names a variant of an enum, and the enum doesn't have\n"
+     "it (or `Name` isn't an enum).\n"
+     "\n"
+     "    enum Color { Red, Green }\n"
+     "    Color c = Color::Blue;   // error\n"
+     "\n"
+     "Enums are built by naming a variant, not with `Name { ... }`, which is\n"
+     "for structs."},
 
     {"E0900",
      "This feature is part of watrlang's design but isn't implemented yet.\n"
@@ -824,6 +911,20 @@ static const Explanation explanations[] = {
      "exported function, so it isn't compiled into the program.\n"
      "\n"
      "Remove it, or start its name with an underscore to keep it quietly."},
+
+    {"W0005",
+     "A call returns an error union, and the result is thrown away, so an\n"
+     "error would go unnoticed.\n"
+     "\n"
+     "    save(file);     // warning: save() returns void!IoError\n"
+     "\n"
+     "Pass the error on with `save(file)?;`, or check it:\n"
+     "\n"
+     "    void!IoError r = save(file);\n"
+     "    if (!r->ok) { echo \"couldn't save: {r->error}\\n\"; }\n"
+     "\n"
+     "To ignore it on purpose, store it in a variable whose name starts\n"
+     "with `_`."},
 
     {"W0002",
      "A statement can never run because it comes after a return, break or\n"

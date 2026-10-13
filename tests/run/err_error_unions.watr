@@ -1,0 +1,37 @@
+enum E { Fail }
+enum Other { Nope }
+struct S { int x; }
+
+function f(): int!E {
+    return 1;
+}
+
+function g(): void!E {
+    return;
+}
+
+function wrong_err(): int!Other {
+    int v = f()?;
+    return v;
+}
+
+function plain(): int {
+    int v = f()?;
+    return v;
+}
+
+function bad_types(int!S a, E!E b, int!E!E c): void {
+}
+
+function main(): int {
+    int x = f();
+    int y = 5 ?? 0;
+    g() ?? 1;
+    f();
+    int z = g()->value;
+    int w = f()->size;
+    f()->value = 3;
+    echo f(), "\n";
+    int!E r = Other::Nope;
+    return f() + 1;
+}
