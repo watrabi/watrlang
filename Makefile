@@ -15,7 +15,7 @@ SRCS  := $(wildcard src/*.c)
 OBJS  := $(SRCS:src/%.c=$(BUILD)/%.o)
 DEPS  := $(OBJS:.o=.d)
 
-.PHONY: all test clean run-kernel
+.PHONY: all test clean run-kernel docs
 
 all: $(BUILD)/watrc
 
@@ -45,7 +45,14 @@ test: $(BUILD)/watrc
 	python3 tests/array_fuzz.py
 	python3 tests/div_fuzz.py
 	WATR_GC_STRESS=1 python3 tests/array_fuzz.py --programs 4
+	python3 tools/check_docs.py
 	./tests/kernel_test.sh
+
+# Regenerates docs/STDLIB.md from std/ and copies the guides into the LLM
+# skill (skills/watrlang), which ships them as references.
+docs:
+	python3 tools/gen_stdlib_doc.py
+	cp docs/LANGUAGE.md docs/STDLIB.md skills/watrlang/references/
 
 # Boots examples/kernel in a QEMU window (Ctrl-A X quits with -nographic).
 run-kernel: $(BUILD)/watrc

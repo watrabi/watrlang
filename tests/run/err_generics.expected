@@ -121,6 +121,7 @@ error[E0310]: `+` needs numbers, found `string`
 9 | function add<T>(T a, T b): T { return a + b; }
   |                                       ^ not a number
   |
+  = help: join strings with `.` (like PHP): `a . b`, or interpolate: "{a}{b}"
   = note: in `add<string>`, used at tests/run/err_generics.watr:22:36
 
 error[E0310]: `+` needs numbers, found `bool`

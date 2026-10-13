@@ -1,7 +1,8 @@
 // Files, through Linux system calls. Failures come back as IoError values:
 //
-//     string text = fs::read("notes.txt")?;
-//     fs::write("out.txt", "hello\n") ?? false;
+//     import "std/fs";
+//     string text = fs::read("notes.txt") ?? "";   // or `?` to pass the error on
+//     bool saved = fs::write("out.txt", "hello\n") ?? false;
 
 import "std/sys";
 
@@ -29,14 +30,14 @@ function describe(IoError e): string {
     return "input/output error";
 }
 
-const i64 O_RDONLY = 0;
-const i64 O_WRONLY = 1;
-const i64 O_CREAT = 64;
-const i64 O_TRUNC = 512;
-const i64 O_APPEND = 1024;
-const i64 O_CLOEXEC = 524288;
+private const i64 O_RDONLY = 0;
+private const i64 O_WRONLY = 1;
+private const i64 O_CREAT = 64;
+private const i64 O_TRUNC = 512;
+private const i64 O_APPEND = 1024;
+private const i64 O_CLOEXEC = 524288;
 
-function open(string path, i64 flags): i64!IoError {
+private function open(string path, i64 flags): i64!IoError {
     i64 fd = sys::syscall3(sys::OPEN, sys::cstr(path) as i64, flags | O_CLOEXEC, 420);   // mode 0644
     if (fd < 0) {
         return error_of(fd);
@@ -70,7 +71,7 @@ function read(string path): string!IoError {
     return string { ptr: buf, len: n };
 }
 
-function write_all(i64 fd, string data): bool!IoError {
+private function write_all(i64 fd, string data): bool!IoError {
     usize done = 0;
     while (done < len(data)) {
         i64 put = sys::syscall3(sys::WRITE, fd, (data->ptr + done) as i64, (len(data) - done) as i64);
@@ -100,7 +101,7 @@ function exists(string path): bool {
     return sys::syscall2(sys::ACCESS, sys::cstr(path) as i64, 0) == 0;
 }
 
-function check(i64 r): bool!IoError {
+private function check(i64 r): bool!IoError {
     if (r < 0) {
         return error_of(r);
     }

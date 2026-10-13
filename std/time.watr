@@ -2,12 +2,12 @@
 
 import "std/sys";
 
-struct Timespec {
+private struct Timespec {
     i64 sec;
     i64 nsec;
 }
 
-function clock(i64 which): i64 {
+private function clock(i64 which): i64 {
     Timespec ts;
     sys::syscall2(sys::CLOCK_GETTIME, which, (&ts) as i64);
     return ts->sec * 1000000000 + ts->nsec;
@@ -62,7 +62,7 @@ function utc(i64 t): DateTime {
     return DateTime { year: y, month: m, day: d, hour: secs / 3600, minute: secs / 60 % 60, second: secs % 60 };
 }
 
-function two(int x): string {
+private function two(int x): string {
     return x < 10 ? "0{x}" : "{x}";
 }
 

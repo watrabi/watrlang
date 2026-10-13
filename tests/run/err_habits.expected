@@ -1,0 +1,73 @@
+error[E0312]: an `if` condition must be a `bool`, found `int`
+ --> tests/run/err_habits.watr:6:9
+  |
+6 |     if (n) { echo "yes"; }
+  |         ^ expected `bool`
+  |
+  = note: watrlang doesn't treat numbers or pointers as true/false
+help: compare explicitly
+  |
+6 |     if (n != 0) { echo "yes"; }
+  |         ~~~~~~
+
+error[E0310]: `+` needs numbers, found `string`
+ --> tests/run/err_habits.watr:7:16
+  |
+7 |     string s = "a" + "b";
+  |                ^^^ not a number
+  |
+  = help: join strings with `.` (like PHP): `a . b`, or interpolate: "{a}{b}"
+
+error[E0384]: `.` joins strings; members are reached with `->`
+ --> tests/run/err_habits.watr:9:10
+  |
+9 |     echo p.x;
+  |          ^^^ this reads as `p` joined with a variable `x`
+  |
+help: use `->`, which works on values and pointers alike
+  |
+9 |     echo p->x;
+  |          ~~~~
+
+error[E0384]: `.` joins strings; members are reached with `->`
+  --> tests/run/err_habits.watr:11:10
+   |
+11 |     echo b.v;
+   |          ^^^ this reads as `b` joined with a variable `v`
+   |
+help: use `->`, which works on values and pointers alike
+   |
+11 |     echo b->v;
+   |          ~~~~
+
+error[E0310]: mismatched types: can't use `<` with `int` and `usize`
+  --> tests/run/err_habits.watr:13:21
+   |
+13 |     for (int i = 0; i < len(arr); i++) { echo arr[i]; }
+   |                     ^^^^^^^^^^^^
+   |                     - `int`
+   |                         -------- `usize`
+   |
+   = note: watrlang never mixes signed and unsigned integers implicitly
+help: convert one side with `as`
+   |
+13 |     for (int i = 0; i < len(arr) as int; i++) { echo arr[i]; }
+   |                         ~~~~~~~~~~~~~~~
+
+error[E0309]: mismatched types: expected `int`, found `f64`
+  --> tests/run/err_habits.watr:14:13
+   |
+14 |     int y = 2.5;
+   |     ---     ^^^ expected `int`, found `f64`
+   |     |
+   |     expected because of this type
+   |
+help: convert with `as`
+   |
+14 |     int y = 2.5 as int;
+   |             ~~~~~~~~~~
+
+error: could not compile `tests/run/err_habits.watr` due to 6 previous errors
+Some errors have detailed explanations: E0312, E0310, E0384, E0309.
+For more information about an error, try `watrc --explain E0312`.
+compile failed: 1

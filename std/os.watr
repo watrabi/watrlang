@@ -3,7 +3,7 @@
 import "std/sys";
 import "std/vec";
 
-function cstr_len(const u8* p): usize {
+private function cstr_len(const u8* p): usize {
     usize n = 0;
     while (p[n] != 0) {
         n++;

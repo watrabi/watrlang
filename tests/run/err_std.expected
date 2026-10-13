@@ -41,9 +41,9 @@ error[E0344]: `vec` isn't a module imported here
    = help: import it first, like `import "std/vec";`
 
 error[E0383]: `hash_of` can't hash a value of type `Point`
-  --> std/map.watr:87:25
+  --> std/map.watr:88:25
    |
-87 |         u64 h = hash_of(key);
+88 |         u64 h = hash_of(key);
    |                         ^^^ not hashable
    |
    = note: it hashes numbers, bools, enums, strings, pointers, objects (by identity) and `mixed`
@@ -51,9 +51,9 @@ error[E0383]: `hash_of` can't hash a value of type `Point`
    = note: in `Map<Point, int>`, used at tests/run/err_std.watr:9:5
 
 error[E0310]: can't compare `Point` with `Point`
-  --> std/map.watr:44:58
+  --> std/map.watr:45:58
    |
-44 |             if (this->hashes[e] == h && this->live[e] && this->keys_[e] == key) {
+45 |             if (this->hashes[e] == h && this->live[e] && this->keys_[e] == key) {
    |                                                          ^^^^^^^^^^^^^^^^^^^^^
    |                                                          -------------- `Point`
    |                                                                            --- `Point`

@@ -1,8 +1,9 @@
 // Formatting numbers and text.
 //
-//     fmt::format("% + % = %", [1, 2, 3])      // "1 + 2 = 3"
-//     fmt::fixed(3.14159, 2)                   // "3.14"
-//     fmt::pad_left("7", 3, '0')               // "007"
+//     import "std/fmt";
+//     string a = fmt::format("% + % = %", [1, 2, 3]);   // "1 + 2 = 3"
+//     string b = fmt::fixed(3.14159, 2);                // "3.14"
+//     string c = fmt::pad_left("7", 3, '0');            // "007"
 
 // s padded on the left with `fill` up to `width` bytes.
 function pad_left(string s, usize width, u8 fill): string {
@@ -40,7 +41,7 @@ function center(string s, usize width, u8 fill): string {
     return pad_right(pad_left(s, len(s) + left, fill), width, fill);
 }
 
-function digits(u64 v, u64 base, usize min_width): string {
+private function digits(u64 v, u64 base, usize min_width): string {
     u8[64] buf;
     usize i = 64;
     while (v != 0 || i == 64) {

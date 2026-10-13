@@ -21,7 +21,20 @@ function main(): int {
 }
 ```
 
-The full plan is in [docs/DESIGN.md](docs/DESIGN.md).
+## Documentation
+
+- [docs/LANGUAGE.md](docs/LANGUAGE.md): the language guide and reference,
+  from hello world to generics, C interop and bare metal. Every example in
+  it is compiled by `make test`.
+- [docs/STDLIB.md](docs/STDLIB.md): every standard library function,
+  generated from `std/` (`make docs` regenerates it).
+- [docs/DESIGN.md](docs/DESIGN.md): design decisions and compiler internals.
+- [skills/watrlang](skills/watrlang): a skill for LLM coding assistants
+  (Claude Code, and anything else that reads `SKILL.md` folders). Copy the
+  folder into `~/.claude/skills/` (or a project's `.claude/skills/`), or
+  hand `SKILL.md` and its `references/` to any model that should write
+  watrlang. It lists the rules that differ from PHP and C, a cheat sheet,
+  and the full guide as references.
 
 ## Status
 

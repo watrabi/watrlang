@@ -59,18 +59,18 @@ class Rng {
     public function chance(f64 p): bool { return this->unit() < p; }
 }
 
-function splitmix(u64 x): u64 {
+private function splitmix(u64 x): u64 {
     u64 z = x + 11400714819323198485;
     z = (z ^ (z >> 30)) * 13787848793156543929;
     z = (z ^ (z >> 27)) * 10723151780598845931;
     return z ^ (z >> 31);
 }
 
-function rotl(u64 x, u64 k): u64 {
+private function rotl(u64 x, u64 k): u64 {
     return (x << k) | (x >> (64 - k));
 }
 
-Rng shared = null;
+private Rng shared = null;
 
 // The module's generator, seeded from getrandom() the first time.
 function default_rng(): Rng {

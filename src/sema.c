@@ -1312,6 +1312,22 @@ static Type *check_interp(Sema *S, Expr **slot) {
 static Type *check_concat(Sema *S, Expr **slot) {
     Expr *e = *slot;
     Type *lt = check(S, &e->u.binary.lhs, ty_string);
+    /* `p.x` written C-style: `.` is concatenation, fields are `p->x`. */
+    Expr *r = e->u.binary.rhs;
+    if (r->kind == EXPR_IDENT && !r->parenthesized && !is_err(lt) && !find_var(S, r->u.name)) {
+        const Type *st = lt->kind == TY_PTR ? lt->base : lt;
+        bool member = (st->kind == TY_STRUCT || st->kind == TY_CLASS) && find_field(st, r->u.name);
+        if (st->kind == TY_CLASS && find_method(st, r->u.name)) member = true;
+        if (member) {
+            Diag *d = diag_start(DIAG_ERROR, "E0384", e->loc, "`.` joins strings; members are reached with `->`");
+            diag_label(d, "this reads as `%s` joined with a variable `%s`", loc_text(S, e->u.binary.lhs->loc), r->u.name);
+            char fixed[256];
+            snprintf(fixed, sizeof fixed, "%s->%s", loc_text(S, e->u.binary.lhs->loc), r->u.name);
+            diag_fix(d, e->loc, fixed, "use `->`, which works on values and pointers alike");
+            diag_end(d);
+            return set_type(e, ty_error);
+        }
+    }
     Type *rt = check(S, &e->u.binary.rhs, ty_string);
     if (!both_values(S, e->u.binary.lhs, e->u.binary.rhs) || is_err(lt) || is_err(rt)) return set_type(e, ty_error);
     Expr *a = stringify(S, e->u.binary.lhs, "joined with `.`");
@@ -1749,6 +1765,8 @@ static Type *check_binary(Sema *S, Expr **slot, Type *hint) {
             fix_append(S, d, bad, " as int", "enums don't do arithmetic; convert to an integer first");
         else if (bad->type->kind == TY_ERRUNION)
             diag_help(d, "unwrap the error union first, with `?` or `??`");
+        else if (bad->type->kind == TY_STRING && op == TOK_PLUS)
+            diag_help(d, "join strings with `.` (like PHP): `a . b`, or interpolate: \"{a}{b}\"");
         diag_end(d);
         return set_type(e, ty_error);
     }

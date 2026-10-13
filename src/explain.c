@@ -1196,6 +1196,16 @@ static const Explanation explanations[] = {
      "std/map's Map<K, V> hashes its keys with `hash_of`, so its key type has\n"
      "to be one of the hashable ones."},
 
+    {"E0384",
+     "In watrlang `.` is string concatenation (as in PHP), never member\n"
+     "access. Fields and methods are reached with `->`, on struct values,\n"
+     "pointers and objects alike:\n"
+     "\n"
+     "    Point p = Point { x: 1, y: 2 };\n"
+     "    echo p.x;      // error: joins p with a variable x\n"
+     "    echo p->x;     // ok\n"
+     "    echo \"x = \" . p->x;   // `.` joins the text"},
+
     {"E0900",
      "This feature is part of watrlang's design but isn't implemented yet.\n"
      "The message names the milestone that will add it; docs/DESIGN.md has\n"

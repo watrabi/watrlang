@@ -1,0 +1,16 @@
+// Habits from C, JavaScript and Python that watrlang rejects, with hints.
+struct P { int x; }
+class Box { public int v; public function get(): int { return this->v; } }
+function main(): int {
+    int n = 3;
+    if (n) { echo "yes"; }
+    string s = "a" + "b";
+    P p = P { x: 1 };
+    echo p.x;
+    Box b = new Box();
+    echo b.v;
+    int[3] arr = [1, 2, 3];
+    for (int i = 0; i < len(arr); i++) { echo arr[i]; }
+    int y = 2.5;
+    return 0;
+}

@@ -3,10 +3,11 @@
 // are kept in insertion order, like PHP arrays, and a table of entry
 // numbers (open addressing, linear probing) finds keys.
 //
-//     Map<string, int> ages = new Map<string, int>();
+//     import "std/map";
+//     map::Map<string, int> ages = new map::Map<string, int>();
 //     ages->set("ada", 36);
 //     int a = ages->get("ada") ?? 0;
-//     foreach (ages->keys() as k) { ... }
+//     foreach (ages->keys() as k) { echo k, "\n"; }
 
 import "std/vec";
 

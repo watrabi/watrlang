@@ -2,7 +2,8 @@
 // memory that doubles as needed, so push is O(1) on average and get/set
 // are O(1). Indexes are bounds-checked. Loop over one with foreach:
 //
-//     Vec<int> v = new Vec<int>();
+//     import "std/vec";
+//     vec::Vec<int> v = new vec::Vec<int>();
 //     v->push(1);
 //     foreach (v as x) { echo x; }
 
