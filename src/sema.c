@@ -38,9 +38,17 @@ typedef struct {
     bool needs_libc;
     int temps;          /* numbering for names sema invents (foreach) */
     bool freestanding;  /* --freestanding: no heap, no libc, no main */
+    PtrVec vsites;      /* VSite*: virtual calls, for reachability */
     Loc cur_loc;        /* the expression being checked, for the call graph */
     uint32_t classes;   /* class ids handed out */
 } Sema;
+
+/* A virtual call: fn calls `name` on a receiver of static type `t`. */
+typedef struct {
+    Symbol *fn;
+    Type *t;
+    const char *name;
+} VSite;
 
 typedef struct {
     uint64_t bits;      /* ints (normalized), bools, pointers */
@@ -56,6 +64,8 @@ static bool coerce(Sema *S, Expr **slot, Type *to, const Loc *why, const char *w
 static Type *check_coalesce(Sema *S, Expr *e, Type *hint);
 static const char *closest(const char *name, const char **candidates, size_t n);
 static Expr *to_mixed(Sema *S, Expr *e);
+static Expr *desc_addr(Sema *S, Type *ct, Loc loc);
+static Expr *bool_const(Sema *S, Loc loc, bool v);
 
 /* ---- small helpers ------------------------------------------------------- */
 
@@ -675,9 +685,16 @@ static void check_enum_variants(Sema *S, Type *et) {
     }
 }
 
+/* A method of a class, its own or inherited; for interfaces, any of theirs. */
 static Symbol *find_method(const Type *ct, const char *name) {
-    for (size_t i = 0; i < ct->nmethods; i++)
-        if (strcmp(ct->methods[i]->name, name) == 0) return ct->methods[i];
+    if (ct->is_interface) {
+        for (size_t i = 0; i < ct->nvtable; i++)
+            if (strcmp(ct->vtable[i]->name, name) == 0) return ct->vtable[i];
+        return NULL;
+    }
+    for (const Type *c = ct; c; c = c->base_class)
+        for (size_t i = 0; i < c->nmethods; i++)
+            if (strcmp(c->methods[i]->name, name) == 0) return c->methods[i];
     return NULL;
 }
 
@@ -1024,8 +1041,7 @@ static Expr *to_mixed(Sema *S, Expr *e) {
     case TY_STRING: return rt_call1(S, "__rt_mixed_string", e);
     case TY_PHPARRAY: return rt_call1(S, "__rt_mixed_array", e);
     case TY_CLASS:
-        return rt_call2(S, "__rt_mixed_object", e->loc, u64_const(S, e->loc, 16 + (uint64_t)t->class_id),
-                        wrap_cast(S, e, ty_u64));
+        return rt_call1(S, "__rt_mixed_object", wrap_cast(S, e, ty_u64));
     default: return NULL;
     }
 }
@@ -1045,11 +1061,9 @@ static Expr *from_mixed(Sema *S, Expr *e, Type *to, Loc loc) {
         Expr *name = new_node(S, EXPR_STRING, loc, ty_string);
         name->u.str.data = to->name;
         name->u.str.len = strlen(to->name);
-        args[0] = e;
-        args[1] = u64_const(S, loc, 16 + (uint64_t)to->class_id);
-        args[2] = name;
-        args[3] = where_string(S, loc);
-        return wrap_cast(S, rt_call(S, "__rt_as_object", loc, args, 4), to);
+        Expr *oargs[5] = {e, desc_addr(S, to, loc), bool_const(S, loc, to->is_interface), name, where_string(S, loc)};
+        (void)args;
+        return wrap_cast(S, rt_call(S, "__rt_as_object", loc, oargs, 5), to);
     }
     default: return NULL;
     }
@@ -1112,6 +1126,48 @@ static Expr *enum_name_call(Sema *S, Expr *e) {
 }
 
 /* obj->__toString() */
+/* Marks a method call on a receiver of type `ot` as virtual when it is,
+ * and records it so every override counts as reachable. */
+static void set_dispatch(Sema *S, Expr *call, Type *ot, Symbol *m) {
+    if (m->is_static || (m->vindex < 0 && !ot->is_interface)) return;
+    if (ot->is_interface) {
+        for (size_t i = 0; i < ot->nvtable; i++)
+            if (ot->vtable[i] == m) call->vslot = (int)i + 1;
+        call->viface = ot;
+    } else {
+        call->vslot = m->vindex + 1;
+    }
+    VSite *v = arena_alloc(S->arena, sizeof *v);
+    v->fn = S->fn;
+    v->t = ot;
+    v->name = m->name;
+    if (S->fn) ptrvec_push(&S->vsites, v);
+}
+
+/* The address of a class's or interface's runtime descriptor, as a u64. */
+static Expr *desc_addr(Sema *S, Type *ct, Loc loc) {
+    if (!ct->desc_sym) {
+        Symbol *g = new_symbol(S, SYM_GLOBAL, ct->desc_name, loc);
+        g->asm_name = ct->desc_name;
+        g->type = ty_u8;
+        g->is_runtime = true;
+        ct->desc_sym = g;
+    }
+    Expr *id = new_node(S, EXPR_IDENT, loc, ty_u8);
+    id->u.name = ct->desc_name;
+    id->sym = ct->desc_sym;
+    Expr *amp = new_node(S, EXPR_UNARY, loc, type_ptr(ty_u8, true, false));
+    amp->u.unary.op = TOK_AMP;
+    amp->u.unary.operand = id;
+    return wrap_cast(S, amp, ty_u64);
+}
+
+static Expr *bool_const(Sema *S, Loc loc, bool v) {
+    Expr *e = new_node(S, EXPR_BOOL, loc, ty_bool);
+    e->u.bool_val = v;
+    return e;
+}
+
 static Expr *to_string_call(Sema *S, Expr *e) {
     Symbol *m = find_method(e->type, "__toString");
     add_callee(S, m);
@@ -1125,6 +1181,7 @@ static Expr *to_string_call(Sema *S, Expr *e) {
     call->u.call.nargs = 1;
     call->u.call.args = arena_alloc(S->arena, sizeof(Expr *));
     call->u.call.args[0] = e;
+    set_dispatch(S, call, e->type, m);
     return call;
 }
 
@@ -1627,7 +1684,8 @@ static Type *check_binary(Sema *S, Expr **slot, Type *hint) {
         if (lt->kind == TY_ENUM && lt == rt) return set_type(e, ty_bool);
         /* Objects compare by identity, with each other or with null. */
         bool lref = lt->kind == TY_CLASS || lt->kind == TY_PHPARRAY, rref = rt->kind == TY_CLASS || rt->kind == TY_PHPARRAY;
-        if (eq && (lref || rref) && (lt == rt || lt->kind == TY_NULL || rt->kind == TY_NULL))
+        if (eq && (lref || rref) &&
+            (lt == rt || lt->kind == TY_NULL || rt->kind == TY_NULL || class_subtype(lt, rt) || class_subtype(rt, lt)))
             return set_type(e, ty_bool);
         bool lp = lt->kind == TY_PTR || lt->kind == TY_NULL, rp = rt->kind == TY_PTR || rt->kind == TY_NULL;
         if (lp && rp && (eq || (lt->kind == TY_PTR && rt->kind == TY_PTR)) &&
@@ -1855,12 +1913,22 @@ static void check_args_only(Sema *S, Expr *e) {
 }
 
 /* E0362 for methods */
+/* Can the code being checked use a member declared in `owner`? */
+static bool member_visible(Sema *S, bool is_private, bool is_protected, const Type *owner) {
+    if (!is_private && !is_protected) return true;
+    const Type *here = S->fn ? S->fn->owner : NULL;
+    if (!here) return false;
+    return is_private ? here == owner : class_subtype(here, owner);
+}
+
 static bool method_visible(Sema *S, const Symbol *m, Loc loc) {
-    if (!m->is_private || (S->fn && S->fn->owner == m->owner)) return true;
-    Diag *d = diag_start(DIAG_ERROR, "E0362", loc, "method `%s` of class `%s` is private", m->name, m->owner->name);
-    diag_label(d, "private method");
-    diag_span(d, m->loc, "declared `private` here");
-    diag_note(d, "private members can only be used by the class's own methods");
+    if (member_visible(S, m->is_private, m->is_protected, m->owner)) return true;
+    const char *kind = m->is_private ? "private" : "protected";
+    Diag *d = diag_start(DIAG_ERROR, "E0362", loc, "method `%s` of class `%s` is %s", m->name, m->owner->name, kind);
+    diag_label(d, "%s method", kind);
+    diag_span(d, m->loc, "declared `%s` here", kind);
+    diag_note(d, "%s", m->is_private ? "private members can only be used by the class's own methods"
+                                     : "protected members can only be used by the class and its subclasses");
     diag_end(d);
     return false;
 }
@@ -1931,6 +1999,55 @@ static Type *check_method_call(Sema *S, Expr *e) {
     callee->u.name = m->name;
     callee->loc = name_loc;
     e->builtin = BUILTIN_METHOD;
+    Type *t = check_args(S, e, m, 1);
+    set_dispatch(S, e, ot, m);
+    return t;
+}
+
+/* parent::method(args): the base class's version, called directly on `this`. */
+static Type *check_parent_call(Sema *S, Expr *e) {
+    Expr *callee = e->u.call.callee;
+    const char *name = callee->u.scope.member;
+    Type *base = S->fn && S->fn->owner ? S->fn->owner->base_class : NULL;
+    if (!base || !S->fn->this_param) {
+        Diag *d = diag_start(DIAG_ERROR, "E0374", callee->loc, "`parent::` needs a method of a class that extends another");
+        diag_label(d, !S->fn || !S->fn->owner ? "not inside a method"
+                      : !S->fn->this_param    ? "a static method has no `this`"
+                                              : "this class has no base class");
+        diag_end(d);
+        check_args_only(S, e);
+        return set_type(e, ty_error);
+    }
+    Symbol *m = find_method(base, name);
+    if (!m) {
+        report_unknown_method(S, base, name, callee->loc);
+        check_args_only(S, e);
+        return set_type(e, ty_error);
+    }
+    if (m->is_abstract) {
+        Diag *d = diag_start(DIAG_ERROR, "E0374", callee->loc, "`%s::%s` is abstract, so there's nothing to call", base->name,
+                             name);
+        diag_label(d, "no body");
+        diag_span(d, m->loc, "declared abstract here");
+        diag_end(d);
+        check_args_only(S, e);
+        return set_type(e, ty_error);
+    }
+    if (!method_visible(S, m, callee->loc)) {
+        check_args_only(S, e);
+        return set_type(e, ty_error);
+    }
+    callee->kind = EXPR_IDENT;
+    callee->u.name = m->name;
+    if (m->is_static) return check_args(S, e, m, 0);
+    size_t n = e->u.call.nargs;   /* `this` goes first */
+    Expr **args = arena_alloc(S->arena, (n + 1) * sizeof(Expr *));
+    args[0] = new_node(S, EXPR_THIS, callee->loc, S->fn->owner);
+    args[0]->sym = S->fn->this_param;
+    args[0]->checked = true;
+    for (size_t i = 0; i < n; i++) args[i + 1] = e->u.call.args[i];
+    e->u.call.args = args;
+    e->u.call.nargs = n + 1;
     return check_args(S, e, m, 1);
 }
 
@@ -1965,6 +2082,9 @@ static Type *check_static_call(Sema *S, Expr *e, Type *ct) {
 static Type *check_call(Sema *S, Expr *e) {
     Expr *callee = e->u.call.callee;
     if (callee->kind == EXPR_MEMBER) return check_method_call(S, e);
+    if (callee->kind == EXPR_SCOPE && strcmp(callee->u.scope.scope, "parent") == 0 && module_by_alias(S, "parent") < 0 &&
+        !find_struct(S, "parent"))
+        return check_parent_call(S, e);
     if (callee->kind == EXPR_SCOPE &&
         (strstr(callee->u.scope.scope, "::") || module_by_alias(S, callee->u.scope.scope) < 0)) {
         Type *ct = find_struct(S, callee->u.scope.scope);
@@ -2166,12 +2286,14 @@ static Type *check_member(Sema *S, Expr *e) {
             report_unknown_field(S, st, e->u.member.name, e->u.member.name_loc);
             return set_type(e, ty_error);
         }
-        if (f->is_private && !(S->fn && S->fn->owner == st)) {
-            Diag *d = diag_start(DIAG_ERROR, "E0362", e->u.member.name_loc, "field `%s` of class `%s` is private",
-                                 f->name, st->name);
-            diag_label(d, "private field");
-            diag_span(d, f->loc, "declared `private` here");
-            diag_note(d, "private members can only be used by the class's own methods");
+        if (!member_visible(S, f->is_private, f->is_protected, f->owner)) {
+            const char *kind = f->is_private ? "private" : "protected";
+            Diag *d = diag_start(DIAG_ERROR, "E0362", e->u.member.name_loc, "field `%s` of class `%s` is %s", f->name,
+                                 f->owner->name, kind);
+            diag_label(d, "%s field", kind);
+            diag_span(d, f->loc, "declared `%s` here", kind);
+            diag_note(d, "%s", f->is_private ? "private members can only be used by the class's own methods"
+                                             : "protected members can only be used by the class and its subclasses");
             diag_end(d);
             return set_type(e, ty_error);
         }
@@ -2325,6 +2447,16 @@ static Type *check_cast(Sema *S, Expr *e) {
         *e = *conv;
         return e->type;
     }
+    if (from->kind == TY_CLASS && to->kind == TY_CLASS && !type_assignable(from, to) && type_castable(from, to)) {
+        /* A downcast: checked at run time (null passes). */
+        Expr *name = new_node(S, EXPR_STRING, e->loc, ty_string);
+        name->u.str.data = to->name;
+        name->u.str.len = strlen(to->name);
+        Expr *args[5] = {wrap_cast(S, inner, ty_u64), desc_addr(S, to, e->loc), bool_const(S, e->loc, to->is_interface),
+                         name, where_string(S, e->loc)};
+        *e = *wrap_cast(S, rt_call(S, "__rt_cast_object", e->loc, args, 5), to);
+        return to;
+    }
     /* `0xB8000 as u16*`: the literal must not be range-checked as int if it fits u64. */
     if (type_castable(from, to)) return set_type(e, to);
     Diag *d = diag_start(DIAG_ERROR, "E0313", e->loc, "can't cast `%s` to `%s`", type_name(from), type_name(to));
@@ -2335,6 +2467,8 @@ static Type *check_cast(Sema *S, Expr *e) {
         diag_help(d, "only 64-bit integers can hold an address; use `usize` or `u64`");
     else if (type_is_aggregate(from) || type_is_aggregate(to))
         diag_note(d, "structs and arrays can't be cast");
+    else if (from->kind == TY_CLASS && to->kind == TY_CLASS)
+        diag_note(d, "`%s` and `%s` aren't related: neither class extends the other", from->name, to->name);
     diag_end(d);
     return set_type(e, ty_error);
 }
@@ -2548,6 +2682,16 @@ static Type *check_new(Sema *S, Expr *e) {
         for (size_t i = 0; i < e->u.new_.nargs; i++) check(S, &e->u.new_.args[i], NULL);
         return set_type(e, ty_error);
     }
+    if (ct->is_abstract) {
+        Diag *d = diag_start(DIAG_ERROR, "E0373", e->u.new_.type->loc, "can't create an object of %s `%s`",
+                             ct->is_interface ? "interface" : "abstract class", ct->name);
+        diag_label(d, "%s", ct->is_interface ? "an interface only describes methods" : "abstract");
+        diag_span(d, ct->decl->name_loc, "declared %s here", ct->is_interface ? "as an interface" : "`abstract`");
+        diag_help(d, "create an object of a class that %s it", ct->is_interface ? "implements" : "extends");
+        diag_end(d);
+        for (size_t i = 0; i < e->u.new_.nargs; i++) check(S, &e->u.new_.args[i], NULL);
+        return set_type(e, ty_error);
+    }
     e->u.new_.alloc = find_runtime_func(S, "__rt_alloc");
     add_callee(S, e->u.new_.alloc);
     for (size_t i = 0; i < ct->nfields; i++)   /* array fields start as new empty arrays */
@@ -2585,6 +2729,35 @@ static Type *check_new(Sema *S, Expr *e) {
     check_args(S, call, ctor, 1);
     e->u.new_.ctor = call;
     return set_type(e, ct);
+}
+
+/* x instanceof C: is x an object of class C (or a subclass), or one that
+ * implements interface C? False for null. */
+static Type *check_instanceof(Sema *S, Expr **slot) {
+    Expr *e = *slot;
+    Type *ct = resolve_type(S, e->u.cast.type, false);
+    Type *t = check(S, &e->u.cast.expr, NULL);
+    Expr *x = e->u.cast.expr;
+    if (is_err(ct) || is_err(t) || !require_value(S, x)) return set_type(e, ty_error);
+    if (ct->kind != TY_CLASS) {
+        Diag *d = diag_start(DIAG_ERROR, "E0313", e->u.cast.type->loc, "`instanceof` needs a class or interface, found `%s`",
+                             type_name(ct));
+        diag_label(d, "not a class");
+        diag_end(d);
+        return set_type(e, ty_error);
+    }
+    if (t->kind != TY_CLASS && t->kind != TY_MIXED) {
+        Diag *d = diag_start(DIAG_ERROR, "E0313", x->loc, "`instanceof` needs an object, found `%s`", type_name(t));
+        diag_label(d, "not an object");
+        diag_end(d);
+        return set_type(e, ty_error);
+    }
+    Expr *args[3];
+    args[0] = t->kind == TY_MIXED ? x : wrap_cast(S, x, ty_u64);
+    args[1] = desc_addr(S, ct, e->loc);
+    args[2] = bool_const(S, e->loc, ct->is_interface);
+    *slot = rt_call(S, t->kind == TY_MIXED ? "__rt_mixed_instanceof" : "__rt_instanceof", e->loc, args, 3);
+    return ty_bool;
 }
 
 static void report_assign_as_value(const Expr *e) {
@@ -2721,6 +2894,8 @@ static Type *check(Sema *S, Expr **slot, Type *hint) {
     }
     case EXPR_TRY:
         return check_try(S, e);
+    case EXPR_INSTANCEOF:
+        return check_instanceof(S, slot);
     }
     return set_type(e, ty_error);
 }
@@ -3902,14 +4077,103 @@ static void report_member_twice(const Type *ct, const char *name, Loc loc, Loc f
     diag_end(d);
 }
 
-/* The object's fields, laid out like a struct. */
-static void layout_class(Sema *S, Type *ct) {
+static void add_iface(Sema *S, Type *ct, Type *it, size_t *cap) {
+    for (size_t i = 0; i < ct->nifaces; i++)
+        if (ct->ifaces[i] == it) return;
+    if (ct->nifaces == *cap) {
+        *cap = *cap ? *cap * 2 : 8;
+        Type **grown = arena_alloc(S->arena, *cap * sizeof *grown);
+        if (ct->nifaces) memcpy(grown, ct->ifaces, ct->nifaces * sizeof *grown);
+        ct->ifaces = grown;
+    }
+    ct->ifaces[ct->nifaces++] = it;
+}
+
+/* Resolves `extends` and `implements` (base classes and interfaces first);
+ * fills in the flattened interface list. */
+static void resolve_hierarchy(Sema *S, Type *ct) {
+    if (ct->class_state == 2) return;
     const Decl *d = ct->decl;
-    size_t n = d->u.class_.n;
+    if (ct->class_state == 1) {
+        Diag *e = diag_start(DIAG_ERROR, "E0372", d->name_loc, "`%s` inherits from itself", ct->name);
+        diag_label(e, "the inheritance goes around in a circle");
+        diag_end(e);
+        ct->base_class = NULL;
+        ct->nifaces = 0;
+        return;
+    }
+    ct->class_state = 1;
+    int saved_cur = S->cur;
+    S->cur = module_of(S, d->loc.file);
+    ct->is_interface = d->u.class_.is_interface;
+    ct->is_abstract = d->is_abstract;
+    size_t cap = 0;
+    if (d->u.class_.base) {
+        Type *b = find_struct(S, d->u.class_.base);
+        Loc at = d->u.class_.base_loc;
+        if (!b) {
+            report_unknown_type(S, at, d->u.class_.base);
+        } else if (b->kind != TY_CLASS || b->decl->u.class_.is_interface) {
+            Diag *e = diag_start(DIAG_ERROR, "E0372", at, "`%s` can't be extended: it isn't a class", d->u.class_.base);
+            diag_label(e, b->kind == TY_CLASS ? "an interface" : "not a class");
+            if (b->kind == TY_CLASS) diag_help(e, "implement interfaces with `implements %s`", d->u.class_.base);
+            diag_end(e);
+        } else {
+            resolve_hierarchy(S, b);
+            if (b->class_state == 2 && ct->class_state == 1) {
+                ct->base_class = b;
+                for (size_t i = 0; i < b->nifaces; i++) add_iface(S, ct, b->ifaces[i], &cap);
+            }
+        }
+    }
+    for (size_t k = 0; k < d->u.class_.nifaces; k++) {
+        const char *name = d->u.class_.ifaces[k];
+        Loc at = d->u.class_.iface_locs[k];
+        Type *it = find_struct(S, name);
+        if (!it) {
+            report_unknown_type(S, at, name);
+            continue;
+        }
+        if (it->kind != TY_CLASS || !it->decl->u.class_.is_interface) {
+            Diag *e = diag_start(DIAG_ERROR, "E0372", at, "`%s` isn't an interface", name);
+            diag_label(e, ct->is_interface ? "interfaces can only extend interfaces" : "`implements` takes interfaces");
+            if (it->kind == TY_CLASS && !ct->is_interface) diag_help(e, "to inherit from a class, use `extends %s`", name);
+            diag_end(e);
+            continue;
+        }
+        resolve_hierarchy(S, it);
+        if (it->class_state != 2 || ct->class_state != 1) continue;
+        add_iface(S, ct, it, &cap);
+        for (size_t i = 0; i < it->nifaces; i++) add_iface(S, ct, it->ifaces[i], &cap);
+    }
+    const char *prefix = S->mods[S->cur]->prefix;
+    size_t n = strlen(prefix) + strlen(ct->name) + 16;
+    char *desc = arena_alloc(S->arena, n);
+    snprintf(desc, n, "w.%s.%s%s", ct->is_interface ? "iface" : "class", prefix, ct->name);
+    ct->desc_name = desc;
+    S->cur = saved_cur;
+    if (ct->class_state == 1) ct->class_state = 2;
+}
+
+/* The object's fields, laid out like a struct after the base class's
+ * fields (or after the descriptor pointer at offset 0). */
+static void layout_class(Sema *S, Type *ct) {
+    if (ct->fields || ct->is_interface) return;
+    const Decl *d = ct->decl;
+    Type *b = ct->base_class;
+    if (b) layout_class(S, b);
+    int saved_cur = S->cur;
+    S->cur = module_of(S, d->loc.file);
+    size_t n = d->u.class_.n + (b ? b->nfields : 0);
     ct->fields = arena_alloc(S->arena, (n ? n : 1) * sizeof(Field));
     ct->nfields = 0;
-    uint32_t offset = 0, align = 1;
-    for (size_t i = 0; i < n; i++) {
+    uint32_t offset = 8, align = 8;
+    if (b) {
+        for (size_t i = 0; i < b->nfields; i++) ct->fields[ct->nfields++] = b->fields[i];
+        offset = b->obj_size;
+        align = b->obj_align;
+    }
+    for (size_t i = 0; i < d->u.class_.n; i++) {
         const Decl *m = d->u.class_.members[i];
         if (m->kind != DECL_VAR) continue;
         const VarDecl *f = m->u.var;
@@ -3919,8 +4183,19 @@ static void layout_class(Sema *S, Type *ct) {
             diag_help(e, "use a global variable next to the class instead");
             diag_end(e);
         }
-        for (size_t j = 0; j < ct->nfields; j++)
-            if (strcmp(ct->fields[j].name, f->name) == 0) report_member_twice(ct, f->name, f->loc, ct->fields[j].loc);
+        for (size_t j = 0; j < ct->nfields; j++) {
+            if (strcmp(ct->fields[j].name, f->name) != 0) continue;
+            if (ct->fields[j].owner != ct) {
+                Diag *e = diag_start(DIAG_ERROR, "E0372", f->loc, "field `%s` is already declared in base class `%s`",
+                                     f->name, ct->fields[j].owner->name);
+                diag_label(e, "declared again here");
+                diag_span(e, ct->fields[j].loc, "inherited from here");
+                diag_note(e, "a subclass has all of its base class's fields; give this one a different name");
+                diag_end(e);
+            } else {
+                report_member_twice(ct, f->name, f->loc, ct->fields[j].loc);
+            }
+        }
         Type *ft = resolve_type(S, f->type, false);
         Type *inner = ft;
         while (inner->kind == TY_ARRAY) inner = inner->base;
@@ -3928,24 +4203,29 @@ static void layout_class(Sema *S, Type *ct) {
         uint32_t fa = ft->align ? ft->align : 1;
         offset = (offset + fa - 1) & ~(fa - 1);
         Field *field = &ct->fields[ct->nfields++];
+        memset(field, 0, sizeof *field);
         field->name = f->name;
         field->loc = f->loc;
         field->type = ft;
         field->offset = offset;
         field->init = f->init;
         field->is_private = m->vis == VIS_PRIVATE;
+        field->is_protected = m->vis == VIS_PROTECTED;
+        field->owner = ct;
         offset += ft->size;
         if (fa > align) align = fa;
     }
     ct->obj_align = align;
     ct->obj_size = (offset + align - 1) & ~(align - 1);
+    S->cur = saved_cur;
 }
 
 /* Default values are set by `new`, before __construct runs. They must be
- * constants. */
+ * constants. Each class checks its own; subclasses then copy them. */
 static void check_field_defaults(Sema *S, Type *ct) {
     for (size_t i = 0; i < ct->nfields; i++) {
         Field *f = &ct->fields[i];
+        if (f->owner != ct) continue;
         if (f->type->kind == TY_PHPARRAY && !f->init) {   /* array fields start empty */
             Expr *lit = empty_array_lit(S, f->loc);
             check(S, &lit, ty_phparray);
@@ -3982,27 +4262,73 @@ static void check_field_defaults(Sema *S, Type *ct) {
     }
 }
 
+static void inherit_defaults(Type *ct) {
+    if (!ct->base_class || ct->class_state == 3) return;
+    inherit_defaults(ct->base_class);
+    for (size_t i = 0; i < ct->base_class->nfields; i++) ct->fields[i].init = ct->base_class->fields[i].init;
+    ct->class_state = 3;
+}
+
+/* Does `m` have the same parameters as `base` (and a compatible result)? */
+static bool same_signature(const Symbol *m, const Symbol *base) {
+    if (m->nparams != base->nparams) return false;
+    for (size_t i = 1; i < m->nparams; i++)   /* [0] is `this` */
+        if (!type_equiv(m->param_types[i], base->param_types[i]) && !is_err(m->param_types[i])) return false;
+    if (type_equiv(m->type, base->type) || is_err(m->type)) return true;
+    return m->type->kind == TY_CLASS && base->type->kind == TY_CLASS && class_subtype(m->type, base->type);
+}
+
+/* E0372 */
+static void report_signature(const Symbol *m, const Symbol *base, const char *what) {
+    Diag *e = diag_start(DIAG_ERROR, "E0372", m->loc, "method `%s` doesn't match the %s it overrides", m->name, what);
+    diag_label(e, "different parameters or result");
+    diag_span(e, base->loc, "`%s::%s` is declared here", base->owner->name, base->name);
+    diag_note(e, "an override takes the same parameter types and returns the same type (or a subclass of it)");
+    diag_end(e);
+}
+
 static void declare_methods(Sema *S, Type *ct) {
+    if (ct->methods) return;
     const Decl *cd = ct->decl;
+    if (ct->base_class) declare_methods(S, ct->base_class);
+    for (size_t i = 0; i < ct->nifaces; i++) declare_methods(S, ct->ifaces[i]);
+    int saved_cur = S->cur;
+    S->cur = module_of(S, cd->loc.file);
     size_t n = cd->u.class_.n;
     ct->methods = arena_alloc(S->arena, (n ? n : 1) * sizeof(Symbol *));
     ct->nmethods = 0;
     for (size_t i = 0; i < n; i++) {
         Decl *d = cd->u.class_.members[i];
         if (d->kind != DECL_FUNC) continue;
-        Symbol *prev = find_method(ct, d->name);
+        Symbol *prev = NULL;
+        for (size_t j = 0; j < ct->nmethods; j++)
+            if (strcmp(ct->methods[j]->name, d->name) == 0) prev = ct->methods[j];
         if (prev) {
             report_member_twice(ct, d->name, d->name_loc, prev->loc);
             continue;
         }
-        for (size_t j = 0; j < ct->nfields; j++)
-            if (strcmp(ct->fields[j].name, d->name) == 0) report_member_twice(ct, d->name, d->name_loc, ct->fields[j].loc);
+        for (size_t j = 0; j < ct->nfields; j++) {
+            if (strcmp(ct->fields[j].name, d->name) != 0) continue;
+            if (ct->fields[j].owner == ct) {
+                report_member_twice(ct, d->name, d->name_loc, ct->fields[j].loc);
+                continue;
+            }
+            Diag *e = diag_start(DIAG_ERROR, "E0372", d->name_loc, "`%s` is already a field of base class `%s`", d->name,
+                                 ct->fields[j].owner->name);
+            diag_label(e, "a method with the same name");
+            diag_span(e, ct->fields[j].loc, "inherited from here");
+            diag_note(e, "a class's fields and methods share one namespace, including inherited ones");
+            diag_end(e);
+        }
 
         Symbol *fn = new_symbol(S, SYM_FUNC, d->name, d->name_loc);
         fn->decl = d;
         fn->owner = ct;
         fn->is_static = d->is_static;
         fn->is_private = d->vis == VIS_PRIVATE;
+        fn->is_protected = d->vis == VIS_PROTECTED;
+        fn->is_abstract = d->is_abstract;
+        fn->vindex = -1;
         d->sym = fn;
         const char *prefix = S->mods[fn->module]->prefix;
         size_t len = strlen(prefix) + strlen(ct->name) + strlen(d->name) + 4;
@@ -4012,6 +4338,20 @@ static void declare_methods(Sema *S, Type *ct) {
         if (d->u.func.variadic) {
             Diag *e = diag_start(DIAG_ERROR, "E0334", d->name_loc, "only `extern` functions can be variadic");
             diag_label(e, "method `%s` takes `...`", d->name);
+            diag_end(e);
+        }
+        if (d->is_abstract && !ct->is_abstract) {
+            Diag *e = diag_start(DIAG_ERROR, "E0372", d->name_loc, "class `%s` has an abstract method, so it must be abstract too",
+                                 ct->name);
+            diag_label(e, "abstract method");
+            diag_help(e, "declare it `abstract class %s`, or give `%s` a body", ct->name, d->name);
+            diag_end(e);
+            ct->is_abstract = true;   /* treat it as abstract from here on, to avoid follow-on errors */
+        }
+        if (d->is_abstract && (d->is_static || d->vis == VIS_PRIVATE)) {
+            Diag *e = diag_start(DIAG_ERROR, "E0372", d->name_loc, "an abstract method can't be %s",
+                                 d->is_static ? "static" : "private");
+            diag_label(e, "subclasses couldn't override it");
             diag_end(e);
         }
 
@@ -4051,13 +4391,108 @@ static void declare_methods(Sema *S, Type *ct) {
         ct->methods[ct->nmethods++] = fn;
         ptrvec_push(&S->funcs, fn);
     }
+
+    /* The vtable: the base class's, with overrides replacing entries and
+     * new virtual methods appended. Interfaces list all their methods. */
+    size_t cap = (ct->base_class ? ct->base_class->nvtable : 0) + ct->nmethods + 1;
+    for (size_t i = 0; ct->is_interface && i < ct->nifaces; i++) cap += ct->ifaces[i]->nvtable;
+    ct->vtable = arena_alloc(S->arena, cap * sizeof(Symbol *));
+    ct->nvtable = 0;
+    if (ct->is_interface) {
+        for (size_t i = 0; i < ct->nifaces; i++)
+            for (size_t k = 0; k < ct->ifaces[i]->decl->u.class_.n; k++) {
+                Decl *md = ct->ifaces[i]->decl->u.class_.members[k];
+                if (md->kind == DECL_FUNC && md->sym && !find_method(ct, md->name)) ct->vtable[ct->nvtable++] = md->sym;
+            }
+        for (size_t i = 0; i < ct->nmethods; i++) {
+            Symbol *m = ct->methods[i];
+            Symbol *inherited = find_method(ct, m->name);
+            if (inherited && !same_signature(m, inherited)) report_signature(m, inherited, "interface method");
+            if (!inherited) {
+                m->vindex = (int)ct->nvtable;
+                ct->vtable[ct->nvtable++] = m;
+            }
+        }
+        S->cur = saved_cur;
+        return;
+    }
+    if (ct->base_class)
+        for (size_t i = 0; i < ct->base_class->nvtable; i++) ct->vtable[ct->nvtable++] = ct->base_class->vtable[i];
+    for (size_t i = 0; i < ct->nmethods; i++) {
+        Symbol *m = ct->methods[i];
+        Symbol *base = ct->base_class ? find_method(ct->base_class, m->name) : NULL;
+        bool virt = !m->is_static && !m->is_private && strcmp(m->name, "__construct") != 0;
+        if (base && base->vindex >= 0) {
+            if (!virt) {
+                Diag *e = diag_start(DIAG_ERROR, "E0372", m->loc, "`%s` can't be %s: it overrides `%s::%s`", m->name,
+                                     m->is_static ? "static" : "private", base->owner->name, base->name);
+                diag_label(e, "here");
+                diag_span(e, base->loc, "declared here");
+                diag_end(e);
+                continue;
+            }
+            if (!same_signature(m, base)) report_signature(m, base, "method");
+            if (base->is_protected && !m->is_protected) { /* widening to public is fine */ }
+            if (!base->is_protected && m->is_protected) {
+                Diag *e = diag_start(DIAG_ERROR, "E0372", m->loc, "`%s` can't be protected: `%s::%s` is public", m->name,
+                                     base->owner->name, base->name);
+                diag_label(e, "less visible than what it overrides");
+                diag_end(e);
+            }
+            m->vindex = base->vindex;
+            ct->vtable[m->vindex] = m;
+        } else if (virt) {
+            m->vindex = (int)ct->nvtable;
+            ct->vtable[ct->nvtable++] = m;
+        }
+    }
+    if (!ct->is_abstract) {
+        for (size_t i = 0; i < ct->nvtable; i++) {
+            Symbol *m = ct->vtable[i];
+            if (!m->is_abstract) continue;
+            Diag *e = diag_start(DIAG_ERROR, "E0372", cd->name_loc, "class `%s` doesn't implement abstract method `%s`",
+                                 ct->name, m->name);
+            diag_label(e, "missing `%s`", m->name);
+            diag_span(e, m->loc, "declared abstract in `%s`", m->owner->name);
+            diag_help(e, "define `%s` in `%s`, or declare the class `abstract`", m->name, ct->name);
+            diag_end(e);
+        }
+    }
+    /* Interface tables: for each interface, the methods that implement it. */
+    ct->itables = arena_alloc(S->arena, (ct->nifaces ? ct->nifaces : 1) * sizeof(Symbol **));
+    for (size_t i = 0; i < ct->nifaces; i++) {
+        Type *it = ct->ifaces[i];
+        Symbol **tab = arena_alloc(S->arena, (it->nvtable ? it->nvtable : 1) * sizeof(Symbol *));
+        bool complete = true;
+        for (size_t k = 0; k < it->nvtable; k++) {
+            Symbol *want = it->vtable[k];
+            Symbol *have = find_method(ct, want->name);
+            if (have && (have->vindex < 0 || have->is_static)) have = NULL;
+            if (have && have->is_abstract && !ct->is_abstract) have = NULL;
+            if (have && !same_signature(have, want)) {
+                report_signature(have, want, "interface method");
+                have = NULL;
+                complete = false;
+            } else if (!have && !ct->is_abstract) {
+                Diag *e = diag_start(DIAG_ERROR, "E0372", cd->name_loc, "class `%s` doesn't implement `%s::%s`", ct->name,
+                                     it->name, want->name);
+                diag_label(e, "missing `%s`", want->name);
+                diag_span(e, want->loc, "required by interface `%s`", it->name);
+                diag_end(e);
+            }
+            if (!have) complete = false;
+            tab[k] = have;
+        }
+        ct->itables[i] = complete ? tab : NULL;
+    }
+    S->cur = saved_cur;
 }
 
 static void check_duplicates(Sema *S) {
     Module *m = S->mod;
     for (size_t i = 0; i < m->n; i++) {
         const Decl *d = m->decls[i];
-        bool is_type = d->kind == DECL_STRUCT || d->kind == DECL_ENUM;
+        bool is_type = d->kind == DECL_STRUCT || d->kind == DECL_ENUM || d->kind == DECL_CLASS;
         bool is_value = d->kind == DECL_FUNC || d->kind == DECL_VAR;
         if (!is_type && !is_value) continue;
         for (size_t j = 0; j < i; j++) {
@@ -4074,7 +4509,7 @@ static void check_duplicates(Sema *S) {
                 }
                 continue;
             }
-            bool same_space = is_type ? (prev->kind == DECL_STRUCT || prev->kind == DECL_ENUM)
+            bool same_space = is_type ? (prev->kind == DECL_STRUCT || prev->kind == DECL_ENUM || prev->kind == DECL_CLASS)
                                       : (prev->kind == DECL_FUNC || prev->kind == DECL_VAR);
             if (!same_space || strcmp(prev->name, d->name) != 0) continue;
             Diag *e = diag_start(DIAG_ERROR, "E0202", d->name_loc, "the name `%s` is defined more than once", d->name);
@@ -4233,6 +4668,10 @@ bool sema_check(Arena *arena, Module **mods, size_t nmods, Program *prog) {
         if (t->kind == TY_STRUCT) layout_struct(&S, t);
         else if (t->kind == TY_ENUM) check_enum_variants(&S, t);
     }
+    for (size_t i = 0; i < S.structs.len; i++) {   /* extends / implements */
+        Type *t = S.structs.items[i];
+        if (t->kind == TY_CLASS) resolve_hierarchy(&S, t);
+    }
     for (size_t i = 0; i < S.structs.len; i++) {   /* classes may hold structs and enums */
         Type *t = S.structs.items[i];
         S.cur = module_of(&S, t->decl->loc.file);
@@ -4255,6 +4694,10 @@ bool sema_check(Arena *arena, Module **mods, size_t nmods, Program *prog) {
         Type *t = S.structs.items[i];
         S.cur = module_of(&S, t->decl->loc.file);
         if (t->kind == TY_CLASS) check_field_defaults(&S, t);
+    }
+    for (size_t i = 0; i < S.structs.len; i++) {   /* subclasses take their base classes' defaults */
+        Type *t = S.structs.items[i];
+        if (t->kind == TY_CLASS) inherit_defaults(t);
     }
 
     S.cur = 0;
@@ -4293,6 +4736,20 @@ bool sema_check(Arena *arena, Module **mods, size_t nmods, Program *prog) {
         if (fn->decl->u.func.body) check_function_body(&S, fn);
     }
 
+    /* A virtual call can reach the method in any subclass of the receiver's type. */
+    for (size_t i = 0; i < S.vsites.len; i++) {
+        VSite *v = S.vsites.items[i];
+        for (size_t k = 0; k < S.structs.len; k++) {
+            Type *c = S.structs.items[k];
+            if (c->kind != TY_CLASS || c->is_interface || c->is_abstract || !class_subtype(c, v->t)) continue;
+            Symbol *impl = find_method(c, v->name);
+            if (!impl || impl->is_abstract) continue;
+            S.fn = v->fn;
+            add_callee(&S, impl);
+            S.fn = NULL;
+        }
+    }
+
     /* Only functions reachable from main (or exported) are compiled. */
     PtrVec work = {0};
     for (size_t i = 0; i < S.funcs.len; i++) {
@@ -4325,7 +4782,7 @@ bool sema_check(Arena *arena, Module **mods, size_t nmods, Program *prog) {
     if (diag_error_count() == errors_before) {
         for (size_t i = 0; i < S.funcs.len; i++) {
             Symbol *fn = S.funcs.items[i];
-            if (fn->reachable || fn->is_runtime || fn->is_extern || fn->name[0] == '_') continue;
+            if (fn->reachable || fn->is_abstract || fn->is_runtime || fn->is_extern || fn->name[0] == '_') continue;
             if (fn->module != 0) continue;   /* libraries may have functions a program doesn't use */
             Diag *d = fn->owner ? diag_start(DIAG_WARNING, "W0004", fn->loc, "method `%s::%s` is never used",
                                              fn->owner->name, fn->name)
@@ -4342,6 +4799,11 @@ bool sema_check(Arena *arena, Module **mods, size_t nmods, Program *prog) {
     prog->funcs = (Symbol **)ptrvec_finish(&S.funcs, arena, &prog->nfuncs);
     prog->globals = (Symbol **)ptrvec_finish(&S.globals, arena, &prog->nglobals);
     prog->enum_fns = (Symbol **)ptrvec_finish(&S.enum_fns, arena, &prog->nenum_fns);
+    PtrVec classes = {0};
+    for (size_t i = 0; i < S.structs.len; i++)
+        if (((Type *)S.structs.items[i])->kind == TY_CLASS) ptrvec_push(&classes, S.structs.items[i]);
+    prog->classes = (Type **)ptrvec_finish(&classes, arena, &prog->nclasses);
+    free(S.vsites.items);
     free(S.structs.items);
     free(S.locals.items);
     free(S.marks);

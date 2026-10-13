@@ -77,6 +77,7 @@ int string_obj_label(Gen *g, StrBuf bytes);   /* a `string` value {ptr, len} in 
 int add_panic(Gen *g, const Expr *at, const char *what);
 void emit_panic_call(Gen *g, int label);
 const Field *eu_field(const Type *t, const char *name);
+void emit_virtual_call(Gen *g, const char *self, int slot, const char *iface);
 
 /* opt_*.c: one function at -O1. */
 void gen_function_opt(Gen *g, const Symbol *fn);

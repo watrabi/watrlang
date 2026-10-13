@@ -1,0 +1,148 @@
+// Inheritance: extends, virtual methods, abstract classes, interfaces.
+interface Shape {
+    function area(): f64;
+    function name(): string;
+}
+
+interface Named {
+    function name(): string;
+}
+
+interface Solid extends Shape {
+    function volume(f64 depth): f64;
+}
+
+abstract class Base implements Shape, Named {
+    protected string label;
+    private int secret = 7;
+
+    public function __construct(string label) {
+        this->label = label;
+    }
+
+    public function name(): string {
+        return this->label;
+    }
+
+    abstract public function area(): f64;
+
+    public function describe(): string {
+        return "{this->name()} with area {this->area()}";   // virtual calls
+    }
+
+    protected function peek(): int {
+        return this->secret;
+    }
+
+    public function __toString(): string {
+        return "<" . this->name() . ">";
+    }
+}
+
+class Circle extends Base implements Solid {
+    public f64 r;
+
+    public function __construct(f64 r) {
+        parent::__construct("circle");
+        this->r = r;
+    }
+
+    public function area(): f64 {
+        return 3.0 * this->r * this->r;
+    }
+
+    public function volume(f64 depth): f64 {
+        return this->area() * depth;
+    }
+}
+
+class Rect extends Base {
+    public f64 w;
+    public f64 h;
+
+    public function __construct(f64 w, f64 h) {
+        parent::__construct("rect");
+        this->w = w;
+        this->h = h;
+    }
+
+    public function area(): f64 {
+        return this->w * this->h;
+    }
+
+    public function name(): string {
+        return "big " . parent::name();   // override that calls the base version
+    }
+
+    public function revealed(): int {
+        return this->peek() * 6;          // protected member of the base class
+    }
+}
+
+class Square extends Rect {
+    public function __construct(f64 side) {
+        parent::__construct(side, side);
+        this->label = "square";
+    }
+
+    public function name(): string {
+        return "square!";
+    }
+}
+
+class Counter {
+    public int n;
+}
+
+class LoudCounter extends Counter {
+    public function bump(): LoudCounter {
+        this->n += 10;
+        return this;
+    }
+}
+
+function total(Shape* shapes, int n): f64 {
+    f64 sum = 0.0;
+    for (int i = 0; i < n; i++) {
+        sum += shapes[i]->area();     // through the interface
+    }
+    return sum;
+}
+
+function main(): int {
+    Circle c = new Circle(2.0);
+    Rect r = new Rect(3.0, 4.0);
+    Square sq = new Square(5.0);
+    Base[3] all = [c, r, sq];
+    foreach (all as b) {
+        echo b->describe(), "\n";
+    }
+    Shape[3] shapes = [c, r, sq];
+    echo "total area: ", total(&shapes[0], 3), "\n";
+    Named n = sq;
+    echo "named: ", n->name(), ", volume: ", c->volume(2.0), "\n";
+    Solid solid = c;
+    echo "solid: ", solid->name(), " ", solid->volume(1.0), "\n";
+    echo "printed: ", r, " ", sq, "\n";
+    echo "secret: ", r->revealed(), "\n";
+
+    echo c instanceof Circle, " ", c instanceof Base, " ", c instanceof Shape, " ", c instanceof Solid, "\n";
+    Base b = sq;
+    echo b instanceof Rect, " ", b instanceof Circle, " ", b instanceof Named, " ", r instanceof Solid, "\n";
+    Rect back = b as Rect;
+    echo "downcast: ", back->w, " ", (shapes[0] as Circle)->r, "\n";
+    Base nothing = null;
+    echo nothing instanceof Base, " ", (nothing as Rect) == null, "\n";
+
+    mixed m = sq;
+    echo "mixed: ", m, " ", m instanceof Rect, " ", (m as Shape)->area(), "\n";
+
+    LoudCounter lc = new LoudCounter;
+    lc->bump()->bump();
+    Counter plain = lc;
+    echo "counter: ", plain->n, "\n";
+
+    Base wrong = c;
+    echo (wrong as Rect)->w, "\n";   // panics: it's a Circle
+    return 0;
+}

@@ -47,4 +47,11 @@ function load() -> string!IoError
   return (try (call read_all f))
 function types(const u8* s, int[4] a, int[] sl, Node** n, u8[N] buf, Vec2[] vs) -> void
   (empty)
+interface Pet extends Named, Fed
+  public abstract function name() -> string
+abstract class Animal extends Thing implements Pet
+  protected field string label
+  protected abstract function speak() -> string
+  public static function make() -> Animal
+    return null
 exit: 0

@@ -307,6 +307,15 @@ static const Explanation explanations[] = {
      "`#[packed]` applies to structs; `#[align(N)]` to structs and global\n"
      "variables. They can be combined: `#[packed, align(8)]`."},
 
+    {"E0120",
+     "Something is wrong in a class or interface header or body:\n"
+     "\n"
+     "- a class extends more than one class (use interfaces for the rest),\n"
+     "- an interface contains something other than method declarations.\n"
+     "\n"
+     "    class Dog extends Animal implements Pet, Named { ... }\n"
+     "    interface Pet { function name(): string; }"},
+
     {"E0200",
      "A variable name was used, but no variable with that name is in scope.\n"
      "\n"
@@ -1043,6 +1052,45 @@ static const Explanation explanations[] = {
      "`inout` need something assignable. Each register can be one input and\n"
      "one output. Callee-saved registers (rbx, r12-r15) that the asm uses\n"
      "are saved and restored automatically."},
+
+    {"E0372",
+     "A problem with a class hierarchy:\n"
+     "\n"
+     "- `extends` names something that isn't a class, or `implements`\n"
+     "  something that isn't an interface,\n"
+     "- classes inherit from each other in a circle,\n"
+     "- a subclass declares a field its base class already has,\n"
+     "- a method overrides one with different parameter types or result,\n"
+     "  or is static or private while the one it overrides isn't,\n"
+     "- a non-abstract class leaves an abstract method or an interface\n"
+     "  method unimplemented.\n"
+     "\n"
+     "    abstract class Animal { abstract public function speak(): string; }\n"
+     "    class Dog extends Animal {\n"
+     "        public function speak(): string { return \"woof\"; }\n"
+     "    }\n"
+     "\n"
+     "Methods are virtual unless they're private or static: calling one on\n"
+     "an `Animal` runs the subclass's version. An override may return a\n"
+     "subclass of the original result type."},
+
+    {"E0373",
+     "Abstract classes and interfaces only describe what their subclasses\n"
+     "provide, so there are no objects of them. Create an object of a\n"
+     "concrete class and use it where an `Animal` (or `Shape`) is expected:\n"
+     "\n"
+     "    Animal a = new Dog();"},
+
+    {"E0374",
+     "`parent::method(...)` calls the base class's version of a method on\n"
+     "`this`, usually from an override or a constructor:\n"
+     "\n"
+     "    public function __construct(f64 r) {\n"
+     "        parent::__construct(\"circle\");\n"
+     "    }\n"
+     "\n"
+     "It only works inside a (non-static) method of a class that extends\n"
+     "another, and the base version must have a body."},
 
     {"E0900",
      "This feature is part of watrlang's design but isn't implemented yet.\n"

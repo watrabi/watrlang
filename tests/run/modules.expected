@@ -4,4 +4,5 @@ sides: 4, calls: 1, secret: 42
 upper: MODS, q.x: 3, p.y: 0
 shapes: Square 5 Pentagon
 circles: 12 3 1
+disc: 4 true
 exit: 0

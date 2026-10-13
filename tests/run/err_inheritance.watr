@@ -1,0 +1,44 @@
+interface Shape {
+    function area(): f64;
+}
+
+class Thing {
+    protected int hidden;
+    public int x;
+    public function f(int a): int { return a; }
+    public function g(): void {}
+}
+
+class A extends B {}
+class B extends A {}
+
+class NotIface implements Thing {}
+class NotClass extends Shape {}
+
+abstract class Animal {
+    abstract public function speak(): string;
+}
+
+class Dog extends Animal {}
+
+class Square implements Shape {}
+
+class Wrong extends Thing {
+    public int x;
+    public function f(string _a): int { return 1; }
+    private function g(): void {}
+}
+
+class Concrete {
+    abstract public function nope(): void;
+}
+
+function main(): int {
+    Animal a = new Animal();
+    Shape s = new Shape();
+    Thing t = new Thing();
+    echo t->hidden, "\n";
+    Dog d = t as Dog;
+    parent::f(1);
+    return 0;
+}

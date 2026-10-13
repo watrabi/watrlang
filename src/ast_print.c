@@ -176,8 +176,9 @@ static void print_expr(FILE *out, const Expr *e) {
         print_expr(out, e->u.member.object);
         fprintf(out, " %s)", e->u.member.name);
         break;
+    case EXPR_INSTANCEOF:
     case EXPR_CAST:
-        fputs("(as ", out);
+        fputs(e->kind == EXPR_CAST ? "(as " : "(instanceof ", out);
         print_expr(out, e->u.cast.expr);
         fputc(' ', out);
         print_type(out, e->u.cast.type);
@@ -386,6 +387,8 @@ static void print_decl(FILE *out, const Decl *d, int indent) {
     indent_to(out, indent);
     if (d->vis == VIS_PUBLIC) fputs("public ", out);
     if (d->vis == VIS_PRIVATE) fputs("private ", out);
+    if (d->vis == VIS_PROTECTED) fputs("protected ", out);
+    if (d->is_abstract && d->kind == DECL_FUNC) fputs("abstract ", out);
     if (d->is_static) fputs("static ", out);
     if (d->is_export) fputs("export ", out);
     if (d->is_extern) fputs("extern ", out);
@@ -421,7 +424,12 @@ static void print_decl(FILE *out, const Decl *d, int indent) {
         }
         break;
     case DECL_CLASS:
-        fprintf(out, "class %s\n", d->name);
+        fprintf(out, "%s%s %s", d->is_abstract && !d->u.class_.is_interface ? "abstract " : "",
+                d->u.class_.is_interface ? "interface" : "class", d->name);
+        if (d->u.class_.base) fprintf(out, " extends %s", d->u.class_.base);
+        for (size_t i = 0; i < d->u.class_.nifaces; i++)
+            fprintf(out, "%s%s", i ? ", " : d->u.class_.is_interface ? " extends " : " implements ", d->u.class_.ifaces[i]);
+        fputc('\n', out);
         for (size_t i = 0; i < d->u.class_.n; i++) print_decl(out, d->u.class_.members[i], indent + 1);
         break;
     case DECL_ENUM:

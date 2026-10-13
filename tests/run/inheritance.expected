@@ -1,0 +1,16 @@
+circle with area 12
+big rect with area 12
+square! with area 25
+total area: 49
+named: square!, volume: 24
+solid: circle 12
+printed: <big rect> <square!>
+secret: 42
+true true true true
+true false true false
+downcast: 5 2
+false true
+mixed: Square true 25
+counter: 20
+panic at tests/run/inheritance.watr:146:11: expected Rect, found Circle
+exit: 101

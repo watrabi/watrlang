@@ -27,6 +27,7 @@ typedef struct {
     bool panic;
     bool no_as;         /* inside `foreach (expr as ...)`, `as` ends the expression */
     bool in_interp;     /* sub-parser for a "{...}" inside a string */
+    bool no_body_ok;    /* abstract and interface methods end with `;` */
     int depth;          /* recursion depth, to fail cleanly instead of overflowing the stack */
 } Parser;
 
@@ -371,7 +372,7 @@ static Token *tokenize(Lexer *lx, size_t *out_n) {
 static Expr *parse_interp_expr(Parser *p, size_t start, size_t end, uint32_t line, uint32_t col) {
     Lexer lx;
     lexer_init_range(&lx, p->file, start, end, line, col);
-    Parser sub = {p->arena, p->file, NULL, 0, 0, false, false, true, p->depth};
+    Parser sub = {.arena = p->arena, .file = p->file, .in_interp = true, .depth = p->depth};
     sub.toks = tokenize(&lx, &sub.ntoks);
 
     /* Errors stay inside the string: the outer parser is still in sync. */
@@ -971,6 +972,7 @@ static int infix_bp(Parser *p, TokenKind k) {
     case TOK_PLUS: case TOK_MINUS: return BP_ADD;
     case TOK_STAR: case TOK_SLASH: case TOK_PERCENT: return BP_MUL;
     case TOK_KW_AS:      return p->no_as ? BP_NONE : BP_AS;
+    case TOK_KW_INSTANCEOF: return BP_AS;
     default:             return BP_NONE;
     }
 }
@@ -1076,9 +1078,10 @@ static Expr *parse_expr_bp_inner(Parser *p, int min_bp) {
             e->u.binary.rhs = rhs;
             lhs = e;
         } else if (bp == BP_AS) {
+            bool inst = p->toks[p->pos - 1].kind == TOK_KW_INSTANCEOF;
             TypeExpr *ty = parse_type(p, true);
             if (!ty) return NULL;
-            Expr *e = new_expr(p, EXPR_CAST, span_to_prev(p, lhs->loc));
+            Expr *e = new_expr(p, inst ? EXPR_INSTANCEOF : EXPR_CAST, span_to_prev(p, lhs->loc));
             e->u.cast.expr = lhs;
             e->u.cast.type = ty;
             lhs = e;
@@ -1391,6 +1394,7 @@ static Stmt *parse_stmt_inner(Parser *p) {
         return parse_asm(p);
 
     case TOK_KW_FUNCTION: case TOK_KW_STRUCT: case TOK_KW_CLASS: case TOK_KW_ENUM:
+    case TOK_KW_INTERFACE: case TOK_KW_ABSTRACT:
     case TOK_KW_IMPORT: case TOK_KW_EXPORT: case TOK_KW_EXTERN:
         {
             Diag *d = perr_tok(p, "E0107", t, "`%s` is only allowed at the top level of a file",
@@ -1503,7 +1507,9 @@ static Decl *parse_function(Parser *p, Loc start, bool is_export, bool is_extern
         if (!d->u.func.ret) return NULL;
     }
 
-    if (check(p, TOK_SEMI)) {
+    if (check(p, TOK_SEMI) && p->no_body_ok) {
+        advance(p);
+    } else if (check(p, TOK_SEMI)) {
         if (!is_extern) {
             Diag *e = perr_tok(p, "E0111", cur(p), "function `%s` has no body", d->name);
             diag_label(e, "expected `{` and a body");
@@ -1576,27 +1582,112 @@ static Decl *parse_struct(Parser *p, Loc start) {
     return d;
 }
 
-static Decl *parse_class(Parser *p, Loc start) {
-    advance(p); /* class */
-    Token *name = expect_ident(p, "a class name");
-    if (!name || !expect(p, TOK_LBRACE, "after class name")) return NULL;
+/* A list of names after `extends` / `implements`, possibly qualified (geo::Shape). */
+static bool parse_type_names(Parser *p, PtrVec *names, PtrVec *locs) {
+    do {
+        Token *t = expect_ident(p, "a class or interface name");
+        if (!t) return false;
+        const char *name = tok_name(p, t);
+        Loc loc = t->loc;
+        if (check(p, TOK_COLONCOLON) && peek_at(p, 1)->kind == TOK_IDENT) {
+            advance(p);
+            Token *m = advance(p);
+            size_t n = strlen(name) + m->loc.len + 3;
+            char *full = arena_alloc(p->arena, n);
+            snprintf(full, n, "%s::%.*s", name, (int)m->loc.len, m->start);
+            name = full;
+            loc = span_to_prev(p, t->loc);
+        }
+        ptrvec_push(names, (void *)name);
+        Loc *lp = ARENA_NEW(p->arena, Loc);
+        *lp = loc;
+        ptrvec_push(locs, lp);
+    } while (accept(p, TOK_COMMA));
+    return true;
+}
+
+/* [abstract] class Name [extends Base] [implements I, J] { members }
+ * interface Name [extends I, J] { function f(...): T; ... } */
+static Decl *parse_class(Parser *p, Loc start, bool is_abstract) {
+    bool is_interface = check(p, TOK_KW_INTERFACE);
+    advance(p); /* class / interface */
+    Token *name = expect_ident(p, is_interface ? "an interface name" : "a class name");
+    if (!name) return NULL;
     Decl *d = new_decl(p, DECL_CLASS, start);
     d->name = tok_name(p, name);
     d->name_loc = name->loc;
+    d->is_abstract = is_abstract || is_interface;
+    d->u.class_.is_interface = is_interface;
+    PtrVec ifaces = {0}, iface_locs = {0};
+    if (accept(p, TOK_KW_EXTENDS)) {
+        if (is_interface) {
+            if (!parse_type_names(p, &ifaces, &iface_locs)) return NULL;
+        } else {
+            PtrVec one = {0}, one_loc = {0};
+            if (!parse_type_names(p, &one, &one_loc)) return NULL;
+            d->u.class_.base = one.items[0];
+            d->u.class_.base_loc = *(Loc *)one_loc.items[0];
+            if (one.len > 1) {
+                Diag *e = perr(p, "E0120", *(Loc *)one_loc.items[1], "a class can extend only one class");
+                diag_label(e, "second base class");
+                diag_help(e, "use `implements` for interfaces; a class can implement any number of them");
+                diag_end(e);
+            }
+            free(one.items);
+            free(one_loc.items);
+            if (p->panic) return NULL;
+        }
+    }
+    if (!is_interface && accept(p, TOK_KW_IMPLEMENTS) && !parse_type_names(p, &ifaces, &iface_locs)) return NULL;
+    d->u.class_.ifaces = (const char **)ptrvec_finish(&ifaces, p->arena, &d->u.class_.nifaces);
+    size_t nl;
+    Loc **locs = (Loc **)ptrvec_finish(&iface_locs, p->arena, &nl);
+    d->u.class_.iface_locs = arena_alloc(p->arena, (nl ? nl : 1) * sizeof(Loc));
+    for (size_t i = 0; i < nl; i++) d->u.class_.iface_locs[i] = *locs[i];
+    if (!expect(p, TOK_LBRACE, is_interface ? "after interface name" : "after class name")) return NULL;
 
     PtrVec members = {0};
     while (!check(p, TOK_RBRACE) && !check(p, TOK_EOF)) {
         size_t before = p->pos;
         Loc mstart = cur(p)->loc;
         Visibility vis = VIS_DEFAULT;
-        if (accept(p, TOK_KW_PUBLIC)) vis = VIS_PUBLIC;
-        else if (accept(p, TOK_KW_PRIVATE)) vis = VIS_PRIVATE;
-        bool is_static = accept(p, TOK_KW_STATIC);
+        bool is_static = false, m_abstract = false;
+        for (;;) {   /* modifiers, in any order */
+            if (accept(p, TOK_KW_PUBLIC)) vis = VIS_PUBLIC;
+            else if (accept(p, TOK_KW_PRIVATE)) vis = VIS_PRIVATE;
+            else if (accept(p, TOK_KW_PROTECTED)) vis = VIS_PROTECTED;
+            else if (accept(p, TOK_KW_STATIC)) is_static = true;
+            else if (accept(p, TOK_KW_ABSTRACT)) m_abstract = true;
+            else break;
+        }
 
         Decl *m = NULL;
         if (check(p, TOK_KW_FUNCTION)) {
+            bool saved = p->no_body_ok;
+            p->no_body_ok = m_abstract || is_interface;
             m = parse_function(p, mstart, false, false);
-            if (m) m->is_static = is_static;
+            p->no_body_ok = saved;
+            if (m) {
+                m->is_abstract = m_abstract || is_interface;
+                if (m->is_abstract && m->u.func.body) {
+                    Diag *e = perr(p, "E0111", m->name_loc, "%s method `%s` can't have a body",
+                                   is_interface ? "interface" : "abstract", m->name);
+                    diag_label(e, "has a body");
+                    diag_note(e, "%s", is_interface ? "interfaces only list methods; classes that implement them define them"
+                                                    : "an abstract method is defined by the classes that extend this one");
+                    diag_end(e);
+                } else if (!m->is_abstract && !m->u.func.body) {
+                    Diag *e = perr(p, "E0111", m->name_loc, "method `%s` has no body", m->name);
+                    diag_label(e, "expected `{` and a body");
+                    diag_help(e, "to leave it to subclasses, declare it `abstract`");
+                    diag_end(e);
+                }
+            }
+        } else if (is_interface) {
+            Diag *e = perr_tok(p, "E0120", cur(p), "interfaces can only contain methods");
+            diag_label(e, "not a method");
+            diag_note(e, "put fields in the classes that implement the interface");
+            diag_end(e);
         } else {
             VarDecl *v = parse_var_decl(p);
             if (v) {
@@ -1608,7 +1699,7 @@ static Decl *parse_class(Parser *p, Loc start) {
             }
         }
         if (m) {
-            m->vis = vis;
+            m->vis = is_interface ? VIS_PUBLIC : vis;
             m->is_static = is_static;
             ptrvec_push(&members, m);
         }
@@ -1616,7 +1707,7 @@ static Decl *parse_class(Parser *p, Loc start) {
         if (p->pos == before) advance(p);
     }
     d->u.class_.members = ptrvec_finish(&members, p->arena, &d->u.class_.n);
-    expect(p, TOK_RBRACE, "to close class");
+    expect(p, TOK_RBRACE, is_interface ? "to close interface" : "to close class");
     d->loc = span_to_prev(p, start);
     return d;
 }
@@ -1772,6 +1863,8 @@ static Decl *parse_decl_inner(Parser *p, Loc start) {
         return parse_function(p, start, is_export, is_extern);
     case TOK_KW_STRUCT:
     case TOK_KW_CLASS:
+    case TOK_KW_INTERFACE:
+    case TOK_KW_ABSTRACT:
     case TOK_KW_ENUM:
         if (is_export || is_extern) {
             Diag *e = perr(p, "E0112", start, "`%s` only applies to functions and variables",
@@ -1783,7 +1876,17 @@ static Decl *parse_decl_inner(Parser *p, Loc start) {
             return NULL;
         }
         if (check(p, TOK_KW_STRUCT)) return parse_struct(p, start);
-        if (check(p, TOK_KW_CLASS)) return parse_class(p, start);
+        if (check(p, TOK_KW_CLASS) || check(p, TOK_KW_INTERFACE)) return parse_class(p, start, false);
+        if (accept(p, TOK_KW_ABSTRACT)) {
+            if (!check(p, TOK_KW_CLASS)) {
+                Diag *e = perr_tok(p, "E0117", cur(p), "expected `class` after `abstract`, found %s", describe(p, cur(p)));
+                diag_label(e, "expected `class`");
+                diag_note(e, "inside a class, methods can be abstract too: `abstract function f(): int;`");
+                diag_end(e);
+                return NULL;
+            }
+            return parse_class(p, start, true);
+        }
         return parse_enum(p, start);
     default:
         break;
@@ -1814,7 +1917,7 @@ static Decl *parse_decl_inner(Parser *p, Loc start) {
 Module *parse_file(Arena *arena, const SrcFile *file) {
     Lexer lx;
     lexer_init(&lx, file);
-    Parser p = {arena, file, NULL, 0, 0, false, false, false, 0};
+    Parser p = {.arena = arena, .file = file};
     p.toks = tokenize(&lx, &p.ntoks);
 
     Module *m = ARENA_NEW(arena, Module);

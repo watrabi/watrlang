@@ -273,6 +273,8 @@ static int call_with(Fn *f, const char *name, bool variadic, int *args, const Ty
     c->types = types;
     c->ret = ret;
     c->ret_slot = -1;
+    c->vslot = 0;
+    c->iface = NULL;
     Ins *in = ir_emit(f, I_CALL);
     in->call = c;
     if (ret->kind == TY_VOID) return -1;
@@ -326,7 +328,16 @@ static int lower_call(Fn *f, const Expr *e) {
         }
         args[i] = v;
     }
-    return call_with(f, fn->asm_name, fn->is_variadic, args, types, n, fn->type);
+    int d = call_with(f, fn->asm_name, fn->is_variadic, args, types, n, fn->type);
+    if (e->vslot) {   /* the call is the last instruction emitted */
+        for (size_t i = f->n; i-- > 0;)
+            if (f->code[i].op == I_CALL) {
+                f->code[i].call->vslot = e->vslot;
+                f->code[i].call->iface = e->viface ? e->viface->desc_name : NULL;
+                break;
+            }
+    }
+    return d;
 }
 
 /* ---- expressions -------------------------------------------------------------- */
@@ -767,6 +778,10 @@ static int lv(Fn *f, const Expr *e) {
         int size = konst(f, ct->obj_size ? ct->obj_size : 1);
         int obj = call_simple(f, e->u.new_.alloc, &size, 1);   /* zeroed memory */
         e->u.new_.tmp->vreg = obj;
+        LVal desc = lv_mem(-1);   /* the object's class */
+        desc.sym = ct->desc_name;
+        LVal head = lv_mem(obj);
+        store(f, &head, ty_u64, lea(f, &desc));
         for (size_t i = 0; i < ct->nfields; i++) {
             const Field *fl = &ct->fields[i];
             if (!fl->init) continue;

@@ -336,8 +336,27 @@ function outb(u16 port, u8 val): void {
   - `==`/`!=` compare identity. Using a field or calling a method through
     `null` panics with the location, instead of crashing.
   - Objects live on the garbage-collected heap (milestone 11). Code that
-    manages memory by hand uses structs and `alloc`/`free`. Inheritance
-    and interfaces are still deferred.
+    manages memory by hand uses structs and `alloc`/`free`.
+- **Inheritance (milestone 16):** `class B extends A implements I, J`,
+  single inheritance plus interfaces (`interface I extends J`), as in PHP.
+  - Methods are virtual unless private or static (constructors aren't
+    dispatched). An override takes the same parameter types and returns
+    the same type or a subclass of it; `parent::m(...)` calls the base
+    version, and `parent::__construct(...)` the base constructor.
+    Constructors are inherited.
+  - `abstract class` and `abstract function f(): T;` (no body); interfaces
+    list methods only. A concrete class must implement every abstract and
+    interface method, and `new` refuses abstract classes and interfaces.
+  - `protected` members are visible in the class and its subclasses.
+  - A subclass converts to its base classes and interfaces implicitly;
+    `x as Sub` downcasts, checked at run time (null passes); `x instanceof
+    C` tests (false for null) and also works on `mixed`.
+  - Every object starts with a pointer to its class descriptor: the parent
+    descriptor, the class name, a list of (interface, method table) pairs,
+    then the vtable. Fields follow, base classes' first. A virtual call
+    loads the method from the vtable; an interface call finds the
+    interface's table in the list first. Sema records every virtual call,
+    so each override that could run is compiled.
 - **Arrays and `mixed` (milestone 12):**
   - `mixed` (PHP's name for "any type") holds null, a bool, an int, a
     float, a string, an array or an object, with a tag saying which. It's
@@ -554,12 +573,13 @@ Each milestone ends with tests passing and something you can run.
 | 13 | Freestanding           | `--freestanding`, inline asm operands, `#[packed]`, `#[align(N)]`, `-c`, `-T` |
 | 14 | **Boot a kernel**      | multiboot kernel in QEMU prints to VGA, written in watrlang (`examples/kernel`) |
 | 15 | Optimizer              | IR + register allocation (`-O1`, the default)             |
+| 16 | Inheritance            | `extends`, interfaces, `abstract`, `protected`, `parent::`, `instanceof` |
 | ∞  | Self-hosting           | watrc rewritten in watrlang                               |
 
 ## 6. Settled after the first pass
 
 - **Generics:** not in v1. Revisit after M12.
-- **Inheritance / interfaces:** not in v1. Revisit after M12.
+- **Inheritance / interfaces:** single inheritance and interfaces, in M16.
 - **Integer division:** C-style. `/` on two ints truncates toward zero;
   `%` takes the sign of the left operand. Dividing by zero is a CPU fault
   (`#DE`), same as C on x86. So is the one overflowing division,

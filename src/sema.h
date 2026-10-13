@@ -46,6 +46,9 @@ typedef struct Symbol {
     bool is_private;            /* `private`: invisible to importing modules */
     Type *enum_type;            /* generated enum-name functions: the enum (decl is NULL) */
     Type *owner;                /* methods: their class */
+    int vindex;                 /* virtual methods: vtable slot (interface methods: position); -1 otherwise */
+    bool is_abstract;           /* abstract and interface methods: no body */
+    bool is_protected;
     bool is_static;             /* methods without `this` */
     struct Symbol *this_param;  /* methods: the implicit first parameter */
 
@@ -75,6 +78,8 @@ typedef struct {
     Symbol **globals;
     size_t nglobals;
     Symbol **enum_fns;          /* generated functions that turn an enum value into its name */
+    Type **classes;             /* classes and interfaces, for their runtime descriptors */
+    size_t nclasses;
     size_t nenum_fns;
     bool needs_libc;            /* uses extern C symbols or prints floats: link with the C runtime */
     bool freestanding;          /* input: --freestanding (no libc, no heap, no entry point) */

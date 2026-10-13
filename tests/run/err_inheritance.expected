@@ -1,0 +1,132 @@
+error[E0372]: `A` inherits from itself
+  --> tests/run/err_inheritance.watr:12:7
+   |
+12 | class A extends B {}
+   |       ^ the inheritance goes around in a circle
+
+error[E0372]: `Thing` isn't an interface
+  --> tests/run/err_inheritance.watr:15:27
+   |
+15 | class NotIface implements Thing {}
+   |                           ^^^^^ `implements` takes interfaces
+   |
+   = help: to inherit from a class, use `extends Thing`
+
+error[E0372]: `Shape` can't be extended: it isn't a class
+  --> tests/run/err_inheritance.watr:16:24
+   |
+16 | class NotClass extends Shape {}
+   |                        ^^^^^ an interface
+   |
+   = help: implement interfaces with `implements Shape`
+
+error[E0372]: field `x` is already declared in base class `Thing`
+  --> tests/run/err_inheritance.watr:27:16
+   |
+ 7 |     public int x;
+   |                - inherited from here
+...
+27 |     public int x;
+   |                ^ declared again here
+   |
+   = note: a subclass has all of its base class's fields; give this one a different name
+
+error[E0372]: class `Dog` doesn't implement abstract method `speak`
+  --> tests/run/err_inheritance.watr:22:7
+   |
+19 |     abstract public function speak(): string;
+   |                              ----- declared abstract in `Animal`
+...
+22 | class Dog extends Animal {}
+   |       ^^^ missing `speak`
+   |
+   = help: define `speak` in `Dog`, or declare the class `abstract`
+
+error[E0372]: class `Square` doesn't implement `Shape::area`
+  --> tests/run/err_inheritance.watr:24:7
+   |
+ 2 |     function area(): f64;
+   |              ---- required by interface `Shape`
+...
+24 | class Square implements Shape {}
+   |       ^^^^^^ missing `area`
+
+error[E0372]: method `f` doesn't match the method it overrides
+  --> tests/run/err_inheritance.watr:28:21
+   |
+ 8 |     public function f(int a): int { return a; }
+   |                     - `Thing::f` is declared here
+...
+28 |     public function f(string _a): int { return 1; }
+   |                     ^ different parameters or result
+   |
+   = note: an override takes the same parameter types and returns the same type (or a subclass of it)
+
+error[E0372]: `g` can't be private: it overrides `Thing::g`
+  --> tests/run/err_inheritance.watr:29:22
+   |
+ 9 |     public function g(): void {}
+   |                     - declared here
+...
+29 |     private function g(): void {}
+   |                      ^ here
+
+error[E0372]: class `Concrete` has an abstract method, so it must be abstract too
+  --> tests/run/err_inheritance.watr:33:30
+   |
+33 |     abstract public function nope(): void;
+   |                              ^^^^ abstract method
+   |
+   = help: declare it `abstract class Concrete`, or give `nope` a body
+
+error[E0373]: can't create an object of abstract class `Animal`
+  --> tests/run/err_inheritance.watr:37:20
+   |
+18 | abstract class Animal {
+   |                ------ declared `abstract` here
+...
+37 |     Animal a = new Animal();
+   |                    ^^^^^^ abstract
+   |
+   = help: create an object of a class that extends it
+
+error[E0373]: can't create an object of interface `Shape`
+  --> tests/run/err_inheritance.watr:38:19
+   |
+ 1 | interface Shape {
+   |           ----- declared as an interface here
+...
+38 |     Shape s = new Shape();
+   |                   ^^^^^ an interface only describes methods
+   |
+   = help: create an object of a class that implements it
+
+error[E0362]: field `hidden` of class `Thing` is protected
+  --> tests/run/err_inheritance.watr:40:13
+   |
+ 6 |     protected int hidden;
+   |                   ------ declared `protected` here
+...
+40 |     echo t->hidden, "\n";
+   |             ^^^^^^ protected field
+   |
+   = note: protected members can only be used by the class and its subclasses
+
+error[E0313]: can't cast `Thing` to `Dog`
+  --> tests/run/err_inheritance.watr:41:13
+   |
+41 |     Dog d = t as Dog;
+   |             ^^^^^^^^ invalid cast
+   |
+   = note: `Thing` and `Dog` aren't related: neither class extends the other
+
+error[E0374]: `parent::` needs a method of a class that extends another
+  --> tests/run/err_inheritance.watr:42:5
+   |
+42 |     parent::f(1);
+   |     ^^^^^^^^^ not inside a method
+
+error: could not compile `tests/run/err_inheritance.watr` due to 14 previous errors
+Some errors have detailed explanations: E0372, E0373, E0362, E0313, E0374.
+For more information about an error, try `watrc --explain E0372`.
+compile failed: 1

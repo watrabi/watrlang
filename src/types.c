@@ -50,8 +50,8 @@ void types_init(void) {
     ty_mixed = mk(17, TY_MIXED, "mixed", 16, false);
     ty_mixed->align = 8;
     /* The runtime reads a mixed value's parts as `m->tag` and `m->bits`. */
-    mixed_fields[0] = (Field){"tag", {0}, ty_u64, 0, NULL, false};
-    mixed_fields[1] = (Field){"bits", {0}, ty_u64, 8, NULL, false};
+    mixed_fields[0] = (Field){.name = "tag", .type = ty_u64, .offset = 0};
+    mixed_fields[1] = (Field){.name = "bits", .type = ty_u64, .offset = 8};
     ty_mixed->fields = mixed_fields;
     ty_mixed->nfields = 2;
     ty_phparray = mk(18, TY_PHPARRAY, "array", 8, false);
@@ -247,8 +247,23 @@ bool int_widens(const Type *from, const Type *to) {
     return false;  /* signed -> unsigned can't hold negatives */
 }
 
+/* Is class/interface `from` the same as `to` or derived from it? */
+bool class_subtype(const Type *from, const Type *to) {
+    if (from == to) return true;
+    if (from->kind != TY_CLASS || to->kind != TY_CLASS) return false;
+    if (to->is_interface) {
+        for (size_t i = 0; i < from->nifaces; i++)
+            if (from->ifaces[i] == to) return true;
+        return false;
+    }
+    for (const Type *c = from->base_class; c; c = c->base_class)
+        if (c == to) return true;
+    return false;
+}
+
 bool type_assignable(const Type *from, const Type *to) {
     if (from->kind == TY_ERROR || to->kind == TY_ERROR) return true;
+    if (from->kind == TY_CLASS && to->kind == TY_CLASS) return class_subtype(from, to);
     if (type_equiv(from, to)) return true;
     if (from->kind == TY_INT && to->kind == TY_INT) return int_widens(from, to);
     if (from->kind == TY_FLOAT && to->kind == TY_FLOAT) return to->size >= from->size;
@@ -277,6 +292,8 @@ bool type_castable(const Type *from, const Type *to) {
     if (from->kind == TY_NULL && to->kind == TY_INT) return to->size == 8;
     /* An object reference is an address: it converts to and from pointers. */
     if (from->kind == TY_CLASS && (to->kind == TY_PTR || (to->kind == TY_INT && to->size == 8))) return true;
+    if (from->kind == TY_CLASS && to->kind == TY_CLASS)   /* downcasts: checked at run time */
+        return class_subtype(to, from) || from->is_interface || to->is_interface;
     if (to->kind == TY_CLASS && from->kind == TY_PTR) return true;
     if ((from->kind == TY_PHPARRAY && to->kind == TY_PTR) || (from->kind == TY_PTR && to->kind == TY_PHPARRAY)) return true;
     if (from->kind == TY_PHPARRAY && to->kind == TY_INT && to->size == 8) return true;

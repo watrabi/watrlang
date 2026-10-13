@@ -534,7 +534,8 @@ static void emit_call(Em *e, const Ins *in) {
     }
     if (ret.memory) emit(e->g, "lea rdi, [rbp - %d]", e->f->slots[c->ret_slot].off);
     if (c->variadic) emit(e->g, "mov eax, %d", nsse);   /* vector registers used, for varargs */
-    emit(e->g, "call %s", c->name);
+    if (c->vslot) emit_virtual_call(e->g, R64[ARG_GPR[ret.memory ? 1 : 0]], c->vslot - 1, c->iface);
+    else emit(e->g, "call %s", c->name);
     if (total) emit(e->g, "add rsp, %d", total);
     free(p);
 

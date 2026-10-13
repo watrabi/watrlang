@@ -329,6 +329,27 @@ void emit_panic_call(Gen *g, int label) {
     emit(g, "call w.panic");
 }
 
+/* Calls slot `slot` of the receiver's vtable (or of its table for interface
+ * `iface`). The receiver is in register `self`; rax and r11 are free. */
+void emit_virtual_call(Gen *g, const char *self, int slot, const char *iface) {
+    emit(g, "mov rax, qword ptr [%s]", self);   /* the class descriptor */
+    if (!iface) {
+        emit(g, "call qword ptr [rax + %d]", 40 + 8 * slot);
+        return;
+    }
+    int loop = new_label(g), found = new_label(g);
+    emit(g, "mov r11, qword ptr [rax + 32]");   /* (interface, table) pairs */
+    emit(g, "lea rax, [rip + %s]", iface);
+    emit_label(g, loop);
+    emit(g, "cmp qword ptr [r11], rax");
+    emit(g, "je .L%d", found);
+    emit(g, "add r11, 16");
+    emit(g, "jmp .L%d", loop);
+    emit_label(g, found);
+    emit(g, "mov r11, qword ptr [r11 + 8]");
+    emit(g, "call qword ptr [r11 + %d]", 8 * slot);
+}
+
 /* ---- expressions --------------------------------------------------------- */
 
 static void gen_value(Gen *g, const Expr *e);
@@ -382,6 +403,8 @@ static void gen_new(Gen *g, const Expr *e) {
     Symbol *tmp = e->u.new_.tmp;
     emit(g, "mov edi, %u", ct->obj_size ? ct->obj_size : 1);
     emit_c_call(g, e->u.new_.alloc->asm_name);   /* zeroed memory */
+    emit(g, "lea rcx, [rip + %s]", ct->desc_name);   /* the object's class */
+    emit(g, "mov qword ptr [rax], rcx");
     tmp->offset = alloc_slot(g, 8, 8);
     emit(g, "mov qword ptr [rbp - %d], rax", -tmp->offset);
     char addr[64];
@@ -900,7 +923,8 @@ static void gen_call(Gen *g, const Expr *e) {
     }
     if (fn->is_variadic) emit(g, "mov eax, %d", nsse);   /* vector registers used, for varargs */
 
-    emit(g, "call %s", fn->asm_name);
+    if (e->vslot) emit_virtual_call(g, arg_regs[ret.memory ? 1 : 0]->q, e->vslot - 1, e->viface ? e->viface->desc_name : NULL);
+    else emit(g, "call %s", fn->asm_name);
     if (total) emit(g, "add rsp, %d", total);
     free(args);
 
@@ -1577,6 +1601,55 @@ static void emit_globals(Gen *g, const Program *prog) {
     }
 }
 
+static void emit_ascii(FILE *out, const char *s);
+
+static const char *method_ref(const Symbol *m) {
+    return m && m->reachable && m->decl && m->decl->u.func.body ? m->asm_name : "0";
+}
+
+/* Each class's runtime descriptor: parent, name, interface tables, vtable
+ * (see the prelude's "classes" section for the layout). */
+static void emit_class_descriptors(Gen *g, const Program *prog) {
+    if (!prog->nclasses) return;
+    FILE *out = g->out;
+    int *names = xmalloc(prog->nclasses * sizeof *names);
+    fputs("\n    .section .data.rel.ro\n", out);
+    for (size_t i = 0; i < prog->nclasses; i++) {
+        const Type *t = prog->classes[i];
+        names[i] = new_label(g);
+        fprintf(out, "    .p2align 3\n%s:\n", t->desc_name);
+        if (t->is_interface) {
+            fprintf(out, "    .quad 0, .Lcn%d, %zu, 0, 0\n", names[i], strlen(t->name));
+            continue;
+        }
+        size_t nt = 0;
+        for (size_t k = 0; k < t->nifaces; k++) nt += t->itables && t->itables[k] ? 1 : 0;
+        int list = new_label(g);
+        fprintf(out, "    .quad %s, .Lcn%d, %zu, %zu, ", t->base_class ? t->base_class->desc_name : "0", names[i],
+                strlen(t->name), nt);
+        if (nt) fprintf(out, ".Litl%d\n", list);
+        else fputs("0\n", out);
+        for (size_t k = 0; k < t->nvtable; k++) fprintf(out, "    .quad %s\n", method_ref(t->vtable[k]));
+        if (!nt) continue;
+        int first = g->labels;
+        g->labels += (int)t->nifaces;
+        fprintf(out, ".Litl%d:\n", list);
+        for (size_t k = 0; k < t->nifaces; k++)
+            if (t->itables[k]) fprintf(out, "    .quad %s, .Lit%d\n", t->ifaces[k]->desc_name, first + (int)k);
+        for (size_t k = 0; k < t->nifaces; k++) {
+            if (!t->itables[k]) continue;
+            fprintf(out, ".Lit%d:\n", first + (int)k);
+            for (size_t j = 0; j < t->ifaces[k]->nvtable; j++) fprintf(out, "    .quad %s\n", method_ref(t->itables[k][j]));
+        }
+    }
+    fputs("\n    .section .rodata\n", out);
+    for (size_t i = 0; i < prog->nclasses; i++) {
+        fprintf(out, ".Lcn%d:\n", names[i]);
+        emit_ascii(out, prog->classes[i]->name);
+    }
+    free(names);
+}
+
 /* Can a value of this type hold a pointer into the GC heap? */
 static bool has_pointers(const Type *t) {
     switch (t->kind) {
@@ -1847,6 +1920,7 @@ void codegen_x64(const Module *m, const Program *prog, FILE *out) {
 
     emit_globals(&g, prog);
     emit_gc_roots(&g, prog);
+    emit_class_descriptors(&g, prog);
 
     if (g.strobjs.len) {   /* string values: {ptr, len} */
         fputs("\n    .section .data.rel.ro\n    .p2align 3\n", out);

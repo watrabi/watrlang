@@ -71,6 +71,8 @@ typedef struct IrCall {
     const Type **types;     /* the types they're passed as */
     const Type *ret;
     int ret_slot;           /* aggregate results land in this slot, else -1 */
+    int vslot;              /* 0: call `name`; k: virtual call through slot k - 1 (args[0] is the receiver) */
+    const char *iface;      /* with vslot: the interface whose table to use, or NULL for the vtable */
 } IrCall;
 
 typedef struct IrAsm {

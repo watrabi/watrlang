@@ -42,6 +42,8 @@ typedef struct {
     uint32_t offset;
     struct Expr *init;       /* class fields: the default value, or NULL for zero */
     bool is_private;         /* class fields */
+    bool is_protected;
+    Type *owner;             /* class fields: the class that declares it */
 } Field;
 
 typedef struct {
@@ -74,8 +76,18 @@ struct Type {
     uint32_t class_id;       /* TY_CLASS: identifies the class inside `mixed` values */
     uint32_t obj_size;       /* TY_CLASS: the object's size and alignment (the value is a pointer) */
     uint32_t obj_align;
-    struct Symbol **methods; /* TY_CLASS */
+    struct Symbol **methods; /* TY_CLASS: the ones it declares itself */
     size_t nmethods;
+    Type *base_class;        /* TY_CLASS: `extends` */
+    Type **ifaces;           /* TY_CLASS: every interface it implements (classes) or extends (interfaces), flattened */
+    size_t nifaces;
+    struct Symbol ***itables;   /* classes: per ifaces[i], the methods for that interface's vtable, or NULL */
+    struct Symbol **vtable;  /* classes: virtual methods by slot; interfaces: all their methods, in order */
+    size_t nvtable;
+    bool is_interface, is_abstract;
+    const char *desc_name;   /* the runtime descriptor (vtable, parent, interfaces) */
+    struct Symbol *desc_sym; /* a pseudo-global for taking the descriptor's address */
+    int class_state;         /* hierarchy/layout progress: 0 none, 1 in progress, 2 done */
 };
 
 extern Type *ty_error, *ty_void, *ty_bool, *ty_null;
@@ -122,6 +134,8 @@ bool int_widens(const Type *from, const Type *to);
 /* Can a value of type `from` be used where `to` is expected, without `as`?
  * (Literals are handled separately: they adapt to their context.) */
 bool type_assignable(const Type *from, const Type *to);
+/* Is class/interface `from` the same as `to`, derived from it, or implementing it? */
+bool class_subtype(const Type *from, const Type *to);
 /* Is `value as to` allowed? */
 bool type_castable(const Type *from, const Type *to);
 

@@ -6,6 +6,12 @@ function helper(): string {
     return "main helper";
 }
 
+class Disc extends geometry::Circle {
+    public function area(): f64 {
+        return parent::area() + 1.0;
+    }
+}
+
 function main(): int {
     Point p = origin();
     geometry::Point q = geometry::Point { x: 3.0, y: 4.0 };
@@ -19,5 +25,7 @@ function main(): int {
     Circle c = new Circle(2.0);
     geometry::Circle u = geometry::Circle::unit();
     echo "circles: ", c->area(), " ", u->area(), " ", Circle::unit()->r, "\n";
+    geometry::Circle d = new Disc(1.0);
+    echo "disc: ", d->area(), " ", d instanceof Disc, "\n";
     return 0;
 }

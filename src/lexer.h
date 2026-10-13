@@ -90,6 +90,12 @@
     X(PUBLIC,    "public")      \
     X(PRIVATE,   "private")     \
     X(STATIC,    "static")      \
+    X(PROTECTED, "protected")   \
+    X(ABSTRACT,  "abstract")    \
+    X(INTERFACE, "interface")   \
+    X(EXTENDS,   "extends")     \
+    X(IMPLEMENTS, "implements") \
+    X(INSTANCEOF, "instanceof") \
     X(IMPORT,    "import")      \
     X(EXTERN,    "extern")      \
     X(EXPORT,    "export")      \
