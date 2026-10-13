@@ -1,0 +1,22 @@
+// The garbage collector: objects from `new` and strings built at run time
+// are freed automatically once nothing refers to them.
+
+// Runs a collection now.
+function collect(): void {
+    __rt_gc_collect();
+}
+
+// Bytes in objects that survived the last collection.
+function live_bytes(): usize {
+    return __rt_gc_live();
+}
+
+// Bytes the heap has taken from the operating system.
+function heap_bytes(): usize {
+    return __rt_gc_heap();
+}
+
+// How many collections have run.
+function collections(): usize {
+    return __rt_gc_count();
+}

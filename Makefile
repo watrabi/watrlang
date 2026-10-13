@@ -35,7 +35,9 @@ $(BUILD):
 
 test: $(BUILD)/watrc
 	./tests/run_tests.sh
+	WATR_GC_STRESS=1 ./tests/run_tests.sh
 	python3 tests/expr_fuzz.py
+	WATR_GC_STRESS=1 python3 tests/expr_fuzz.py
 	python3 tests/prog_fuzz.py
 	python3 tests/abi_fuzz.py --programs 6
 

@@ -44,7 +44,7 @@ function ends_with(string s, string suffix): bool {
 }
 
 function to_upper(string s): string {
-    u8* p = __rt_alloc(len(s) + 1);
+    u8* p = __rt_alloc_bytes(len(s) + 1);
     for (usize i = 0; i < len(s); i++) {
         u8 c = s[i];
         p[i] = c >= 'a' && c <= 'z' ? c - 32 : c;
@@ -53,7 +53,7 @@ function to_upper(string s): string {
 }
 
 function to_lower(string s): string {
-    u8* p = __rt_alloc(len(s) + 1);
+    u8* p = __rt_alloc_bytes(len(s) + 1);
     for (usize i = 0; i < len(s); i++) {
         u8 c = s[i];
         p[i] = c >= 'A' && c <= 'Z' ? c + 32 : c;

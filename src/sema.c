@@ -1899,7 +1899,8 @@ static Type *check_call(Sema *S, Expr *e) {
     /* free(p) releases memory from alloc. */
     if (!fn && strcmp(callee->u.name, "free") == 0 && !find_var(S, "free")) {
         e->builtin = BUILTIN_FREE;
-        S->needs_libc = true;
+        e->sym = find_runtime_func(S, "__rt_free");
+        add_callee(S, e->sym);
         if (e->u.call.nargs != 1) {
             Diag *d = diag_start(DIAG_ERROR, "E0206", callee->loc, "`free` takes 1 argument but %zu were supplied",
                                  e->u.call.nargs);
@@ -2424,7 +2425,8 @@ static Type *check(Sema *S, Expr **slot, Type *hint) {
         return check_new(S, e);
     case EXPR_ALLOC: {
         /* alloc(T) or alloc(T, n): zeroed memory for n values of T. */
-        S->needs_libc = true;
+        e->sym = find_runtime_func(S, "__rt_alloc_manual");
+        add_callee(S, e->sym);
         Type *t = resolve_type(S, e->u.alloc.type, false);
         if (e->u.alloc.count) {
             Type *ct = check(S, &e->u.alloc.count, ty_usize);
@@ -3234,6 +3236,7 @@ static void declare_global(Sema *S, Decl *d) {
     g->is_private = d->vis == VIS_PRIVATE;
     g->type_expr = vd->type;
     g->is_const = vd->type->is_const;
+    g->is_runtime = is_runtime_file(d->loc.file);
     d->sym = g;
     vd->sym = g;
     set_asm_name(S, g, d);

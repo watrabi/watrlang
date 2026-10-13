@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "arena.h"
@@ -173,6 +174,16 @@ int main(int argc, char **argv) {
             ModuleSet set;
             ok = load_program(&arena, path, &set) && sema_check(&arena, set.mods, set.n, &prog);
             m_root = ok ? set.mods[0] : NULL;
+        }
+        if (ok && getenv("WATR_GC_STRESS") && strcmp(getenv("WATR_GC_STRESS"), "0") != 0) {
+            /* Testing aid: the program collects garbage at every allocation. */
+            for (size_t i = 0; i < prog.nglobals; i++) {
+                Symbol *g = prog.globals[i];
+                if (g->is_runtime && strcmp(g->name, "__rt_gc_stress") == 0) {
+                    g->init = arena_alloc(&arena, 1);
+                    g->init[0] = 1;
+                }
+            }
         }
         if (ok) {
             char *asm_text = NULL;

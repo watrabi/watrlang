@@ -245,12 +245,15 @@ function outb(u16 port, u8 val): void {
     16 bytes in registers (each eightbyte INTEGER or SSE), larger ones in
     memory, with a hidden pointer for struct returns. Arrays don't pass by
     value. `tests/abi_fuzz.py` checks this against gcc.
-  - A program that uses `extern`, `alloc` or `free`, or is given extra
+  - A program that uses `extern` C functions, or is given extra
     `.c`/`.o`/`.a` files, is linked with the system C compiler and the C
     runtime; the C runtime calls the compiler-generated `main`. Otherwise
     the binary is static, libc-free, and starts at watrlang's own `_start`.
-  - `alloc(T)` / `alloc(T, n)` return zeroed memory (calloc); running out
-    of memory panics. `free(p)` releases it.
+  - `alloc(T)` / `alloc(T, n)` return zeroed memory; running out of
+    memory (or a size that overflows) panics. `free(p)` releases it.
+    Since milestone 11 this memory comes from watrlang's own heap, not
+    `malloc`, so `free` only takes pointers from `alloc`; to free memory
+    that C allocated, declare `extern function free(void* p): void;`.
   - Until the `string` type exists, a string literal can be passed where
     a `u8*` is expected; it's stored NUL-terminated in read-only memory.
 - **Strings (milestone 7):** `string` is an immutable `{const u8* ptr;
@@ -261,8 +264,7 @@ function outb(u16 port, u8 val): void {
   `.=` (numbers, bools and pointers convert to text automatically),
   `"{interpolation}"`, and `==`/`<`/... comparing bytes.
   `string { ptr: p, len: n }` wraps existing bytes without copying.
-  Strings built at run time come from a bump allocator and live until the
-  program exits; the GC (milestone 11) will reclaim them.
+  Strings built at run time live on the garbage-collected heap.
 - **`echo`** prints strings, numbers (floats like C's `%.14g`), bools
   (`true`/`false`) and pointers (hex, or `null`). In a static binary it
   writes straight to fd 1; when libc is linked it goes through stdio, so it
@@ -290,7 +292,8 @@ function outb(u16 port, u8 val): void {
   - Standard library so far: `std/io` (print, println), `std/math` (int
     helpers, PI/E, and libm functions), `std/str` (substr, index_of,
     contains, starts_with, ends_with, to_upper, to_lower, trim, repeat,
-    parse_int, from_cstr), `std/mem` (copy, set, equal).
+    parse_int, from_cstr), `std/mem` (copy, set, equal), `std/gc`
+    (collect, live_bytes, heap_bytes, collections).
 - **Enums (milestone 9):** `enum Color { Red, Green = 5, Blue }` declares
   named integer constants with their own type. The underlying type is
   `i32` (like C) unless given: `enum Http: u16 { ... }`. Variants without
@@ -332,9 +335,9 @@ function outb(u16 port, u8 val): void {
     interpolation and `.`.
   - `==`/`!=` compare identity. Using a field or calling a method through
     `null` panics with the location, instead of crashing.
-  - Objects come from the runtime heap. Until the GC (milestone 11) they
-    are never freed; code that manages memory by hand uses structs and
-    `alloc`/`free`. Inheritance and interfaces are still deferred.
+  - Objects live on the garbage-collected heap (milestone 11). Code that
+    manages memory by hand uses structs and `alloc`/`free`. Inheritance
+    and interfaces are still deferred.
 - **`->` vs `.`:** `->` is *always* member access, auto-dereferencing
   pointers. `.` is *only* concatenation. They never conflict.
 - **Pointer declarations without a sigil:** `Foo* x;` could also parse as
@@ -398,11 +401,32 @@ popped. The output is slow but correct, and it's the fastest way to get
 working binaries. Once the language works, add a linear IR and a simple
 register allocator (linear scan) as an optimization phase.
 
-**GC strategy:** mark-and-sweep, **conservative** stack scanning: any word
-on the stack that looks like a pointer into the GC heap counts as a root.
-That way the codegen doesn't have to emit precise stack maps. Objects from
-`new` carry a small header. Memory from `alloc` is never scanned or
-collected.
+**GC (milestone 11):** mark-and-sweep, written in watrlang in the runtime
+prelude, with **conservative** root scanning: any word that looks like a
+pointer into the heap counts. That way the codegen doesn't have to emit
+precise stack maps.
+
+- The heap is chunks of memory from mmap (1 MiB, or one per object over
+  256 KiB). Every allocation has a 16-byte header (size and flags). A
+  bitmap per chunk records where objects start, so pointers into the
+  middle of an object keep it alive; string slices rely on this.
+- Roots: the stack from `main`'s caller down to the collector, the
+  callee-saved registers, globals whose types can hold pointers (codegen
+  emits a table of them, `w.__gc_roots`), and every `alloc` block.
+- Objects are scanned word by word too, except string bytes (allocated
+  "no-scan"). Dead neighbors merge into free blocks, kept on exact-size
+  free lists up to 1 KiB and a first-fit list above that.
+- A collection runs when the bytes allocated since the last one exceed
+  max(4 MiB, the bytes that survived it).
+- `alloc` blocks share the heap but are never collected; `free` returns
+  them. Pointers to GC objects kept only in memory from C's `malloc`
+  don't keep them alive.
+- `std/gc` has `collect()`, `live_bytes()`, `heap_bytes()` and
+  `collections()`. Compiling with `WATR_GC_STRESS=1` in the environment
+  produces a program that collects at every allocation; the test suite
+  runs that way too.
+- Being conservative, a stale pointer left in a stack slot can keep
+  garbage alive until the slot is overwritten.
 
 **Symbols:** watrlang functions are emitted as `w.<name>` (e.g. `w.main`).
 That stops a function called `rax` from assembling as `call rax`, and keeps
@@ -441,7 +465,7 @@ Each milestone ends with tests passing and something you can run.
 | 8  | Modules                | `import`, multi-file programs, a start on `std/`          |
 | 9  | defer, enums, errors   | `defer`, `enum`, `Enum::Value`, `T!E`, `?`, `??`          |
 | 10 | Classes                | fields, methods, `__construct`, `static`, `__toString`    |
-| 11 | GC                     | `new`, `.` concat, interpolation, mark-and-sweep          |
+| 11 | GC                     | mark-and-sweep for `new` objects and strings; `alloc` in the same heap |
 | 12 | foreach, arrays        | `foreach (x as k => v)`, PHP-style `array`                |
 | 13 | Freestanding           | `--freestanding`, inline asm, `volatile`, `export`, packed/aligned structs |
 | 14 | **Boot a kernel**      | multiboot kernel in QEMU prints to VGA, written in watrlang |

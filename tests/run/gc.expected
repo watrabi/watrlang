@@ -1,0 +1,13 @@
+alloc memory is a root: true
+churned: 4133335
+global list: 500500, local list: 5050
+holder: node 7, held 42
+manual: node 9 + 55, manual 1
+slice: uvwxyz
+collections ran: true
+heap stays small: true
+live after collect < 1 MiB: true
+after dropping, live < 32 KiB: true
+5050
+node 11 hidden 11
+exit: 0

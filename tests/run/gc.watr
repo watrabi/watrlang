@@ -1,0 +1,112 @@
+// no-gc-stress: churns too much garbage to collect at every allocation.
+// The collector frees garbage and keeps everything still in use.
+import "std/gc";
+
+class Node {
+    public int value;
+    public Node next;
+    public string label;
+
+    public function __construct(int value, Node next) {
+        this->value = value;
+        this->next = next;
+        this->label = "node " . value;
+    }
+}
+
+struct Holder {
+    Node node;
+    string name;
+}
+
+Node global_list;
+Holder global_holder;
+u64 hidden;   // an alloc pointer the collector can't recognize
+
+function hide(): void {
+    Holder* h = alloc(Holder);
+    h->node = new Node(11, null);
+    h->name = "hidden " . 11;
+    hidden = (h as u64) ^ 6148914691236517205;
+}
+
+// Overwrites dead stack slots, which could still hold stale pointers.
+function scrub(): u64 {
+    u64[8192] junk;
+    return junk[8191];
+}
+
+function unhide(): Holder* {
+    return (hidden ^ 6148914691236517205) as Holder*;
+}
+
+function build(int n): Node {
+    Node head = null;
+    for (int i = 1; i <= n; i++) {
+        head = new Node(i, head);
+    }
+    return head;
+}
+
+function sum(Node n): int {
+    int total = 0;
+    while (n != null) {
+        total += n->value;
+        n = n->next;
+    }
+    return total;
+}
+
+function churn(int rounds): int {
+    int total = 0;
+    for (int i = 0; i < rounds; i++) {
+        string s = "garbage " . i . " " . (i * 2);
+        Node tmp = new Node(i, null);
+        total += len(s) as int + tmp->value % 2;
+    }
+    return total;
+}
+
+function phase1(Node local_list): Holder* {
+    global_list = build(1000);
+    global_holder = Holder { node: new Node(7, null), name: "held " . 42 };
+    Holder* manual = alloc(Holder);              // alloc memory keeps objects alive too
+    manual->node = new Node(9, build(10));
+    manual->name = "manual " . 1;
+    string slice_owner = "abcdefghij" . "klmnopqrstuvwxyz";
+    string slice = string { ptr: slice_owner->ptr + 20, len: 6 };
+    slice_owner = "";                             // only the slice points into it now
+
+    int churned = churn(200000);
+    gc::collect();
+
+    echo "churned: ", churned, "\n";
+    echo "global list: ", sum(global_list), ", local list: ", sum(local_list), "\n";
+    echo "holder: ", global_holder->node->label, ", ", global_holder->name, "\n";
+    echo "manual: ", manual->node->label, " + ", sum(manual->node->next), ", ", manual->name, "\n";
+    echo "slice: ", slice, "\n";
+    echo "collections ran: ", gc::collections() > 2, "\n";
+    echo "heap stays small: ", gc::heap_bytes() < 64 * 1048576, "\n";
+    echo "live after collect < 1 MiB: ", gc::live_bytes() < 1048576, "\n";
+    return manual;
+}
+
+function drop(Holder* manual): void {
+    global_list = null;
+    free(manual);
+}
+
+function main(): int {
+    hide();
+    scrub();
+    gc::collect();
+    Node fresh = new Node(0, null);   // would reuse the hidden node's memory if it had been freed
+    echo "alloc memory is a root: ", fresh != unhide()->node && unhide()->node->value == 11, "\n";
+    Node local_list = build(100);
+    drop(phase1(local_list));
+    gc::collect();
+    echo "after dropping, live < 32 KiB: ", gc::live_bytes() < 32768, "\n";
+    echo sum(local_list), "\n";
+    echo unhide()->node->label, " ", unhide()->name, "\n";   // alloc memory is always a root
+    return 0;
+}

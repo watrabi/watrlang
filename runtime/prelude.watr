@@ -9,33 +9,396 @@
 extern function __rt_out(const u8* p, usize n): void;      // write to stdout
 extern function __rt_mmap(usize n): u8*;                   // zeroed pages
 extern function __rt_out_of_memory(): void;                // panics
+extern function __rt_panic(string msg): void;              // prints msg, exits with 101
 extern function __rt_fmt_f64(f64 x, u8* buf): usize;       // "%.14g"; links libc
+extern function __rt_zero(u8* p, usize n): void;           // rep stosb
+extern function __rt_stack_pointer(): u64;                 // the caller's rsp
+extern function __rt_save_regs(u64* buf): void;            // rbx, rbp, r12-r15
+extern function __rt_gc_roots(): u64*;                     // [n, addr, size, addr, size, ...]
 
-// ---- memory ------------------------------------------------------------
-// A bump allocator over 1 MiB chunks. Nothing is freed yet: strings built
-// at run time live until the program exits (the GC arrives in milestone 11).
+// ---- memory: a mark-and-sweep garbage collector -------------------------
+//
+// Objects live in chunks of memory from mmap. Each has a 16-byte header
+// before it: its size (a multiple of 16) with flags in the low bits. A
+// bitmap per chunk marks where objects start, so a pointer into the middle
+// of an object (like a string slice) keeps the whole object alive.
+//
+// Roots are found conservatively: every word on the stack, in the saved
+// callee-saved registers, in globals that can hold pointers (a table the
+// compiler emits), and in `alloc` memory. Anything that looks like a
+// pointer into an object counts. Objects are scanned the same way, except
+// string bytes, which can't hold pointers.
+//
+// `alloc` memory is in the same heap but is never collected: `free`
+// releases it.
 
-u8* __rt_heap;
-usize __rt_heap_left;
+const u64 __GC_MARK = 1;
+const u64 __GC_MANUAL = 2;    // from alloc: a root, freed only by free()
+const u64 __GC_FREE = 4;      // a free block, not an object
+const u64 __GC_NOSCAN = 8;    // holds no pointers (string bytes)
+const usize __GC_CHUNK = 1048576;
+const usize __GC_LARGE = 262144;   // bigger objects get a chunk of their own
+const usize __GC_SMALL = 1024;     // sizes up to this have exact-size free lists
 
-function __rt_alloc(usize n): u8* {
-    n = (n + 15) & ~15;
-    if (n > __rt_heap_left) {
-        usize chunk = 1048576;
-        if (n > chunk) {
-            chunk = n;
+struct __RtChunk {
+    u8* base;        // the mapping; starts with the bitmap
+    u8* start;       // first object header
+    u8* bump;        // end of the used part
+    u8* limit;       // end of the mapping
+}
+
+__RtChunk* __gc_chunks;
+usize __gc_nchunks;
+usize __gc_chunks_cap;
+usize __gc_cur;                // the chunk small objects are bumped from, plus one (0: none)
+u64 __gc_lo;                   // the address range of all chunks
+u64 __gc_hi;
+u8*[65] __gc_free;             // free lists by size / 16; [0] holds bigger blocks
+usize __gc_since;              // bytes allocated since the last collection
+usize __gc_threshold = 4194304;
+usize __gc_live;               // bytes that survived the last collection
+usize __gc_heap;               // bytes mapped
+usize __gc_collections;
+u64[6] __gc_regs;
+u64* __gc_stack;               // mark stack
+usize __gc_stack_len;
+usize __gc_stack_cap;
+u64 __rt_stack_base;           // set by the entry code before main runs
+bool __rt_gc_stress;           // collect at every allocation (watrc reads WATR_GC_STRESS)
+
+function __gc_bit(__RtChunk* c, u8* h): u64* {
+    usize g = (h - c->base) as usize >> 4;
+    return (c->base as u64*) + (g >> 6);
+}
+
+function __gc_set_bit(__RtChunk* c, u8* h): void {
+    usize g = (h - c->base) as usize >> 4;
+    *__gc_bit(c, h) |= 1 << (g & 63);
+}
+
+function __gc_clear_bit(__RtChunk* c, u8* h): void {
+    usize g = (h - c->base) as usize >> 4;
+    *__gc_bit(c, h) &= ~(1 << (g & 63));
+}
+
+function __gc_chunk_of(u64 a): __RtChunk* {
+    if (a < __gc_lo || a >= __gc_hi) {
+        return null;
+    }
+    for (usize i = 0; i < __gc_nchunks; i++) {
+        __RtChunk* c = __gc_chunks + i;
+        if (a >= c->start as u64 && a < c->bump as u64) {
+            return c;
         }
-        u8* fresh = __rt_mmap(chunk);
-        if (fresh as u64 > 18446744073709547520) {   // mmap returned -errno
+    }
+    return null;
+}
+
+// The header of the object containing address a, or null.
+function __gc_find(u64 a): u8* {
+    __RtChunk* c = __gc_chunk_of(a);
+    if (c == null) {
+        return null;
+    }
+    u64* bits = c->base as u64*;
+    usize g = (a - c->base as u64) >> 4;
+    usize w = g >> 6;
+    u64 word = bits[w] & (~0 >> (63 - (g & 63)));   // bits at or below g
+    while (word == 0) {
+        if (w == 0) {
+            return null;
+        }
+        w--;
+        word = bits[w];
+    }
+    usize top = 63;
+    while ((word >> top) == 0) {
+        top--;
+    }
+    u8* h = c->base + ((w << 6) + top) * 16;
+    u64 head = *(h as u64*);
+    if ((head & __GC_FREE) != 0 || a >= h as u64 + 16 + (head & ~15)) {
+        return null;
+    }
+    return h;
+}
+
+function __gc_grow_chunks(): void {
+    usize cap = __gc_chunks_cap == 0 ? 64 : __gc_chunks_cap * 2;
+    __RtChunk* fresh = __rt_mmap(cap * sizeof(__RtChunk)) as __RtChunk*;
+    if (fresh as u64 > 18446744073709547520) {   // mmap returned -errno
+        __rt_out_of_memory();
+    }
+    for (usize i = 0; i < __gc_nchunks; i++) {
+        fresh[i] = __gc_chunks[i];
+    }
+    __gc_chunks = fresh;   // the old table is small; it's left mapped
+    __gc_chunks_cap = cap;
+}
+
+// A chunk with room for an object of `need` bytes.
+function __gc_new_chunk(usize need): __RtChunk* {
+    usize size = __GC_CHUNK;
+    if (need + 16 + 4096 > size - size / 128) {
+        size = ((need + 16) * 128 / 127 + 8192 + 4095) & ~4095;
+    }
+    u8* base = __rt_mmap(size);
+    if (base as u64 > 18446744073709547520) {
+        __rt_out_of_memory();
+    }
+    if (__gc_nchunks == __gc_chunks_cap) {
+        __gc_grow_chunks();
+    }
+    __RtChunk* c = __gc_chunks + __gc_nchunks;
+    __gc_nchunks++;
+    usize bitmap = (size / 128 + 15) & ~15;
+    c->base = base;
+    c->start = base + bitmap;
+    c->bump = c->start;
+    c->limit = base + size;
+    if (__gc_lo == 0 || base as u64 < __gc_lo) {
+        __gc_lo = base as u64;
+    }
+    if (c->limit as u64 > __gc_hi) {
+        __gc_hi = c->limit as u64;
+    }
+    __gc_heap += size;
+    return c;
+}
+
+function __gc_list_of(usize size): usize {
+    return size <= __GC_SMALL ? size / 16 : 0;
+}
+
+function __gc_push_free(u8* h, usize size): void {
+    *(h as u64*) = size | __GC_FREE;
+    usize i = __gc_list_of(size);
+    *((h + 16) as u8**) = __gc_free[i];
+    __gc_free[i] = h;
+}
+
+// A free block of at least n bytes, taken off its list, or null.
+function __gc_take_free(usize n): u8* {
+    usize i = __gc_list_of(n);
+    if (i != 0 && __gc_free[i] != null) {
+        u8* h = __gc_free[i];
+        __gc_free[i] = *((h + 16) as u8**);
+        return h;
+    }
+    u8** link = &__gc_free[0];
+    while (*link != null) {
+        u8* h = *link;
+        usize size = *(h as u64*) & ~15;
+        if (size >= n) {
+            *link = *((h + 16) as u8**);
+            if (size - n >= 32) {   // split off the rest
+                u8* rest = h + 16 + n;
+                __gc_set_bit(__gc_chunk_of(h as u64), rest);
+                __gc_push_free(rest, size - n - 16);
+                *(h as u64*) = n;
+            }
+            return h;
+        }
+        link = (h + 16) as u8**;
+    }
+    return null;
+}
+
+function __gc_bump(usize n): u8* {
+    if (n > __GC_LARGE) {
+        __RtChunk* big = __gc_new_chunk(n);
+        u8* h = big->bump;
+        big->bump += 16 + n;
+        __gc_set_bit(big, h);
+        return h;
+    }
+    if (__gc_cur == 0 || (__gc_chunks[__gc_cur - 1]->limit - __gc_chunks[__gc_cur - 1]->bump) as usize < 16 + n) {
+        __gc_new_chunk(n);
+        __gc_cur = __gc_nchunks;
+    }
+    __RtChunk* c = __gc_chunks + (__gc_cur - 1);
+    u8* h = c->bump;
+    c->bump += 16 + n;
+    __gc_set_bit(c, h);
+    return h;
+}
+
+function __gc_alloc(usize n, u64 flags): u8* {
+    if (n > 70368744177664) {   // 64 TiB: certainly a size computation that overflowed
+        __rt_out_of_memory();
+    }
+    n = n == 0 ? 16 : (n + 15) & ~15;
+    if (__rt_gc_stress || __gc_since >= __gc_threshold) {
+        __rt_gc_collect();
+    }
+    u8* h = __gc_take_free(n);
+    if (h == null) {
+        h = __gc_bump(n);
+        *(h as u64*) = n;
+    }
+    usize size = *(h as u64*) & ~15;
+    *(h as u64*) = size | flags;
+    __rt_zero(h + 16, size);
+    __gc_since += size + 16;
+    return h + 16;
+}
+
+// Memory for objects (scanned for pointers).
+function __rt_alloc(usize n): u8* {
+    return __gc_alloc(n, 0);
+}
+
+// Memory for bytes that never hold pointers, like string contents.
+function __rt_alloc_bytes(usize n): u8* {
+    return __gc_alloc(n, __GC_NOSCAN);
+}
+
+// alloc(T, count): zeroed, never collected, released by free().
+function __rt_alloc_manual(usize count, usize size): u8* {
+    if (size != 0 && count > 18446744073709551615 / size) {
+        __rt_panic("panic: alloc size overflows\n");
+    }
+    return __gc_alloc(count * size, __GC_MANUAL);
+}
+
+function __rt_free(u8* p): void {
+    if (p == null) {
+        return;
+    }
+    u8* h = __gc_find(p as u64);
+    if (h == null || h + 16 != p || (*(h as u64*) & __GC_MANUAL) == 0) {
+        __rt_panic("panic: free() of a pointer that alloc() didn't return, or that was already freed\n");
+    }
+    usize size = *(h as u64*) & ~15;
+    __gc_push_free(h, size);
+}
+
+// ---- collection ---------------------------------------------------------------
+
+function __gc_push(u8* h): void {
+    if (__gc_stack_len == __gc_stack_cap) {
+        usize cap = __gc_stack_cap == 0 ? 4096 : __gc_stack_cap * 2;
+        u64* fresh = __rt_mmap(cap * 8) as u64*;
+        if (fresh as u64 > 18446744073709547520) {
             __rt_out_of_memory();
         }
-        __rt_heap = fresh;
-        __rt_heap_left = chunk;
+        for (usize i = 0; i < __gc_stack_len; i++) {
+            fresh[i] = __gc_stack[i];
+        }
+        __gc_stack = fresh;
+        __gc_stack_cap = cap;
     }
-    u8* p = __rt_heap;
-    __rt_heap += n;
-    __rt_heap_left -= n;
-    return p;
+    __gc_stack[__gc_stack_len] = h as u64;
+    __gc_stack_len++;
+}
+
+function __gc_mark(u8* h): void {
+    u64 head = *(h as u64*);
+    if ((head & __GC_MARK) != 0) {
+        return;
+    }
+    *(h as u64*) = head | __GC_MARK;
+    if ((head & __GC_NOSCAN) == 0) {
+        __gc_push(h);
+    }
+}
+
+// Marks whatever the words in [lo, hi) point into.
+function __gc_scan(u64 lo, u64 hi): void {
+    for (u64 a = (lo + 7) & ~7; a + 8 <= hi; a += 8) {
+        u64 v = *(a as u64*);
+        if (v >= __gc_lo && v < __gc_hi) {
+            u8* h = __gc_find(v);
+            if (h != null) {
+                __gc_mark(h);
+            }
+        }
+    }
+}
+
+function __gc_drain(): void {
+    while (__gc_stack_len > 0) {
+        __gc_stack_len--;
+        u8* h = __gc_stack[__gc_stack_len] as u8*;
+        __gc_scan(h as u64 + 16, h as u64 + 16 + (*(h as u64*) & ~15));
+    }
+}
+
+// Frees every unmarked object, merging neighbors into free blocks.
+function __gc_sweep(): void {
+    for (usize i = 0; i < 65; i++) {
+        __gc_free[i] = null;
+    }
+    usize live = 0;
+    for (usize i = 0; i < __gc_nchunks; i++) {
+        __RtChunk* c = __gc_chunks + i;
+        u8* h = c->start;
+        u8* run = null;
+        while (h < c->bump) {
+            u64 head = *(h as u64*);
+            usize size = head & ~15;
+            bool alive = (head & __GC_MARK) != 0 || (head & (__GC_MANUAL | __GC_FREE)) == __GC_MANUAL;
+            if (alive) {
+                if (run != null) {
+                    __gc_push_free(run, (h - run) as usize - 16);
+                    run = null;
+                }
+                *(h as u64*) = head & ~__GC_MARK;
+                live += size + 16;
+            } else if (run == null) {
+                run = h;
+            } else {
+                __gc_clear_bit(c, h);   // merged into the run
+            }
+            h += 16 + size;
+        }
+        if (run != null && i + 1 == __gc_cur) {   // free space at the end goes back to the bump area
+            __gc_clear_bit(c, run);
+            c->bump = run;
+        } else if (run != null) {
+            __gc_push_free(run, (c->bump - run) as usize - 16);
+        }
+    }
+    __gc_live = live;
+}
+
+function __rt_gc_collect(): void {
+    __rt_save_regs(&__gc_regs[0]);
+    u64 sp = __rt_stack_pointer();
+    if (__rt_stack_base != 0) {
+        __gc_scan(sp, __rt_stack_base);
+    }
+    __gc_scan(&__gc_regs[0] as u64, &__gc_regs[0] as u64 + 48);
+    u64* roots = __rt_gc_roots();
+    for (u64 i = 0; i < roots[0]; i++) {
+        __gc_scan(roots[1 + 2 * i], roots[1 + 2 * i] + roots[2 + 2 * i]);
+    }
+    for (usize i = 0; i < __gc_nchunks; i++) {   // alloc memory is a root
+        __RtChunk* c = __gc_chunks + i;
+        for (u8* h = c->start; h < c->bump; h += 16 + (*(h as u64*) & ~15)) {
+            if ((*(h as u64*) & (__GC_MANUAL | __GC_FREE)) == __GC_MANUAL) {
+                __gc_mark(h);
+            }
+        }
+    }
+    __gc_drain();
+    __gc_sweep();
+    __gc_collections++;
+    __gc_since = 0;
+    __gc_threshold = __gc_live > 4194304 ? __gc_live : 4194304;
+}
+
+// For std/gc.
+function __rt_gc_live(): usize {
+    return __gc_live;
+}
+
+function __rt_gc_heap(): usize {
+    return __gc_heap;
+}
+
+function __rt_gc_count(): usize {
+    return __gc_collections;
 }
 
 function __rt_copy(u8* dst, const u8* src, usize n): void {
@@ -47,7 +410,7 @@ function __rt_copy(u8* dst, const u8* src, usize n): void {
 // Copies bytes into a new NUL-terminated string, so `s->ptr` can always be
 // passed to C.
 function __rt_new_string(const u8* src, usize n): string {
-    u8* p = __rt_alloc(n + 1);
+    u8* p = __rt_alloc_bytes(n + 1);
     __rt_copy(p, src, n);
     return string { ptr: p, len: n };
 }
@@ -56,7 +419,7 @@ function __rt_new_string(const u8* src, usize n): string {
 
 function __rt_concat(string a, string b): string {
     usize n = a->len + b->len;
-    u8* p = __rt_alloc(n + 1);
+    u8* p = __rt_alloc_bytes(n + 1);
     __rt_copy(p, a->ptr, a->len);
     __rt_copy(p + a->len, b->ptr, b->len);
     return string { ptr: p, len: n };

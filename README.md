@@ -38,8 +38,9 @@ The full plan is in [docs/DESIGN.md](docs/DESIGN.md).
 | 8. Modules, `private`, a first standard library | done |
 | 9. `defer`, enums, error unions (`T!E`, `?`, `??`) | done |
 | 10. Classes: methods, constructors, `static`, `private`, `__toString` | done |
-| 11. Garbage collector for `new` and strings | next |
-| 12+. foreach and PHP arrays, freestanding, a kernel, ... | planned |
+| 11. Garbage collector for objects and strings; `std/gc` | done |
+| 12. `foreach` and PHP-style arrays | next |
+| 13+. freestanding, a kernel, an optimizer, ... | planned |
 
 ## Error messages
 

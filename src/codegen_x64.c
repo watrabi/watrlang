@@ -846,7 +846,7 @@ static void gen_call(Gen *g, const Expr *e) {
     if (e->builtin == BUILTIN_FREE) {
         gen_value(g, e->u.call.args[0]);
         emit(g, "mov rdi, rax");
-        emit_c_call(g, "free");
+        emit_c_call(g, e->sym->asm_name);
         return;
     }
 
@@ -997,18 +997,12 @@ static void gen_value(Gen *g, const Expr *e) {
         return;
     }
     case EXPR_ALLOC: {
-        /* calloc(count, size): zeroed, and it checks count * size for overflow. */
+        /* __rt_alloc_manual(count, size): zeroed; it checks count * size for overflow. */
         if (e->u.alloc.count) gen_value(g, e->u.alloc.count);
         else emit(g, "mov eax, 1");
         emit(g, "mov rdi, rax");
         emit(g, "mov esi, %u", t->base->size);
-        emit_c_call(g, "calloc");
-        int site = add_panic(g, e, "out of memory");
-        int ok = new_label(g);
-        emit(g, "test rax, rax");
-        emit(g, "jnz .L%d", ok);
-        emit_panic_call(g, site);
-        emit_label(g, ok);
+        emit_c_call(g, e->sym->asm_name);
         return;
     }
     case EXPR_BOOL:
@@ -1502,6 +1496,34 @@ static void emit_globals(Gen *g, const Program *prog) {
     }
 }
 
+/* Can a value of this type hold a pointer into the GC heap? */
+static bool has_pointers(const Type *t) {
+    switch (t->kind) {
+    case TY_PTR: case TY_STRING: case TY_CLASS: return true;
+    case TY_ARRAY: return has_pointers(t->base);
+    case TY_STRUCT: case TY_ERRUNION:
+        for (size_t i = 0; i < t->nfields; i++)
+            if (has_pointers(t->fields[i].type)) return true;
+        return false;
+    default: return false;
+    }
+}
+
+/* The globals the collector scans: [count, address, size, ...]. */
+static void emit_gc_roots(Gen *g, const Program *prog) {
+    size_t n = 0;
+    for (size_t i = 0; i < prog->nglobals; i++) {
+        const Symbol *v = prog->globals[i];
+        if (!v->is_extern && !v->is_runtime && has_pointers(v->type)) n++;
+    }
+    fprintf(g->out, "\n    .section .data.rel.ro\n    .p2align 3\nw.__gc_roots:\n    .quad %zu\n", n);
+    for (size_t i = 0; i < prog->nglobals; i++) {
+        const Symbol *v = prog->globals[i];
+        if (!v->is_extern && !v->is_runtime && has_pointers(v->type))
+            fprintf(g->out, "    .quad %s, %u\n", v->asm_name, v->type->size);
+    }
+}
+
 /* The runtime's assembly primitives (declared `extern` in the prelude). */
 static void emit_runtime_primitive(Gen *g, const char *name) {
     FILE *out = g->out;
@@ -1556,6 +1578,32 @@ static void emit_runtime_primitive(Gen *g, const char *name) {
               "    .text\n",
               out);
         g->need_panic = true;
+    } else if (strcmp(name, "__rt_panic") == 0) {   /* the string arrives as rdi = ptr, rsi = len */
+        fputs("    jmp w.panic\n", out);
+        g->need_panic = true;
+    } else if (strcmp(name, "__rt_zero") == 0) {
+        fputs("    mov rcx, rsi\n"
+              "    xor eax, eax\n"
+              "    rep stosb\n"
+              "    ret\n",
+              out);
+    } else if (strcmp(name, "__rt_stack_pointer") == 0) {   /* rsp as the caller sees it */
+        fputs("    lea rax, [rsp + 8]\n"
+              "    ret\n",
+              out);
+    } else if (strcmp(name, "__rt_save_regs") == 0) {   /* callee-saved registers may hold pointers */
+        fputs("    mov qword ptr [rdi], rbx\n"
+              "    mov qword ptr [rdi + 8], rbp\n"
+              "    mov qword ptr [rdi + 16], r12\n"
+              "    mov qword ptr [rdi + 24], r13\n"
+              "    mov qword ptr [rdi + 32], r14\n"
+              "    mov qword ptr [rdi + 40], r15\n"
+              "    ret\n",
+              out);
+    } else if (strcmp(name, "__rt_gc_roots") == 0) {
+        fputs("    lea rax, [rip + w.__gc_roots]\n"
+              "    ret\n",
+              out);
     } else if (strcmp(name, "__rt_fmt_f64") == 0) {   /* snprintf(buf, 32, "%.14g", x) */
         fputs("    sub rsp, 8\n"
               "    mov esi, 32\n"
@@ -1629,6 +1677,7 @@ void codegen_x64(const Module *m, const Program *prog, FILE *out) {
               "main:\n"
               "    push rbp\n"
               "    mov rbp, rsp\n"
+              "    mov qword ptr [rip + w.__rt_stack_base], rsp\n"
               "    call w.main\n"
               "    pop rbp\n"
               "    ret\n",
@@ -1638,6 +1687,7 @@ void codegen_x64(const Module *m, const Program *prog, FILE *out) {
               "    .globl _start\n"
               "_start:\n"
               "    xor ebp, ebp\n"
+              "    mov qword ptr [rip + w.__rt_stack_base], rsp\n"
               "    call w.main\n"
               "    mov edi, eax\n"
               "    mov eax, 60\n"
@@ -1694,6 +1744,7 @@ void codegen_x64(const Module *m, const Program *prog, FILE *out) {
     }
 
     emit_globals(&g, prog);
+    emit_gc_roots(&g, prog);
 
     if (g.strings.len) {
         fputs("\n    .section .rodata\n", out);

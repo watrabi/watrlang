@@ -6,6 +6,7 @@
 #   tests/run/     compile, run the binary, record its output and exit code
 #
 #   UPDATE=1 ./tests/run_tests.sh   rewrite .expected files from current output
+#   WATR_GC_STRESS=1 ./tests/run_tests.sh   compiled programs collect garbage at every allocation
 set -u
 cd "$(dirname "$0")/.."
 
@@ -17,6 +18,10 @@ fail=0
 mkdir -p build/tests
 for src in tests/lexer/*.watr tests/parser/*.watr tests/run/*.watr; do
     expected="${src%.watr}.expected"
+    # WATR_GC_STRESS=1 collects at every allocation; some tests are too big for that.
+    if [ "${WATR_GC_STRESS:-0}" != 0 ] && grep -q 'no-gc-stress' "$src"; then
+        continue
+    fi
     case "$src" in
         tests/lexer/*)  actual=$("$WATRC" --tokens "$src" 2>&1; echo "exit: $?") ;;
         tests/parser/*) actual=$("$WATRC" --ast "$src" 2>&1; echo "exit: $?") ;;
@@ -26,7 +31,7 @@ for src in tests/lexer/*.watr tests/parser/*.watr tests/run/*.watr; do
             extra=""
             [ -f "${src%.watr}.c" ] && extra="${src%.watr}.c"   # C code to link in
             if compile_out=$("$WATRC" -o "$bin" "$src" $extra 2>&1); then
-                run_out=$("$bin" 2>&1; echo "exit: $?")
+                run_out=$(timeout 30 "$bin" 2>&1; echo "exit: $?")
                 # Keep warnings from a successful compile in the expected output.
                 if [ -n "$compile_out" ]; then
                     actual=$(printf '%s\n%s' "$compile_out" "$run_out")
