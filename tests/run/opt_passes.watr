@@ -1,0 +1,107 @@
+// The -O1 passes on cases where getting it wrong is easy: constant folding,
+// facts from branches, bounds checks, float branches with NaN, division by
+// constants, devirtualization and inlining. (Compared against -O0 in
+// `make test`, which runs everything with WATR_OPT=0 too.)
+
+// A parameter assigned a constant on one path isn't that constant everywhere.
+function param_reassigned(int p, int q): int {
+    if (q > 0) {
+        p %= 1;
+    }
+    return p * 31 + q;
+}
+
+// Folding: shift counts are mod 64; x * 2^k is a shift; x / 1 and x % 1.
+function folds(int x): int {
+    int a = x << (0 - 1);          // shift by 63
+    int b = x * 8 + x * 1 + x * 0;
+    u64 u = x as u64;
+    int c = (u / 16) as int + (u % 16) as int;
+    return a + b + c + x / 1 + x % 1 + (x & 0) + (x | 0);
+}
+
+// The loop condition proves the index in range: no check needed (and none
+// must be dropped where it isn't proven).
+function sum_prefix(int[8]* arr, int n): int {
+    int s = 0;
+    for (int i = 0; i < 8; i++) {
+        s += arr[0][i];
+    }
+    for (int i = 0; i < n; i++) {   // n isn't known: checked
+        s += arr[0][i];
+    }
+    return s;
+}
+
+function down(int[8]* arr): int {
+    int s = 0;
+    for (int i = 7; i >= -1; i--) {   // reaches -1: must panic
+        s += arr[0][i];
+    }
+    return s;
+}
+
+// Float comparisons that branch, with NaN in the mix.
+function fcmp(f64 a, f64 b): string {
+    string out = "";
+    if (a < b) { out .= "<"; }
+    if (a <= b) { out .= "l"; }
+    if (a > b) { out .= ">"; }
+    if (a >= b) { out .= "g"; }
+    if (a == b) { out .= "="; }
+    if (a != b) { out .= "!"; }
+    if (!(a < b)) { out .= "n"; }
+    return out;
+}
+
+function fconsts(f32 x): f64 {
+    f32 y = x * 2.5 + 0.25;
+    return y as f64 * 1.5 - 0.125;
+}
+
+function divs(int x, u64 y): string {
+    return "{x / 7} {x % 7} {x / -3} {x % -3} {x / 8} {x % 8} {x / -16} {y / 10} {y % 10} {y / 1000000007}";
+}
+
+class Shape {
+    public function area(): int { return 0; }
+    public function name(): string { return "shape"; }
+}
+class Square extends Shape {
+    public int side;
+    public function __construct(int s) { this->side = s; }
+    public function area(): int { return this->side * this->side; }
+}
+class Circle extends Shape {
+    public function name(): string { return "circle"; }
+}
+
+function describe(Shape s): string { return "{s->name()} {s->area()}"; }
+
+class Counter {
+    private int n;
+    public function bump(int by): int { this->n += by; return this->n; }
+}
+
+function tiny(int x): int { return x * 3 + 1; }
+function uses_tiny(int x): int { return tiny(tiny(x)) + tiny(2); }
+function checked_get(int[4]* a, int i): int { return a[0][i]; }
+
+function main(): int {
+    echo param_reassigned(7, 1), " ", param_reassigned(7, -1), "\n";
+    echo folds(5), " ", folds(-5), "\n";
+    int[8] arr = [1, 2, 3, 4, 5, 6, 7, 8];
+    echo sum_prefix(&arr, 3), "\n";
+    f64 nan = 0.0 / 0.0;
+    echo fcmp(1.0, 2.0), " ", fcmp(2.0, 2.0), " ", fcmp(3.0, 2.0), " ", fcmp(nan, 1.0), " ", fcmp(nan, nan), "\n";
+    echo fconsts(2.0), "\n";
+    echo divs(100, 123456789), " | ", divs(-100, 18446744073709551615), "\n";
+    echo describe(new Square(4)), " ", describe(new Circle()), " ", describe(new Shape()), "\n";
+    Counter c = new Counter();
+    c->bump(2);
+    echo c->bump(5), " ", uses_tiny(4), "\n";
+    int[4] small = [10, 20, 30, 40];
+    echo checked_get(&small, 3), "\n";
+    echo down(&arr), "\n";
+    return 0;
+}

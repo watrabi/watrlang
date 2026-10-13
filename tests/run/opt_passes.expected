@@ -1,0 +1,11 @@
+1 216
+-9223372036854775748 -8070450532247928877
+42
+<l! lg=n >g!n !n !n
+7.75
+14 2 -33 1 12 4 -6 12345678 9 0 | -14 -2 33 -1 -12 -4 6 1844674407370955161 5 18446743944
+shape 16 circle 0 shape 0
+7 47
+40
+panic at tests/run/opt_passes.watr:39:21: index out of bounds (array length 8)
+exit: 101

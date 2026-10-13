@@ -139,8 +139,10 @@ typedef struct {
     PtrVec panic_jumps;     /* (label, site) pairs, as two ints in an allocated array */
 
     /* allocation */
-    bool *is_imm;           /* per vreg: an int32 constant used directly as an operand */
+    bool *is_imm;           /* per vreg: an int32 constant used directly as an operand, or a
+                             * float constant read from the pool (imm_val holds its bits) */
     int64_t *imm_val;
+    int imm_cap;            /* size of is_imm and imm_val */
     int *loc;               /* per vreg: >= 0 a register (0-15 GPR, 16-31 xmm), < 0: -(spill slot + 1) */
     bool used_reg[32];      /* registers the function writes (callee-saved ones get saved) */
 } Fn;
@@ -153,9 +155,13 @@ void ir_lower_function(Fn *f);
 
 /* opt_ra.c */
 void ir_optimize(Fn *f);
+void ir_ensure_imm(Fn *f);                               /* size is_imm/imm_val for every vreg */
 void ir_allocate(Fn *f);
 int ir_defs_uses(const Ins *in, int *defs, int *uses);   /* returns #uses written; defs gets d or -1 */
 void ir_operand_ptrs(Ins *in, int **ptrs, int *n);       /* every vreg operand field that's a use */
+
+/* opt_inline.c */
+void ir_inline_all(Fn **fns, size_t n);                  /* fns[i] may be NULL */
 
 /* opt_emit.c */
 void ir_emit_function(Fn *f);

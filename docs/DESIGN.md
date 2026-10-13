@@ -551,20 +551,49 @@ strings, runtime primitives, panics):
     test at the bottom, and array indexing uses x86 scaled addressing.
   - Scalar locals and parameters whose address is never taken live in
     registers; the rest, and all aggregates, live in frame slots.
-  - Passes: unreachable code removal, 32-bit constants as immediate
-    operands, forwarding (`t = a + b; x = t` becomes `x = a + b`), copy
-    propagation within basic blocks, dead code removal.
+  - Passes (repeated until nothing changes): unreachable code removal,
+    32-bit constants as immediate operands and float constants as memory
+    operands (a pool after each function), forwarding (`t = a + b; x = t`
+    becomes `x = a + b`), constant folding and simplification (`x * 8` is
+    `x << 3`, `x % 16` on unsigned is `x & 15`, a branch on constants is a
+    jump), and dead code removal (milestone 19).
+  - Extended blocks (milestone 19): a block with one predecessor runs only
+    after it, so the passes walk the tree of such blocks carrying what's
+    known: copies (`t = x`; later uses of t read x while neither changes)
+    and the outcomes of comparisons on the path. A comparison that's
+    already decided becomes a jump, so `for (i = 0; i < 16; i++) a[i]`
+    with `int[16] a` has no bounds check (the range comes from the loop
+    test plus i never going negative: it starts at 0 and only counts up),
+    and a null check on a pointer that was just dereferenced disappears
+    (not under `--freestanding`, where address 0 may be mapped).
+  - Devirtualization (milestone 19): a virtual or interface call whose
+    receiver's possible classes all use the same method body is a direct
+    call.
+  - Inlining (milestone 19): every function is lowered and optimized
+    first; then, callees first, direct calls to small functions (up to 30
+    instructions, scalar parameters and result, no inline asm, not
+    recursive) are replaced by a renamed copy of the callee's IR and the
+    caller is optimized again, so constant arguments fold through and
+    `this->field` becomes a plain load. Constructors and accessors vanish.
+  - Division by a constant (milestone 19) is a multiply by a magic
+    reciprocal and shifts (as libdivide computes them; `tests/div_fuzz.py`
+    checks every type against Python), and powers of two are shifts.
   - Liveness over basic blocks, then linear-scan register allocation with
-    move hints. Values live across a call (or inline asm) get callee-saved
-    registers (rbx, r12-r15) or a spill slot; others prefer r10/r11; floats
-    use xmm8-xmm15. The argument registers, rax and xmm0-xmm7 are never
-    allocated, so setting up a call is plain moves, and no pointer is ever
-    left in a caller-saved register across a call, which keeps the
-    conservative GC correct.
-  - `WATR_DUMP_IR=1` prints each function's IR before and after.
-  - `make test` runs the test suite and the expression fuzzer at both
-    levels, and `bench/run.sh [-O0]` times a few benchmarks. At the time of
-    writing -O1 runs them 1.4x (calls) to 3x (float loops) faster than -O0.
+    move hints. Values live across a call (or inline asm), found exactly
+    by walking each block backwards, get callee-saved registers (rbx,
+    r12-r15) or a spill slot; others prefer r10/r11; floats use xmm8-xmm15.
+    The argument registers, rax and xmm0-xmm7 are never allocated, so
+    setting up a call is plain moves, and no pointer is ever left in a
+    caller-saved register across a call, which keeps the conservative GC
+    correct.
+  - A float comparison whose only use is a branch is one `ucomisd` and
+    conditional jumps (NaN takes the false side, except for `!=`).
+  - `WATR_DUMP_IR=1` prints each function's IR before and after;
+    `WATR_NO_INLINE=1` turns inlining off (for debugging).
+  - `make test` runs the test suite and the fuzzers at both levels, and
+    `bench/run.sh [-O0]` times a few benchmarks (best of 5). At the time of
+    writing -O1 runs them 2x (fib) to 4.5x (loops) faster than -O0; the
+    milestone 19 passes made bench/calls.watr 3x and objects 1.6x faster.
 
 **GC (milestone 11):** mark-and-sweep, written in watrlang in the runtime
 prelude, with **conservative** root scanning: any word that looks like a
@@ -638,6 +667,7 @@ Each milestone ends with tests passing and something you can run.
 | 16 | Inheritance            | `extends`, interfaces, `abstract`, `protected`, `parent::`, `instanceof` |
 | 17 | Generics               | `max<T>`, `Box<T>`, `Pair<A, B>`, generic interfaces; type inference for calls |
 | 18 | Standard library       | Vec, Map, sort, str, fmt, fs, os, time, rand, sys (syscalls in watrlang) |
+| 19 | Optimizer, part 2      | folding, extended-block propagation, bounds/null check removal, inlining, devirtualization, division by constants |
 | ∞  | Self-hosting           | watrc rewritten in watrlang                               |
 
 ## 6. Settled after the first pass

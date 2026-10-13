@@ -48,6 +48,7 @@ typedef struct {
 
     bool libc;              /* linked with the C runtime */
     bool freestanding;      /* no OS: the program supplies watr_write (and maybe watr_panic) */
+    const Program *prog;    /* the whole program (classes, for devirtualizing calls) */
     bool need_panic;        /* emit w.panic even without check sites */
     PtrVec panics;          /* PanicSite*: runtime check failure messages */
     PtrVec strings;         /* StringLit*: literals for .rodata */
@@ -80,6 +81,10 @@ const Field *eu_field(const Type *t, const char *name);
 void emit_virtual_call(Gen *g, const char *self, int slot, const char *iface);
 
 /* opt_*.c: one function at -O1. */
-void gen_function_opt(Gen *g, const Symbol *fn);
+/* -O1 (opt_emit.c): prepare every function, then emit them one by one. */
+typedef struct OptProgram OptProgram;
+OptProgram *opt_prepare(Gen *g);
+void opt_emit_function(OptProgram *p, size_t i);   /* prog->funcs[i] */
+void opt_free(OptProgram *p);
 
 #endif

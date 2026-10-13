@@ -46,7 +46,8 @@ The full plan is in [docs/DESIGN.md](docs/DESIGN.md).
 | 16. Inheritance: `extends`, interfaces, `abstract`, `protected`, `instanceof` | done |
 | 17. Generics: `max<T>`, `Box<T>`, `Pair<A, B>`, inference for calls | done |
 | 18. Standard library: `Vec<T>`, `Map<K, V>`, sort, fmt, fs, os, time, rand | done |
-| 19. More optimizations | next |
+| 19. Optimizer, part 2: inlining, devirtualization, constant folding, bounds-check removal | done |
+| 20+. More to come | planned |
 | ∞. Self-hosting | someday |
 
 ## It runs on bare metal

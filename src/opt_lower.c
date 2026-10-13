@@ -297,6 +297,31 @@ static int call_simple(Fn *f, const Symbol *fn, int *vals, size_t n) {
     return call_with(f, fn->asm_name, false, args, types, n, fn->type);
 }
 
+/* A virtual call that can only reach one method body, because every
+ * class the receiver could be uses the same one: that method, else NULL.
+ * (The receiver was already checked for null.) */
+static const Symbol *devirtualize(Fn *f, const Expr *e) {
+    const Type *rt = e->u.call.args[0]->type;
+    const Program *prog = f->g->prog;
+    const Symbol *only = NULL;
+    int slot = e->vslot - 1;
+    for (size_t i = 0; i < prog->nclasses; i++) {
+        const Type *c = prog->classes[i];
+        if (c->is_interface || c->is_abstract || !class_subtype(c, rt)) continue;
+        const Symbol *impl = NULL;
+        if (!e->viface) {
+            if ((size_t)slot < c->nvtable) impl = c->vtable[slot];
+        } else {
+            for (size_t j = 0; j < c->nifaces; j++)
+                if (c->ifaces[j] == e->viface && c->itables && c->itables[j]) impl = c->itables[j][slot];
+        }
+        if (!impl || !impl->reachable || !impl->decl || !impl->decl->u.func.body) return NULL;
+        if (only && only != impl) return NULL;
+        only = impl;
+    }
+    return only;
+}
+
 static int lower_call(Fn *f, const Expr *e) {
     const Symbol *fn = e->sym;
     if (e->builtin == BUILTIN_FREE) {
@@ -328,8 +353,9 @@ static int lower_call(Fn *f, const Expr *e) {
         }
         args[i] = v;
     }
-    int d = call_with(f, fn->asm_name, fn->is_variadic, args, types, n, fn->type);
-    if (e->vslot) {   /* the call is the last instruction emitted */
+    const Symbol *direct = e->vslot ? devirtualize(f, e) : NULL;
+    int d = call_with(f, direct ? direct->asm_name : fn->asm_name, fn->is_variadic, args, types, n, fn->type);
+    if (e->vslot && !direct) {   /* the call is the last instruction emitted */
         for (size_t i = f->n; i-- > 0;)
             if (f->code[i].op == I_CALL) {
                 f->code[i].call->vslot = e->vslot;

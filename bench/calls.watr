@@ -1,0 +1,35 @@
+// Small functions and methods in hot loops: Vec access, helpers, % by a
+// constant, bounds-checked arrays (exercises inlining and check removal).
+import "std/vec";
+
+function clamp(int x, int lo, int hi): int {
+    if (x < lo) { return lo; }
+    if (x > hi) { return hi; }
+    return x;
+}
+
+function mix(int a, int b): int { return (a * 31 + b) % 1000003; }
+
+class Acc {
+    private int total;
+    public function add(int x): void { this->total += x; }
+    public function get(): int { return this->total; }
+}
+
+function main(): int {
+    vec::Vec<int> v = new vec::Vec<int>();
+    for (int i = 0; i < 1000; i++) { v->push(i * 7 % 1000); }
+    int[256] table;
+    for (int i = 0; i < 256; i++) { table[i] = i * i % 251; }
+    Acc acc = new Acc();
+    int h = 0;
+    for (int round = 0; round < 20000; round++) {
+        for (int i = 0; i < v->len(); i++) {
+            int x = clamp(v->get(i) - 100, 0, 255);
+            h = mix(h, table[x]);
+        }
+        acc->add(h % 10);
+    }
+    echo h, " ", acc->get(), "\n";
+    return 0;
+}

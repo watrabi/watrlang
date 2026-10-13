@@ -43,6 +43,7 @@ test: $(BUILD)/watrc
 	python3 tests/prog_fuzz.py
 	python3 tests/abi_fuzz.py --programs 6
 	python3 tests/array_fuzz.py
+	python3 tests/div_fuzz.py
 	WATR_GC_STRESS=1 python3 tests/array_fuzz.py --programs 4
 	./tests/kernel_test.sh
 

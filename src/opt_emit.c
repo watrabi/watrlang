@@ -40,6 +40,9 @@ static const char *rname(int r, uint32_t size) {
 typedef struct {
     Fn *f;
     Gen *g;
+    int serial;             /* numbers this function's constant pool labels */
+    int *uses;              /* per vreg: how many instructions read it */
+    size_t skip;            /* an instruction already emitted as part of the one before */
     int nsaved;
     int saved[5];
     char buf[8][128];
@@ -71,7 +74,9 @@ static int spill_off(Em *e, int v) {
 /* "rbx", "qword ptr [rbp - 24]" or "42": v as an operand of `size` bytes. */
 static const char *opnd(Em *e, int v, uint32_t size) {
     char *b = tmpbuf(e);
-    if (is_imm(e, v)) snprintf(b, 128, "%lld", (long long)imm(e, v));
+    if (is_imm(e, v) && e->f->vk[v] != VK_INT)
+        snprintf(b, 128, "%s ptr [rip + .LF%d_%d]", e->f->vk[v] == VK_F32 ? "dword" : "qword", e->serial, v);
+    else if (is_imm(e, v)) snprintf(b, 128, "%lld", (long long)imm(e, v));
     else if (reg_of(e, v) >= 16) snprintf(b, 128, "xmm%d", reg_of(e, v) - 16);
     else if (reg_of(e, v) >= 0) snprintf(b, 128, "%s", rname(reg_of(e, v), size));
     else snprintf(b, 128, "%s ptr [rbp - %d]", size_ptr(size), spill_off(e, v));
@@ -110,6 +115,10 @@ static bool f32(Em *e, int v) {
 static void load_f(Em *e, int x, int v) {
     int r = reg_of(e, v);
     if (r == 16 + x) return;
+    if (is_imm(e, v) && imm(e, v) == 0) {   /* +0.0 */
+        emit(e->g, "xorps xmm%d, xmm%d", x, x);
+        return;
+    }
     if (r >= 16) emit(e->g, "movaps xmm%d, xmm%d", x, r - 16);
     else emit(e->g, "%s xmm%d, %s", f32(e, v) ? "movss" : "movsd", x, opnd(e, v, f32(e, v) ? 4 : 8));
 }
@@ -236,12 +245,125 @@ static void normalize_reg(Em *e, int r, const Type *t) {
     }
 }
 
+/* ---- division by constants ------------------------------------------------------
+ *
+ * x / d for a constant d becomes a multiply by a "magic" reciprocal, taking
+ * the high half of the 128-bit product, plus shifts: the method of
+ * Granlund and Montgomery, as libdivide computes it.
+ */
+
+__extension__ typedef unsigned __int128 u128;
+
+static int floor_log2(uint64_t v) {
+    return 63 - __builtin_clzll(v);
+}
+
+/* Unsigned: q = mulhi(magic, x) >> shift, or with `add`,
+ * q = (((x - t) >> 1) + t) >> shift where t = mulhi(magic, x). */
+static void udiv_magic(uint64_t d, uint64_t *magic, int *shift, bool *add) {
+    int l = floor_log2(d);
+    u128 num = (u128)1 << (64 + l);
+    uint64_t m = (uint64_t)(num / d), rem = (uint64_t)(num % d);
+    if (d - rem < ((uint64_t)1 << l)) {
+        *add = false;
+    } else {
+        m += m;
+        uint64_t twice = rem + rem;
+        if (twice >= d || twice < rem) m += 1;
+        *add = true;
+    }
+    *magic = m + 1;
+    *shift = l;
+}
+
+/* Signed (|d| not a power of two): q = mulhi_signed(magic, x), plus x (or
+ * minus x, for negative d) with `add`, then >> shift, then +1 if negative. */
+static void sdiv_magic(int64_t d, int64_t *magic, int *shift, bool *add) {
+    uint64_t abs_d = d < 0 ? 0 - (uint64_t)d : (uint64_t)d;
+    int l = floor_log2(abs_d);
+    u128 num = (u128)1 << (64 + l - 1);
+    uint64_t m = (uint64_t)(num / abs_d), rem = (uint64_t)(num % abs_d);
+    if (abs_d - rem < ((uint64_t)1 << l)) {
+        *add = false;
+        *shift = l - 1;
+    } else {
+        m += m;
+        uint64_t twice = rem + rem;
+        if (twice >= abs_d || twice < rem) m += 1;
+        *add = true;
+        *shift = l;
+    }
+    m += 1;
+    *magic = d < 0 ? (int64_t)(0 - m) : (int64_t)m;
+}
+
+/* x / d or x % d with a constant d (not 0, 1 or -1, already folded). The
+ * dividend goes in rcx; the quotient ends in rax, the remainder in rcx. */
+static bool emit_div_const(Em *e, const Ins *in) {
+    int64_t d = imm(e, in->b);
+    bool sgn = in->sub == B_SDIV || in->sub == B_SREM;
+    bool rem = in->sub == B_SREM || in->sub == B_UREM;
+    if (d == 0 || d == 1 || d == -1 || (!sgn && d < 0)) return false;
+    load_int(e, RCX, in->a);
+    uint64_t abs_d = d < 0 ? 0 - (uint64_t)d : (uint64_t)d;
+    if (sgn && (abs_d & (abs_d - 1)) == 0) {   /* x / 2^k, rounding toward zero: bias negative x first */
+        int k = floor_log2(abs_d);
+        emit(e->g, "mov rax, rcx");
+        emit(e->g, "sar rax, 63");
+        emit(e->g, "shr rax, %d", 64 - k);
+        emit(e->g, "add rax, rcx");
+        emit(e->g, "sar rax, %d", k);
+        if (d < 0) emit(e->g, "neg rax");
+    } else if (sgn) {
+        int64_t magic;
+        int shift;
+        bool add;
+        sdiv_magic(d, &magic, &shift, &add);
+        emit(e->g, "movabs rax, %lld", (long long)magic);
+        emit(e->g, "imul rcx");
+        if (add) emit(e->g, "%s rdx, rcx", d < 0 ? "sub" : "add");
+        if (shift) emit(e->g, "sar rdx, %d", shift);
+        emit(e->g, "mov rax, rdx");
+        emit(e->g, "shr rax, 63");
+        emit(e->g, "add rax, rdx");
+    } else if ((abs_d & (abs_d - 1)) == 0) {   /* unsigned powers of two above 2^31 */
+        emit(e->g, "mov rax, rcx");
+        emit(e->g, "shr rax, %d", floor_log2(abs_d));
+    } else {
+        uint64_t magic;
+        int shift;
+        bool add;
+        udiv_magic((uint64_t)d, &magic, &shift, &add);
+        emit(e->g, "movabs rax, %lld", (long long)magic);
+        emit(e->g, "mul rcx");
+        if (add) {
+            emit(e->g, "mov rax, rcx");
+            emit(e->g, "sub rax, rdx");
+            emit(e->g, "shr rax, 1");
+            emit(e->g, "add rax, rdx");
+            if (shift) emit(e->g, "shr rax, %d", shift);
+        } else {
+            if (shift) emit(e->g, "shr rdx, %d", shift);
+            emit(e->g, "mov rax, rdx");
+        }
+    }
+    if (rem) {   /* x - q * d */
+        emit(e->g, "imul rax, rax, %lld", (long long)d);
+        emit(e->g, "sub rcx, rax");
+        store_int(e, in->d, RCX);
+    } else {
+        store_int(e, in->d, RAX);
+    }
+    return true;
+}
+
 /* ---- instructions -------------------------------------------------------------- */
 
 static void emit_bin(Em *e, const Ins *in) {
     int a = in->a, b = in->b, d = in->d;
     switch (in->sub) {
     case B_SDIV: case B_UDIV: case B_SREM: case B_UREM: {
+        if (is_imm(e, b) && emit_div_const(e, in)) return;
         bool sgn = in->sub == B_SDIV || in->sub == B_SREM;
         const char *divisor;
         if (is_imm(e, b)) {
@@ -369,31 +491,78 @@ static void emit_ext(Em *e, const Ins *in) {
     store_int(e, in->d, t);
 }
 
-static void emit_fcmp(Em *e, const Ins *in) {
-    load_f(e, 0, in->a);
-    load_f(e, 1, in->b);
-    const char *ucom = f32(e, in->a) ? "ucomiss" : "ucomisd";
+/* ucomiss/ucomisd x, y: x from a register (or xmm0), y may be memory. */
+static void emit_ucomis(Em *e, int x, int y) {
+    const char *ucom = f32(e, x) ? "ucomiss" : "ucomisd";
+    int rx = reg_of(e, x) >= 16 ? reg_of(e, x) - 16 : 0;
+    if (rx == 0) load_f(e, 0, x);
+    emit(e->g, "%s xmm%d, %s", ucom, rx, opnd(e, y, f32(e, y) ? 4 : 8));
+}
+
+/* Compares for (a cc b): which operand goes first, and the flag test that
+ * means true (NaN compares false, except with !=). */
+static const char *fcmp_setup(Em *e, const Ins *in) {
     switch (in->sub) {
-    case CC_EQ:
-        emit(e->g, "%s xmm0, xmm1", ucom);
+    case CC_LT: emit_ucomis(e, in->b, in->a); return "a";
+    case CC_LE: emit_ucomis(e, in->b, in->a); return "ae";
+    case CC_GT: emit_ucomis(e, in->a, in->b); return "a";
+    case CC_GE: emit_ucomis(e, in->a, in->b); return "ae";
+    default: emit_ucomis(e, in->a, in->b); return NULL;   /* EQ, NE: need the parity flag too */
+    }
+}
+
+static void emit_fcmp(Em *e, const Ins *in) {
+    const char *cc = fcmp_setup(e, in);
+    if (in->sub == CC_EQ) {
         emit(e->g, "sete al");
         emit(e->g, "setnp cl");
         emit(e->g, "and al, cl");
-        break;
-    case CC_NE:
-        emit(e->g, "%s xmm0, xmm1", ucom);
+    } else if (in->sub == CC_NE) {
         emit(e->g, "setne al");
         emit(e->g, "setp cl");
         emit(e->g, "or al, cl");
-        break;
-    case CC_LT: emit(e->g, "%s xmm1, xmm0", ucom); emit(e->g, "seta al"); break;
-    case CC_LE: emit(e->g, "%s xmm1, xmm0", ucom); emit(e->g, "setae al"); break;
-    case CC_GT: emit(e->g, "%s xmm0, xmm1", ucom); emit(e->g, "seta al"); break;
-    default:    emit(e->g, "%s xmm0, xmm1", ucom); emit(e->g, "setae al"); break;
+    } else {
+        emit(e->g, "set%s al", cc);
     }
     int t = target(e, in->d, RAX);
     emit(e->g, "movzx %s, al", R32[t]);
     store_int(e, in->d, t);
+}
+
+static const char *negate_flag(const char *cc) {
+    return strcmp(cc, "a") == 0 ? "be" : "b";   /* !(CF=0 & ZF=0), !(CF=0) */
+}
+
+/* A float comparison whose only use is the branch right after it: one
+ * ucomis and conditional jumps, without making a bool first. lt/lf are
+ * where to go when the comparison is true/false. */
+static void emit_fcmp_branch(Em *e, const Ins *in, int lt, int lf, size_t i_next) {
+    const char *cc = fcmp_setup(e, in);
+    bool lf_next = next_is_label(e, i_next, lf), lt_next = next_is_label(e, i_next, lt);
+    if (in->sub == CC_EQ) {   /* true: ZF=1 and PF=0 */
+        emit(e->g, "jp .L%d", lf);
+        if (lt_next) {
+            emit(e->g, "jne .L%d", lf);
+        } else {
+            emit(e->g, "je .L%d", lt);
+            if (!lf_next) emit(e->g, "jmp .L%d", lf);
+        }
+    } else if (in->sub == CC_NE) {   /* true: ZF=0 or PF=1 */
+        emit(e->g, "jp .L%d", lt);
+        if (lf_next) {
+            emit(e->g, "jne .L%d", lt);
+        } else if (lt_next) {
+            emit(e->g, "je .L%d", lf);
+        } else {
+            emit(e->g, "jne .L%d", lt);
+            emit(e->g, "jmp .L%d", lf);
+        }
+    } else if (lt_next) {
+        emit(e->g, "j%s .L%d", negate_flag(cc), lf);
+    } else {
+        emit(e->g, "j%s .L%d", cc, lt);
+        if (!lf_next) emit(e->g, "jmp .L%d", lf);
+    }
 }
 
 static void emit_fbin(Em *e, const Ins *in) {
@@ -781,9 +950,19 @@ static void emit_ins(Em *e, size_t i) {
         store_int(e, d, t);
         return;
     }
-    case I_FCMP:
+    case I_FCMP: {
+        size_t j = i + 1;
+        while (j < e->f->n && e->f->code[j].op == I_NOP) j++;
+        const Ins *br = j < e->f->n ? &e->f->code[j] : NULL;
+        if (br && br->op == I_CBR && br->a == d && is_imm(e, br->b) && imm(e, br->b) == 0 &&
+            (br->sub == CC_NE || br->sub == CC_EQ) && e->uses[d] == 1) {
+            emit_fcmp_branch(e, in, br->sub == CC_NE ? br->l1 : br->l2, br->sub == CC_NE ? br->l2 : br->l1, j);
+            e->skip = j;
+            return;
+        }
         emit_fcmp(e, in);
         return;
+    }
     case I_I2F: case I_U2F: case I_F2I: case I_F2U: case I_F2F:
         emit_convert(e, in);
         return;
@@ -894,8 +1073,39 @@ void ir_emit_function(Fn *f) {
     emit(e.g, "mov rbp, rsp");
     for (int k = 0; k < e.nsaved; k++) emit(e.g, "push %s", R64[e.saved[k]]);
     if (frame) emit(e.g, "sub rsp, %d", frame);
-    for (size_t i = 0; i < f->n; i++) emit_ins(&e, i);
+    static int serial;
+    e.serial = serial++;
+    e.skip = (size_t)-1;
+    e.uses = calloc((size_t)f->nv + 1, sizeof *e.uses);
+    for (size_t i = 0; i < f->n; i++) {
+        int *ptrs[3], n;
+        Ins *in = &f->code[i];
+        if (in->op == I_NOP) continue;
+        ir_operand_ptrs(in, ptrs, &n);
+        for (int k = 0; k < n; k++) e.uses[*ptrs[k]]++;
+        if (in->call)
+            for (size_t k = 0; k < in->call->n; k++) e.uses[in->call->args[k]]++;
+        if (in->as)
+            for (size_t k = 0; k < in->as->stmt->u.asm_.nops; k++)
+                if (in->as->ins[k] >= 0) e.uses[in->as->ins[k]]++;
+    }
+    for (size_t i = 0; i < f->n; i++)
+        if (i != e.skip) emit_ins(&e, i);
     fprintf(out, "    .size %s, .-%s\n", name, name);
+    free(e.uses);
+
+    /* The float constants it reads. */
+    bool any = false;
+    for (int v = 0; v < f->nv; v++) {
+        if (!f->is_imm[v] || f->vk[v] == VK_INT) continue;
+        if (!any) fputs("    .section .rodata\n", out);
+        any = true;
+        if (f->vk[v] == VK_F32)
+            fprintf(out, "    .p2align 2\n.LF%d_%d:\n    .long %u\n", e.serial, v, (unsigned)(uint32_t)f->imm_val[v]);
+        else
+            fprintf(out, "    .p2align 3\n.LF%d_%d:\n    .quad %lld\n", e.serial, v, (long long)f->imm_val[v]);
+    }
+    if (any) fputs("    .text\n", out);
 }
 
 /* ---- debugging: WATR_DUMP_IR=1 prints each function's IR to stderr ------------------- */
@@ -921,19 +1131,9 @@ static void dump(const Fn *f, const char *when) {
     }
 }
 
-void gen_function_opt(Gen *g, const Symbol *fn) {
-    Fn f = {0};
-    f.g = g;
-    f.fn = fn;
-    bool dumping = getenv("WATR_DUMP_IR") != NULL;
-    ir_lower_function(&f);
-    if (dumping) dump(&f, "lowered");
-    ir_optimize(&f);
-    ir_allocate(&f);
-    if (dumping) dump(&f, "optimized");
-    ir_emit_function(&f);
-    for (size_t i = 0; i < f.n; i++) {
-        Ins *in = &f.code[i];
+static void free_fn(Fn *f) {
+    for (size_t i = 0; i < f->n; i++) {
+        Ins *in = &f->code[i];
         if (in->call) {
             free(in->call->args);
             free(in->call->types);
@@ -947,15 +1147,64 @@ void gen_function_opt(Gen *g, const Symbol *fn) {
             free(in->as);
         }
     }
-    free(f.code);
-    free(f.vk);
-    free(f.slots);
-    free(f.defers.items);
-    free(f.scopes);
-    free(f.loops);
-    free(f.params);
-    free(f.panic_jumps.items);
-    free(f.is_imm);
-    free(f.imm_val);
-    free(f.loc);
+    free(f->code);
+    free(f->vk);
+    free(f->slots);
+    free(f->defers.items);
+    free(f->scopes);
+    free(f->loops);
+    free(f->params);
+    free(f->panic_jumps.items);
+    free(f->is_imm);
+    free(f->imm_val);
+    free(f->loc);
+    free(f);
+}
+
+struct OptProgram {
+    Gen *g;
+    Fn **fns;           /* per prog->funcs[i]; NULL if it isn't compiled */
+    size_t n;
+    bool dumping;
+};
+
+/* Lowers and optimizes every function that will be compiled, then inlines
+ * small functions into their callers (which needs them all at once). */
+OptProgram *opt_prepare(Gen *g) {
+    const Program *prog = g->prog;
+    OptProgram *p = xmalloc(sizeof *p);
+    p->g = g;
+    p->n = prog->nfuncs;
+    p->fns = calloc(p->n + 1, sizeof *p->fns);
+    p->dumping = getenv("WATR_DUMP_IR") != NULL;
+    for (size_t i = 0; i < p->n; i++) {
+        const Symbol *fn = prog->funcs[i];
+        if (!fn->reachable || !fn->decl->u.func.body) continue;
+        Fn *f = calloc(1, sizeof *f);
+        f->g = g;
+        f->fn = fn;
+        ir_lower_function(f);
+        if (p->dumping) dump(f, "lowered");
+        ir_optimize(f);
+        p->fns[i] = f;
+    }
+    if (!getenv("WATR_NO_INLINE")) ir_inline_all(p->fns, p->n);   /* WATR_NO_INLINE=1: for debugging */
+    return p;
+}
+
+void opt_emit_function(OptProgram *p, size_t i) {
+    Fn *f = p->fns[i];
+    if (!f) return;
+    ir_allocate(f);
+    if (p->dumping) dump(f, "optimized");
+    ir_emit_function(f);
+    free_fn(f);
+    p->fns[i] = NULL;
+}
+
+void opt_free(OptProgram *p) {
+    for (size_t i = 0; i < p->n; i++)
+        if (p->fns[i]) free_fn(p->fns[i]);
+    free(p->fns);
+    free(p);
 }
