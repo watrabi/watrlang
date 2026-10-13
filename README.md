@@ -41,8 +41,16 @@ The full plan is in [docs/DESIGN.md](docs/DESIGN.md).
 | 11. Garbage collector for objects and strings; `std/gc` | done |
 | 12. `foreach`, PHP-style `array`, `mixed`, `std/arrays` | done |
 | 13. `--freestanding`, inline asm with operands, `#[packed]`, `#[align]` | done |
-| 14. Boot a kernel in QEMU | next |
-| 15. Optimizer | planned |
+| 14. A kernel in watrlang that boots in QEMU ([examples/kernel](examples/kernel)) | done |
+| 15. Optimizer | next |
+
+## It runs on bare metal
+
+[examples/kernel](examples/kernel) is a small x86-64 kernel written in
+watrlang: VGA and serial output, an interrupt table, and timer interrupts,
+built with `watrc --freestanding` and booted in QEMU.
+
+![the kernel's screen in QEMU](docs/img/kernel.png)
 
 ## Error messages
 

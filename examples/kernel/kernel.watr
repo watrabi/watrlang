@@ -1,0 +1,250 @@
+// A small x86-64 kernel in watrlang: VGA text output, a serial port,
+// interrupts (a breakpoint handler and the PIT timer), and a panic handler.
+//
+//   watrc --freestanding -T linker.ld -o kernel.elf kernel.watr boot.s
+//   objcopy -O elf32-i386 kernel.elf kernel32.elf     (QEMU wants ELF32)
+//   qemu-system-x86_64 -kernel kernel32.elf -serial stdio
+//
+// boot.s gets the CPU into 64-bit mode and calls kmain().
+
+// ---- port I/O -----------------------------------------------------------
+
+function outb(u16 port, u8 value): void {
+    asm("out dx, al" : in("dx") port, in("al") value);
+}
+
+function inb(u16 port): u8 {
+    u8 value;
+    asm("in al, dx" : in("dx") port, out("al") value);
+    return value;
+}
+
+// QEMU's isa-debug-exit device: QEMU exits with status (code << 1) | 1.
+function qemu_exit(u8 code): void {
+    outb(0xF4, code);
+}
+
+function halt(): void {
+    while (true) {
+        asm { "cli"; "hlt"; }
+    }
+}
+
+// ---- serial port (COM1) ---------------------------------------------------
+
+const u16 COM1 = 0x3F8;
+
+function serial_init(): void {
+    outb(COM1 + 1, 0x00);   // no interrupts
+    outb(COM1 + 3, 0x80);   // set the baud rate divisor...
+    outb(COM1 + 0, 0x03);   // ...to 3 (38400 baud)
+    outb(COM1 + 1, 0x00);
+    outb(COM1 + 3, 0x03);   // 8 bits, no parity, one stop bit
+    outb(COM1 + 2, 0xC7);   // FIFO on
+    outb(COM1 + 4, 0x0B);
+}
+
+function serial_put(u8 c): void {
+    while ((inb(COM1 + 5) & 0x20) == 0) {
+        // wait until the transmitter is free
+    }
+    outb(COM1, c);
+}
+
+// ---- VGA text mode ------------------------------------------------------------
+
+enum Color: u8 {
+    Black, Blue, Green, Cyan, Red, Magenta, Brown, LightGray,
+    DarkGray, LightBlue, LightGreen, LightCyan, LightRed, Pink, Yellow, White
+}
+
+const usize WIDTH = 80;
+const usize HEIGHT = 25;
+
+volatile u16* vga = 0xB8000 as volatile u16*;
+usize row;
+usize column;
+u8 attribute = 0x0F;
+
+function set_color(Color fg, Color bg): void {
+    attribute = (fg as u8) | ((bg as u8) << 4);
+}
+
+function vga_clear(): void {
+    for (usize i = 0; i < WIDTH * HEIGHT; i++) {
+        vga[i] = (attribute as u16) << 8 | 32;
+    }
+    row = 0;
+    column = 0;
+}
+
+function vga_newline(): void {
+    column = 0;
+    row++;
+    if (row < HEIGHT) {
+        return;
+    }
+    for (usize i = 0; i < WIDTH * (HEIGHT - 1); i++) {   // scroll up one line
+        vga[i] = vga[i + WIDTH];
+    }
+    for (usize i = WIDTH * (HEIGHT - 1); i < WIDTH * HEIGHT; i++) {
+        vga[i] = (attribute as u16) << 8 | 32;
+    }
+    row = HEIGHT - 1;
+}
+
+function vga_put(u8 c): void {
+    if (c == '\n') {
+        vga_newline();
+        return;
+    }
+    vga[row * WIDTH + column] = (attribute as u16) << 8 | c;
+    column++;
+    if (column == WIDTH) {
+        vga_newline();
+    }
+}
+
+// `echo` writes here: to the screen and the serial port.
+export function watr_write(const u8* p, usize n): void {
+    for (usize i = 0; i < n; i++) {
+        vga_put(p[i]);
+        serial_put(p[i]);
+    }
+}
+
+// Failed runtime checks (like an out-of-bounds index) end up here.
+export function watr_panic(const u8* msg, usize n): void {
+    set_color(Color::White, Color::Red);
+    echo "KERNEL PANIC: ";
+    watr_write(msg, n);
+    qemu_exit(1);
+    halt();
+}
+
+// ---- interrupts -----------------------------------------------------------
+
+#[packed]
+struct IdtEntry {
+    u16 offset_low;
+    u16 selector;
+    u8 ist;
+    u8 type_attr;
+    u16 offset_mid;
+    u32 offset_high;
+    u32 reserved;
+}
+
+#[packed]
+struct IdtPointer {
+    u16 limit;
+    u64 base;
+}
+
+#[align(16)]
+IdtEntry[256] idt;
+
+extern u8 isr_breakpoint;   // entry stubs in boot.s; only their addresses matter
+extern u8 isr_timer;
+
+function set_gate(usize vector, u64 handler): void {
+    IdtEntry* e = &idt[vector];
+    e->offset_low = (handler & 0xFFFF) as u16;
+    e->selector = 0x08;                        // the kernel code segment
+    e->ist = 0;
+    e->type_attr = 0x8E;                       // present, ring 0, interrupt gate
+    e->offset_mid = ((handler >> 16) & 0xFFFF) as u16;
+    e->offset_high = (handler >> 32) as u32;
+    e->reserved = 0;
+}
+
+function load_idt(): void {
+    IdtPointer p = IdtPointer { limit: (sizeof(IdtEntry) * 256 - 1) as u16, base: &idt[0] as u64 };
+    asm("lidt [rax]" : in("rax") &p);
+}
+
+int breakpoints;
+u64 ticks;
+
+export function on_breakpoint(): void {
+    breakpoints++;
+}
+
+export function on_timer(): void {
+    ticks++;
+    outb(0x20, 0x20);   // end of interrupt
+}
+
+// Moves the PIC's interrupts to 32-47 (0-31 are CPU exceptions) and lets
+// only the timer through.
+function pic_init(): void {
+    outb(0x20, 0x11);
+    outb(0xA0, 0x11);
+    outb(0x21, 32);
+    outb(0xA1, 40);
+    outb(0x21, 4);
+    outb(0xA1, 2);
+    outb(0x21, 1);
+    outb(0xA1, 1);
+    outb(0x21, 0xFE);   // unmask IRQ 0 only
+    outb(0xA1, 0xFF);
+}
+
+function pit_init(u32 hz): void {
+    u32 divisor = 1193182 / hz;
+    outb(0x43, 0x36);
+    outb(0x40, (divisor & 0xFF) as u8);
+    outb(0x40, (divisor >> 8) as u8);
+}
+
+// ---- the kernel -------------------------------------------------------------------
+
+struct Rect {
+    usize w;
+    usize h;
+}
+
+function area(Rect r): usize {
+    return r->w * r->h;
+}
+
+function fib(int n): int {
+    return n < 2 ? n : fib(n - 1) + fib(n - 2);
+}
+
+export function kmain(): void {
+    serial_init();
+    set_color(Color::LightGreen, Color::Black);
+    vga_clear();
+    echo "Hello from watrlang, running on bare metal!\n";
+    set_color(Color::White, Color::Black);
+
+    echo "fib(20) = ", fib(20), ", screen area = ", area(Rect { w: WIDTH, h: HEIGHT }), "\n";
+    echo "colors: ", Color::Yellow, " is ", Color::Yellow as int, "\n";
+    f64 ratio = 22.0 / 7.0;
+    echo "floats work too: ", (ratio * 1000.0) as int, "\n";
+
+    set_gate(3, &isr_breakpoint as u64);
+    set_gate(32, &isr_timer as u64);
+    load_idt();
+    asm { "int3"; "int3"; }
+    echo "breakpoints handled: ", breakpoints, "\n";
+
+    pic_init();
+    pit_init(100);
+    asm { "sti" }
+    while (ticks < 10) {
+        asm { "hlt" }
+    }
+    asm { "cli" }
+    echo "timer: ", ticks, " ticks\n";
+
+    u32 vga_sum = 0;
+    for (usize i = 0; i < 44; i++) {
+        vga_sum = vga_sum * 31 + (vga[i] & 0xFF);
+    }
+    echo "first line on screen hashes to ", vga_sum, "\n";
+    echo "goodbye\n";
+    qemu_exit(0x10);
+    halt();
+}

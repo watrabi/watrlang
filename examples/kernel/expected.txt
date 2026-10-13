@@ -1,0 +1,8 @@
+Hello from watrlang, running on bare metal!
+fib(20) = 6765, screen area = 2000
+colors: Yellow is 14
+floats work too: 3142
+breakpoints handled: 2
+timer: 10 ticks
+first line on screen hashes to 3145592454
+goodbye

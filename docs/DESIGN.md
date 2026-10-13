@@ -532,7 +532,7 @@ Each milestone ends with tests passing and something you can run.
 | 11 | GC                     | mark-and-sweep for `new` objects and strings; `alloc` in the same heap |
 | 12 | foreach, arrays        | `foreach (x as k => v)`, PHP-style `array`, `mixed`       |
 | 13 | Freestanding           | `--freestanding`, inline asm operands, `#[packed]`, `#[align(N)]`, `-c`, `-T` |
-| 14 | **Boot a kernel**      | multiboot kernel in QEMU prints to VGA, written in watrlang |
+| 14 | **Boot a kernel**      | multiboot kernel in QEMU prints to VGA, written in watrlang (`examples/kernel`) |
 | 15 | Optimizer              | IR + register allocation                                  |
 | ∞  | Self-hosting           | watrc rewritten in watrlang                               |
 
