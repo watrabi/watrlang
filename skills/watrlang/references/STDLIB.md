@@ -219,7 +219,7 @@ copy() makes an independent one.
 <a id="stdmodule-fs"></a>
 ## std/fs
 
-Files, through Linux system calls. Failures come back as IoError values:
+Files, on Linux and Windows. Failures come back as IoError values:
 
 ```watr
 import "std/fs";
@@ -228,7 +228,7 @@ bool saved = fs::write("out.txt", "hello\n") ?? false;
 ```
 
 - `enum IoError { NotFound, Denied, Exists, IsDir, NotDir, NotEmpty, Other }`
-- `function error_of(i64 r): IoError` — The IoError for a negative syscall result (-errno).
+- `function error_of(i64 r): IoError` — The IoError for a negative result (-errno, as std/platform returns).
 - `function describe(IoError e): string` — A sentence describing e, for messages.
 - `function read(string path): string!IoError` — The whole file as a string.
 - `function write(string path, string data): bool!IoError` — Replaces the file's contents (creating it if needed).
@@ -255,7 +255,7 @@ The process: command-line arguments, environment variables, exiting.
 <a id="stdmodule-time"></a>
 ## std/time
 
-Clocks and sleeping, through Linux system calls.
+Clocks and sleeping.
 
 - `function now_ns(): i64` — Nanoseconds on a clock that only goes forward (for measuring).
 - `function elapsed_ms(i64 start_ns): f64` — Milliseconds since `start_ns` (a value from now_ns()).
@@ -273,7 +273,7 @@ Clocks and sleeping, through Linux system calls.
 Pseudo-random numbers: xoshiro256** seeded through splitmix64. Not for
 cryptography: use std/crypto for keys, tokens and anything secret.
 Rng objects give repeatable sequences from a seed; the module-level
-functions use one seeded from the kernel's randomness.
+functions use one seeded from the operating system's randomness.
 
 ### `class Rng`
 
@@ -283,7 +283,7 @@ functions use one seeded from the kernel's randomness.
   - `public function unit(): f64` — A float in [0, 1).
   - `public function chance(f64 p): bool`
 
-- `function default_rng(): Rng` — The module's generator, seeded from getrandom() the first time.
+- `function default_rng(): Rng` — The module's generator, seeded from the OS's random generator the first time.
 - `function seed(u64 s): void`
 - `function range(int lo, int hi): int`
 - `function unit(): f64`
@@ -362,11 +362,11 @@ string token = crypto::sign(key, "user=42", 3600);   // valid for an hour
 string who = crypto::unsign(key, token) ?? "";
 ```
 
-Everything works on byte strings. Randomness comes from the kernel
-(getrandom), never from std/rand.
+Everything works on byte strings. Randomness comes from the operating
+system (getrandom on Linux, RtlGenRandom on Windows), never from std/rand.
 
 - `enum CryptoError { Invalid, Forged, Expired }`
-- `function random_bytes(usize n): string` — n bytes from the kernel's cryptographic random generator.
+- `function random_bytes(usize n): string` — n bytes from the OS's cryptographic random generator.
 - `function random_int(int lo, int hi): int` — A uniformly random integer in [lo, hi], inclusive, without modulo bias.
 - `function random_token(usize bytes): string` — A random URL-safe token carrying `bytes` bytes of randomness (32 is a good size for session ids and reset links).
 - `function equal(string a, string b): bool` — True if a and b are equal. Takes the same time wherever they differ, so it's safe for comparing MACs, tokens and hashes.
@@ -458,7 +458,8 @@ are freed automatically once nothing refers to them.
 
 Linux system calls, made directly with the `syscall` instruction (no C
 library needed). Each returns the kernel's result: a value >= 0, or
--errno on failure. std/fs, std/os and std/time are built on these.
+-errno on failure. Linux only: the portable modules (std/fs, std/os,
+std/time) go through std/platform, which uses these on Linux.
 
 - `function syscall0(i64 n): i64`
 - `function syscall1(i64 n, i64 a): i64`

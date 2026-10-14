@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include "clone.h"
+#include "target.h"
 #include "vec.h"
 
 /*
@@ -4556,6 +4557,14 @@ static void set_asm_name(Sema *S, Symbol *sym, const Decl *d) {
         return;
     }
     sym->asm_name = sym->name;
+    if (d->is_export && d->kind == DECL_FUNC && target_is_windows()) {
+        /* The body keeps watrlang's convention under an internal name;
+         * `name` itself is a thunk that C calls (codegen_win64.c). */
+        size_t n = strlen(sym->name) + 12;
+        char *name = arena_alloc(S->arena, n);
+        snprintf(name, n, "w.__export.%s", sym->name);
+        sym->asm_name = name;
+    }
     /* C functions link libc only if something reachable calls them (see the
      * reachability pass); C globals as soon as they're declared. */
     if (d->is_extern && d->kind == DECL_VAR) S->needs_libc = true;

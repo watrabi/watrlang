@@ -1,4 +1,5 @@
 // watrc-flags: --freestanding
+// targets: linux
 // No C library and no runtime heap: the program provides its own output
 // (here through Linux system calls, in a kernel through VGA or a serial port).
 

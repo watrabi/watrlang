@@ -47,6 +47,7 @@ Build the compiler (a C99 compiler, GNU `as` and `ld` are all it needs):
 ```sh
 make            # builds build/watrc
 make test       # the test suite, fuzzers, and a kernel booted in QEMU
+./install.sh    # optional: installs watrc into ~/.local and puts it on your PATH
 ```
 
 Write `hello.watr`:
@@ -68,6 +69,12 @@ build/watrc hello.watr      # writes ./hello
 
 `main` takes no parameters and returns `int`, which becomes the exit status.
 Command-line arguments come from `std/os` (`os::args()`).
+
+The same program builds for Windows, too (section 26):
+
+```sh
+build/watrc --target windows hello.watr    # writes hello.exe
+```
 
 ## 2. A tour
 
@@ -869,8 +876,12 @@ function main(): int {
 
 ## 21. The standard library
 
-Written in watrlang, and needing no C library. Full signatures are in
-[STDLIB.md](STDLIB.md); in short:
+Written in watrlang, and needing no C library on Linux. Everything except
+`std/sys` works on every target: the parts that talk to the operating
+system (files, clocks, randomness, the process) go through `std/platform`,
+which has a Linux and a Windows version (in `std/linux/` and
+`std/windows/`; `import "std/x"` takes the target's own `std/<os>/x.watr`
+when there is one). Full signatures are in [STDLIB.md](STDLIB.md); in short:
 
 | Module | Contents |
 |--------|----------|
@@ -892,7 +903,7 @@ Written in watrlang, and needing no C library. Full signatures are in
 | `std/password` | PHP-compatible password hash/verify/needs_rehash: Argon2id (and Argon2i/d), bcrypt, PBKDF2 formats; derive_key |
 | `std/mem` | copy, set, equal on raw bytes |
 | `std/gc` | collect, live_bytes, heap_bytes |
-| `std/sys` | raw Linux system calls |
+| `std/sys` | raw Linux system calls (Linux only) |
 
 ```watr
 import "std/vec";
@@ -939,8 +950,11 @@ function main(): int {
 ```
 
 - `extern function` declares a C function (`...` for variadic ones);
-  `extern T name;` a C global. Calls follow the System V ABI exactly,
-  including structs by value.
+  `extern T name;` a C global. Calls follow the platform's C ABI exactly,
+  including structs by value: System V on Linux, Microsoft x64 on Windows.
+- C types keep their C sizes: `long` is 64 bits on Linux but 32 on
+  Windows, so declare `long` parameters as `i64` or `i32` to match the
+  target (or use `long long`, which is `i64` everywhere).
 - `export` keeps a function's or global's plain symbol name so C can use it.
 - Extra `.c`, `.o` and `.a` files on the command line are compiled and
   linked in: `watrc main.watr helpers.c`. Programs that use C are linked
@@ -1052,6 +1066,7 @@ watrc [options] file.watr [file.c file.o lib.a ...]
 | `-S` | write assembly instead of an executable |
 | `-c` | write an object file |
 | `-O0`, `-O1` | `-O1` (the default) optimizes: register allocation, inlining, constant folding, bounds-check removal; `-O0` is a simple stack machine |
+| `--target T` | the platform: `x86_64-linux` (the default) or `x86_64-windows` (below) |
 | `--freestanding` | bare metal (section 24) |
 | `-T script`, `-e symbol` | linker script and entry point, with `--freestanding` |
 | `-v` | show the assembler and linker commands |
@@ -1073,6 +1088,29 @@ help: use `->`, which works on values and pointers alike
 7 |     echo p->x;
   |          ~~~~
 ```
+
+### Other platforms: Windows
+
+`--target x86_64-windows` (or just `--target windows`) cross-compiles to a
+Windows `.exe` from Linux. It needs mingw-w64 (`apt install
+gcc-mingw-w64-x86-64`), which assembles and links; `WATR_WINDOWS_CC`
+picks another compiler driver.
+
+```sh
+watrc --target windows app.watr          # app.exe
+watrc --target windows app.watr util.c   # C code is compiled with mingw-w64 too
+wine app.exe                             # try it without Windows
+```
+
+Programs behave the same on both: `echo` writes the same bytes (stdout is
+in binary mode, so `"\n"` isn't turned into `"\r\n"`), `std/fs` paths are
+UTF-8, `std/os` environment names ignore case as Windows does, and the
+exit status and panics work as on Linux. Windows programs link with the
+C runtime (msvcrt), so C functions are always available. What doesn't
+carry over: `std/sys` and inline assembly that makes Linux system calls,
+`--freestanding` (it makes ELF files), and C code that assumes Linux.
+A module can say which systems it supports with a first-line comment,
+`// targets: linux`; importing it elsewhere is error E0385.
 
 Environment variables: `WATR_STD` (where the standard library is),
 `WATR_GC_STRESS=1` (collect at every allocation, for testing),

@@ -1,34 +1,20 @@
-// Clocks and sleeping, through Linux system calls.
+// Clocks and sleeping.
 
-import "std/sys";
-
-private struct Timespec {
-    i64 sec;
-    i64 nsec;
-}
-
-private function clock(i64 which): i64 {
-    Timespec ts;
-    sys::syscall2(sys::CLOCK_GETTIME, which, (&ts) as i64);
-    return ts->sec * 1000000000 + ts->nsec;
-}
+import "std/platform";
 
 // Nanoseconds on a clock that only goes forward (for measuring).
-function now_ns(): i64 { return clock(1); }
+function now_ns(): i64 { return platform::monotonic_ns(); }
 
 // Milliseconds since `start_ns` (a value from now_ns()).
 function elapsed_ms(i64 start_ns): f64 { return (now_ns() - start_ns) as f64 / 1000000.0; }
 
 // Seconds since 1970-01-01 UTC.
-function unix(): i64 { return clock(0) / 1000000000; }
+function unix(): i64 { return platform::realtime_ns() / 1000000000; }
 
 // Milliseconds since 1970-01-01 UTC.
-function unix_ms(): i64 { return clock(0) / 1000000; }
+function unix_ms(): i64 { return platform::realtime_ns() / 1000000; }
 
-function sleep_ns(i64 ns): void {
-    Timespec ts = Timespec { sec: ns / 1000000000, nsec: ns % 1000000000 };
-    sys::syscall2(sys::NANOSLEEP, (&ts) as i64, 0);
-}
+function sleep_ns(i64 ns): void { platform::sleep_ns(ns); }
 
 function sleep_ms(int ms): void { sleep_ns(ms * 1000000); }
 

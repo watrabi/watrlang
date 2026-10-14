@@ -57,6 +57,8 @@ def module_doc(lines):
         s = line.strip()
         if not s.startswith("//"):
             break
+        if s.startswith("// targets:"):   # read by watrc's module loader
+            continue
         out.append(s[2:][1:] if s[2:].startswith(" ") else s[2:])
     return out
 

@@ -1,3 +1,4 @@
+// targets: linux   (it makes a raw Linux system call)
 // Inline assembly (Intel syntax) with register operands.
 function add(int a, int b): int {
     int r;

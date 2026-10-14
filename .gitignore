@@ -4,3 +4,4 @@ build/
 a.out
 !tests/run/*.s
 !examples/kernel/*.s
+*.exe

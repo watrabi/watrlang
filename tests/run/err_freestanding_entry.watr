@@ -1,2 +1,3 @@
 // watrc-flags: --freestanding
+// targets: linux
 function helper(): int { return 1; }

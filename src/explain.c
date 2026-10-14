@@ -1206,6 +1206,17 @@ static const Explanation explanations[] = {
      "    echo p->x;     // ok\n"
      "    echo \"x = \" . p->x;   // `.` joins the text"},
 
+    {"E0385",
+     "The imported module only works on some operating systems, and this\n"
+     "isn't one of them. A module says which in a comment line at its top:\n"
+     "\n"
+     "    // targets: linux\n"
+     "\n"
+     "std/sys is like that: it makes Linux system calls directly. The\n"
+     "portable modules (std/fs, std/os, std/time, std/rand) work on every\n"
+     "target, so a program built on them compiles for Linux and Windows\n"
+     "alike (`watrc --target x86_64-windows prog.watr`)."},
+
     {"E0900",
      "This feature is part of watrlang's design but isn't implemented yet.\n"
      "The message names the milestone that will add it; docs/DESIGN.md has\n"

@@ -1,9 +1,9 @@
 // Pseudo-random numbers: xoshiro256** seeded through splitmix64. Not for
 // cryptography: use std/crypto for keys, tokens and anything secret.
 // Rng objects give repeatable sequences from a seed; the module-level
-// functions use one seeded from the kernel's randomness.
+// functions use one seeded from the operating system's randomness.
 
-import "std/sys";
+import "std/platform";
 import "std/vec";
 
 class Rng {
@@ -73,11 +73,11 @@ private function rotl(u64 x, u64 k): u64 {
 
 private Rng shared = null;
 
-// The module's generator, seeded from getrandom() the first time.
+// The module's generator, seeded from the OS's random generator the first time.
 function default_rng(): Rng {
     if (shared == null) {
         u64 seed = 0;
-        sys::syscall3(sys::GETRANDOM, (&seed) as i64, 8, 0);
+        platform::random((&seed) as u8*, 8);
         shared = new Rng(seed);
     }
     return shared;

@@ -1,22 +1,24 @@
-// div() and ldiv() return structs by value: a real test of the ABI.
+// div() and lldiv() return structs by value: a real test of the ABI.
+// (lldiv, not ldiv: C's `long` is 32 bits on Windows, `long long` is 64
+// everywhere.)
 struct DivT {
     i32 quot;
     i32 rem;
 }
 
-struct LDivT {
+struct LLDivT {
     i64 quot;
     i64 rem;
 }
 
 extern function div(i32 n, i32 d): DivT;
-extern function ldiv(i64 n, i64 d): LDivT;
+extern function lldiv(i64 n, i64 d): LLDivT;
 extern function printf(const u8* fmt, ...): i32;
 
 function main(): int {
     DivT a = div(17, 5);
-    LDivT b = ldiv(-9000000000, 7);
+    LLDivT b = lldiv(-9000000000, 7);
     printf("div(17, 5) = %d rem %d\n", a->quot, a->rem);
-    printf("ldiv(-9000000000, 7) = %lld rem %lld\n", b->quot, b->rem);
+    printf("lldiv(-9000000000, 7) = %lld rem %lld\n", b->quot, b->rem);
     return (a->quot == 3 && a->rem == 2 && b->quot == -1285714285 && b->rem == -5) as int;
 }

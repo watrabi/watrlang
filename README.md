@@ -60,7 +60,8 @@ function main(): int {
 | 17. Generics: `max<T>`, `Box<T>`, `Pair<A, B>`, inference for calls | done |
 | 18. Standard library: `Vec<T>`, `Map<K, V>`, sort, fmt, fs, os, time, rand | done |
 | 19. Optimizer, part 2: inlining, devirtualization, constant folding, bounds-check removal | done |
-| 20+. More to come | planned |
+| 20. Windows: `--target x86_64-windows` builds .exe files; portable standard library | started |
+| 21+. More to come (macOS, a native Windows watrc, arm64) | planned |
 | ∞. Self-hosting | someday |
 
 ## It runs on bare metal
@@ -100,6 +101,17 @@ unreachable code) don't stop compilation.
 Needs a C99 compiler, `make`, and GNU binutils (`as`, `ld`) on x86-64 Linux.
 
 ```sh
+./install.sh                  # builds watrc, installs it into ~/.local, adds it to your PATH
+```
+
+That puts `watrc` in `~/.local/bin` and the standard library in
+`~/.local/lib/watrlang/std`, and adds a PATH line to your shell's startup
+file (bash, zsh, fish or `~/.profile`). `--prefix /usr/local` installs
+elsewhere, `--no-modify-path` leaves your shell files alone, and
+`--uninstall` removes it all. (`make install PREFIX=...` does the copying
+without the PATH part.) To work on the compiler itself:
+
+```sh
 make                          # builds build/watrc
 make test                     # runs the test suite
 make SAN=1 CC=gcc test        # same, with AddressSanitizer + UBSan
@@ -108,6 +120,26 @@ make SAN=1 CC=gcc test        # same, with AddressSanitizer + UBSan
 ./build/watrc --tokens file.watr   # dump tokens
 ./build/watrc --ast file.watr      # dump the syntax tree
 ```
+
+## Other platforms
+
+Programs can be compiled for Windows from Linux:
+
+```sh
+sudo apt install gcc-mingw-w64-x86-64   # the Windows assembler, linker and C runtime
+watrc --target windows hello.watr       # writes hello.exe
+wine hello.exe                          # or copy it to a Windows machine
+```
+
+The same source works on both: the standard library's file, clock,
+random and process functions have a Linux and a Windows implementation
+(`std/linux/`, `std/windows/`), and C interop follows each platform's C
+calling convention. `std/sys` (raw Linux system calls) and
+`--freestanding` stay Linux-only. See "Other platforms" in
+[docs/LANGUAGE.md](docs/LANGUAGE.md#26-the-compiler) for the details, and
+[docs/DESIGN.md](docs/DESIGN.md) for how a target is put together.
+`make test-windows` runs the test suite for Windows under Wine; CI also
+runs it on a real Windows machine.
 
 ## Tests
 

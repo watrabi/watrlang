@@ -1,0 +1,174 @@
+// The operating system layer under std/fs, std/os, std/time, std/rand and
+// std/crypto: Windows, through kernel32 and advapi32. The Linux version is
+// std/linux/platform.watr; both have the same functions, and results use
+// Linux's error numbers so std/fs reports the same IoError everywhere.
+//
+// Paths are UTF-8 and converted to UTF-16 for the wide (W) Windows calls.
+
+extern function GetLastError(): u32;
+extern function MultiByteToWideChar(u32 code_page, u32 flags, const u8* s, i32 n, u16* out, i32 cap): i32;
+extern function CreateFileW(const u16* name, u32 access, u32 share, u8* security, u32 disposition, u32 attrs, u8* tmpl): u8*;
+extern function ReadFile(u8* h, u8* buf, u32 n, u32* got, u8* overlapped): i32;
+extern function WriteFile(u8* h, const u8* buf, u32 n, u32* put, u8* overlapped): i32;
+extern function CloseHandle(u8* h): i32;
+extern function GetFileSizeEx(u8* h, i64* size): i32;
+extern function GetFileAttributesW(const u16* name): u32;
+extern function DeleteFileW(const u16* name): i32;
+extern function MoveFileExW(const u16* from, const u16* to, u32 flags): i32;
+extern function CreateDirectoryW(const u16* name, u8* security): i32;
+extern function RemoveDirectoryW(const u16* name): i32;
+extern function QueryPerformanceCounter(i64* count): i32;
+extern function QueryPerformanceFrequency(i64* freq): i32;
+extern function GetSystemTimePreciseAsFileTime(u64* ft): void;
+extern function Sleep(u32 ms): void;
+extern function GetCurrentProcessId(): u32;
+extern function SystemFunction036(u8* buf, u32 n): u8;   // RtlGenRandom
+
+// open() modes.
+const int READ = 0;     // an existing file
+const int WRITE = 1;    // created or emptied
+const int APPEND = 2;   // created if needed, written at the end
+
+// Environment variable names ignore case (Path and PATH are the same).
+const bool ENV_IGNORES_CASE = true;
+
+private const u32 INVALID_ATTRIBUTES = 4294967295;
+
+// A NUL-terminated copy of s, for the OS.
+function cstr(string s): const u8* {
+    return __rt_new_string(s->ptr, len(s))->ptr;
+}
+
+// s as NUL-terminated UTF-16.
+private function wide(string s): const u16* {
+    i32 n = MultiByteToWideChar(65001, 0, s->ptr, len(s) as i32, null, 0);   // CP_UTF8
+    u16* out = __rt_alloc_bytes((n as usize + 1) * 2) as u16*;   // zeroed: the NUL is there
+    MultiByteToWideChar(65001, 0, s->ptr, len(s) as i32, out, n);
+    return out;
+}
+
+// The last error as -errno.
+private function error(): i64 {
+    u32 e = GetLastError();
+    if (e == 2 || e == 3) { return -2; }      // FILE_NOT_FOUND, PATH_NOT_FOUND
+    if (e == 5 || e == 32) { return -13; }    // ACCESS_DENIED, SHARING_VIOLATION
+    if (e == 80 || e == 183) { return -17; }  // FILE_EXISTS, ALREADY_EXISTS
+    if (e == 267) { return -20; }             // DIRECTORY (not a directory name)
+    if (e == 145) { return -39; }             // DIR_NOT_EMPTY
+    return -5;
+}
+
+private function is_dir(const u16* name): bool {
+    u32 a = GetFileAttributesW(name);
+    return a != INVALID_ATTRIBUTES && (a & 16) != 0;   // FILE_ATTRIBUTE_DIRECTORY
+}
+
+// A file handle (>= 0), or -errno.
+function open(string path, int mode): i64 {
+    u32 access = 2147483648;   // GENERIC_READ
+    u32 disposition = 3;       // OPEN_EXISTING
+    if (mode == WRITE) {
+        access = 1073741824;   // GENERIC_WRITE
+        disposition = 2;       // CREATE_ALWAYS
+    } else if (mode == APPEND) {
+        access = 4;            // FILE_APPEND_DATA
+        disposition = 4;       // OPEN_ALWAYS
+    }
+    const u16* name = wide(path);
+    // Share everything, as POSIX does; FILE_ATTRIBUTE_NORMAL.
+    u8* h = CreateFileW(name, access, 7, null, disposition, 128, null);
+    if (h as i64 == -1) {
+        i64 e = error();
+        if (e == -13 && is_dir(name)) {   // Windows won't open a directory as a file
+            return -21;
+        }
+        return e;
+    }
+    return h as i64;
+}
+
+// Bytes read (0 at the end of the file), or -errno.
+function read(i64 fd, u8* buf, usize n): i64 {
+    u32 got = 0;
+    u32 want = n > 1073741824 ? 1073741824 : n as u32;
+    if (ReadFile(fd as u8*, buf, want, &got, null) == 0) {
+        if (GetLastError() == 109) {   // BROKEN_PIPE: the writer is done
+            return 0;
+        }
+        return error();
+    }
+    return got as i64;
+}
+
+// Bytes written, or -errno.
+function write(i64 fd, const u8* buf, usize n): i64 {
+    u32 put = 0;
+    u32 want = n > 1073741824 ? 1073741824 : n as u32;
+    if (WriteFile(fd as u8*, buf, want, &put, null) == 0) {
+        return error();
+    }
+    return put as i64;
+}
+
+function close(i64 fd): void {
+    CloseHandle(fd as u8*);
+}
+
+// The open file's size in bytes, or -errno.
+function size(i64 fd): i64 {
+    i64 n = 0;
+    if (GetFileSizeEx(fd as u8*, &n) == 0) {
+        return error();
+    }
+    return n;
+}
+
+function exists(string path): bool {
+    return GetFileAttributesW(wide(path)) != INVALID_ATTRIBUTES;
+}
+
+private function check(i32 ok): i64 {
+    return ok != 0 ? 0 : error();
+}
+
+// These return 0 or -errno.
+function remove(string path): i64 { return check(DeleteFileW(wide(path))); }
+function rename(string from, string to): i64 { return check(MoveFileExW(wide(from), wide(to), 1)); }   // REPLACE_EXISTING
+function mkdir(string path): i64 { return check(CreateDirectoryW(wide(path), null)); }
+function rmdir(string path): i64 { return check(RemoveDirectoryW(wide(path))); }
+
+// Nanoseconds on a clock that only goes forward.
+function monotonic_ns(): i64 {
+    i64 count = 0;
+    i64 freq = 1;
+    QueryPerformanceCounter(&count);
+    QueryPerformanceFrequency(&freq);
+    return count / freq * 1000000000 + count % freq * 1000000000 / freq;
+}
+
+// Nanoseconds since 1970-01-01 UTC.
+function realtime_ns(): i64 {
+    u64 ft = 0;   // 100 ns ticks since 1601-01-01
+    GetSystemTimePreciseAsFileTime(&ft);
+    return (ft as i64 - 116444736000000000) * 100;
+}
+
+function sleep_ns(i64 ns): void {
+    if (ns > 0) {
+        Sleep(((ns + 999999) / 1000000) as u32);   // whole milliseconds, rounded up
+    }
+}
+
+function pid(): int { return GetCurrentProcessId() as int; }
+
+// Fills p[0..n) from the OS's cryptographic random generator.
+function random(u8* p, usize n): void {
+    usize got = 0;
+    while (got < n) {
+        u32 chunk = n - got > 1073741824 ? 1073741824 : (n - got) as u32;
+        if (SystemFunction036(p + got, chunk) == 0) {
+            __rt_panic("panic: RtlGenRandom failed\n");
+        }
+        got += chunk as usize;
+    }
+}

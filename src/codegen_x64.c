@@ -4,6 +4,7 @@
 #include <string.h>
 
 #include "sema.h"
+#include "target.h"
 #include "vec.h"
 
 /*
@@ -57,6 +58,36 @@ int new_label(Gen *g) {
 
 void emit_label(Gen *g, int label) {
     fprintf(g->out, ".L%d:\n", label);
+}
+
+/* ---- object format ------------------------------------------------------------ */
+
+/* ELF on Linux, COFF on Windows: the same kinds of data, other names. */
+const char *section(SectionKind k) {
+    static const char *const elf[] = {".text", ".data", ".section .rodata", ".bss", ".section .data.rel.ro"};
+    /* Constants holding addresses go in .rdata too: Windows applies base
+     * relocations to read-only pages by itself. */
+    static const char *const coff[] = {".text", ".data", ".section .rdata,\"dr\"", ".bss", ".section .rdata,\"dr\""};
+    return (target_is_windows() ? coff : elf)[k];
+}
+
+void emit_func_begin(Gen *g, const char *name, bool global) {
+    fputc('\n', g->out);
+    if (global) fprintf(g->out, "    .globl %s\n", name);
+    if (!target_is_windows()) fprintf(g->out, "    .type %s, @function\n", name);
+    fprintf(g->out, "%s:\n", name);
+}
+
+void emit_func_end(Gen *g, const char *name) {
+    if (!target_is_windows()) fprintf(g->out, "    .size %s, .-%s\n", name, name);
+}
+
+/* Loads the address of an extern variable into `reg`. */
+void emit_extern_addr(Gen *g, const char *reg, const char *sym) {
+    if (target_is_windows())   /* the linker imports DLL data itself (mingw's auto-import) */
+        emit(g, "lea %s, [rip + %s]", reg, sym);
+    else
+        emit(g, "mov %s, qword ptr [rip + %s@GOTPCREL]", reg, sym);
 }
 
 /* ---- value classes ----------------------------------------------------------- */
@@ -501,7 +532,7 @@ static void gen_addr(Gen *g, const Expr *e) {
     char buf[96];
     switch (e->kind) {
     case EXPR_IDENT:
-        if (e->sym->is_extern) emit(g, "mov rax, qword ptr [rip + %s@GOTPCREL]", e->sym->asm_name);
+        if (e->sym->is_extern) emit_extern_addr(g, "rax", e->sym->asm_name);
         else emit(g, "lea rax, [%s]", var_addr(buf, sizeof buf, e->sym));
         return;
     case EXPR_UNARY:  /* *p */
@@ -923,8 +954,16 @@ static void gen_call(Gen *g, const Expr *e) {
     }
     if (fn->is_variadic) emit(g, "mov eax, %d", nsse);   /* vector registers used, for varargs */
 
-    if (e->vslot) emit_virtual_call(g, arg_regs[ret.memory ? 1 : 0]->q, e->vslot - 1, e->viface ? e->viface->desc_name : NULL);
-    else emit(g, "call %s", fn->asm_name);
+    if (e->vslot) {
+        emit_virtual_call(g, arg_regs[ret.memory ? 1 : 0]->q, e->vslot - 1, e->viface ? e->viface->desc_name : NULL);
+    } else if (target_is_windows() && fn->is_extern && !fn->is_runtime) {   /* C code: convert the call to Win64 */
+        const Type **types = xmalloc((n ? n : 1) * sizeof *types);
+        for (size_t i = 0; i < n; i++) types[i] = args[i].type;
+        emit(g, "call %s", win64_extern_thunk(g, fn, types, n));
+        free(types);
+    } else {
+        emit(g, "call %s", fn->asm_name);
+    }
     if (total) emit(g, "add rsp, %d", total);
     free(args);
 
@@ -1525,9 +1564,7 @@ static void gen_function(Gen *g, const Symbol *fn) {
 
     int frame = (g->frame + 15) & ~15;
     const char *name = fn->asm_name;
-    fputc('\n', g->out);
-    if (fn->is_export) fprintf(g->out, "    .globl %s\n", name);
-    fprintf(g->out, "    .type %s, @function\n%s:\n", name, name);
+    emit_func_begin(g, name, fn->is_export && !target_is_windows());   /* Windows exports go through a thunk */
     emit(g, "push rbp");
     emit(g, "mov rbp, rsp");
     if (frame) emit(g, "sub rsp, %d", frame);
@@ -1549,7 +1586,7 @@ static void gen_function(Gen *g, const Symbol *fn) {
     }
     emit(g, "leave");
     emit(g, "ret");
-    fprintf(g->out, "    .size %s, .-%s\n", name, name);
+    emit_func_end(g, name);
 }
 
 /* ---- data ------------------------------------------------------------------ */
@@ -1572,14 +1609,14 @@ static void emit_globals(Gen *g, const Program *prog) {
     /* .data: mutable with an initializer; .rodata: const; .bss: all zero;
      * .data.rel.ro: const but holding addresses, which the dynamic loader
      * may need to fill in before making it read-only. */
-    static const char *const sections[4] = {".data", ".rodata", ".bss", ".data.rel.ro"};
+    static const SectionKind sections[4] = {SEC_DATA, SEC_RODATA, SEC_BSS, SEC_RELRO};
     for (int sec = 0; sec < 4; sec++) {
         bool any = false;
         for (size_t i = 0; i < prog->nglobals; i++) {
             const Symbol *v = prog->globals[i];
             int want = v->is_const ? (v->nrelocs ? 3 : 1) : v->init ? 0 : 2;
             if (want != sec || v->type->size == 0 || v->is_extern) continue;
-            if (!any) fprintf(g->out, "\n    .section %s\n", sections[sec]);
+            if (!any) fprintf(g->out, "\n    %s\n", section(sections[sec]));
             any = true;
             if (v->is_export) fprintf(g->out, "    .globl %s\n", v->asm_name);
             uint32_t align = v->align > v->type->align ? v->align : v->type->align;
@@ -1613,7 +1650,7 @@ static void emit_class_descriptors(Gen *g, const Program *prog) {
     if (!prog->nclasses) return;
     FILE *out = g->out;
     int *names = xmalloc(prog->nclasses * sizeof *names);
-    fputs("\n    .section .data.rel.ro\n", out);
+    fprintf(out, "\n    %s\n", section(SEC_RELRO));
     for (size_t i = 0; i < prog->nclasses; i++) {
         const Type *t = prog->classes[i];
         names[i] = new_label(g);
@@ -1642,7 +1679,7 @@ static void emit_class_descriptors(Gen *g, const Program *prog) {
             for (size_t j = 0; j < t->ifaces[k]->nvtable; j++) fprintf(out, "    .quad %s\n", method_ref(t->itables[k][j]));
         }
     }
-    fputs("\n    .section .rodata\n", out);
+    fprintf(out, "\n    %s\n", section(SEC_RODATA));
     for (size_t i = 0; i < prog->nclasses; i++) {
         fprintf(out, ".Lcn%d:\n", names[i]);
         emit_ascii(out, prog->classes[i]->name);
@@ -1670,7 +1707,7 @@ static void emit_gc_roots(Gen *g, const Program *prog) {
         const Symbol *v = prog->globals[i];
         if (!v->is_extern && !v->is_runtime && has_pointers(v->type)) n++;
     }
-    fprintf(g->out, "\n    .section .data.rel.ro\n    .p2align 3\nw.__gc_roots:\n    .quad %zu\n", n);
+    fprintf(g->out, "\n    %s\n    .p2align 3\nw.__gc_roots:\n    .quad %zu\n", section(SEC_RELRO), n);
     for (size_t i = 0; i < prog->nglobals; i++) {
         const Symbol *v = prog->globals[i];
         if (!v->is_extern && !v->is_runtime && has_pointers(v->type))
@@ -1681,7 +1718,10 @@ static void emit_gc_roots(Gen *g, const Program *prog) {
 /* The runtime's assembly primitives (declared `extern` in the prelude). */
 static void emit_runtime_primitive(Gen *g, const char *name) {
     FILE *out = g->out;
-    fprintf(out, "\n    .type w.%s, @function\nw.%s:\n", name, name);
+    if (target_is_windows() && win64_runtime_primitive(g, name)) return;
+    char label[96];
+    snprintf(label, sizeof label, "w.%s", name);
+    emit_func_begin(g, label, false);
     if (strcmp(name, "__rt_exit") == 0) {
         if (g->libc)   /* exit() flushes stdio, which __rt_out writes through */
             fputs("    and rsp, -16\n"
@@ -1738,12 +1778,9 @@ static void emit_runtime_primitive(Gen *g, const char *name) {
     } else if (strcmp(name, "__rt_out_of_memory") == 0) {
         fputs("    lea rdi, [rip + .Lrt_oom]\n"
               "    mov esi, 21\n"
-              "    call w.panic\n"
-              "    .section .rodata\n"
-              ".Lrt_oom:\n"
-              "    .ascii \"panic: out of memory\\n\"\n"
-              "    .text\n",
+              "    call w.panic\n",
               out);
+        fprintf(out, "    %s\n.Lrt_oom:\n    .ascii \"panic: out of memory\\n\"\n    .text\n", section(SEC_RODATA));
         g->need_panic = true;
     } else if (strcmp(name, "__rt_panic") == 0) {   /* the string arrives as rdi = ptr, rsi = len */
         fputs("    jmp w.panic\n", out);
@@ -1792,7 +1829,7 @@ static void emit_runtime_primitive(Gen *g, const char *name) {
 static void emit_enum_name_fn(Gen *g, const Symbol *fn) {
     const Type *et = fn->enum_type;
     const char *name = fn->asm_name;
-    fprintf(g->out, "\n    .type %s, @function\n%s:\n", name, name);
+    emit_func_begin(g, name, false);
     int *labels = xmalloc((et->nvariants ? et->nvariants : 1) * sizeof *labels);
     for (size_t i = 0; i < et->nvariants; i++) {
         int64_t v = et->variants[i].value;
@@ -1813,7 +1850,7 @@ static void emit_enum_name_fn(Gen *g, const Symbol *fn) {
         emit(g, "mov edx, %zu", text.len);
         emit(g, "ret");
     }
-    fprintf(g->out, "    .size %s, .-%s\n", name, name);
+    emit_func_end(g, name);
     free(labels);
 }
 
@@ -1839,7 +1876,9 @@ void codegen_x64(const Module *m, const Program *prog, FILE *out) {
     g.prog = prog;
     fprintf(out, "# generated by watrc from %s\n", m->file->path);
     fputs("    .intel_syntax noprefix\n    .text\n", out);
-    if (g.freestanding) {
+    if (target_is_windows()) {
+        win64_emit_entry(&g);
+    } else if (g.freestanding) {
         /* No entry code: the program's boot code calls its exported functions. */
     } else if (g.libc) {
         /* Linked with the C runtime: its startup code calls this `main`. */
@@ -1852,6 +1891,7 @@ void codegen_x64(const Module *m, const Program *prog, FILE *out) {
               "    mov qword ptr [rip + w.__rt_stack_base], rsp\n"
               "    mov qword ptr [rip + w.__rt_argc], rdi\n"
               "    mov qword ptr [rip + w.__rt_argv], rsi\n"
+              "    mov qword ptr [rip + w.__rt_envp], rdx\n"
               "    call w.main\n"
               "    pop rbp\n"
               "    ret\n",
@@ -1866,6 +1906,9 @@ void codegen_x64(const Module *m, const Program *prog, FILE *out) {
               "    mov qword ptr [rip + w.__rt_argc], rax\n"
               "    lea rax, [rsp + 8]\n"
               "    mov qword ptr [rip + w.__rt_argv], rax\n"
+              "    mov rcx, qword ptr [rsp]\n"
+              "    lea rax, [rsp + 8*rcx + 16]\n"      /* envp: after argv's NULL */
+              "    mov qword ptr [rip + w.__rt_envp], rax\n"
               "    call w.main\n"
               "    mov edi, eax\n"
               "    mov eax, 60\n"
@@ -1880,6 +1923,7 @@ void codegen_x64(const Module *m, const Program *prog, FILE *out) {
         if (fn->decl->u.func.body) {
             if (g.opt) opt_emit_function(op, i);
             else gen_function(&g, fn);
+            if (fn->is_export && target_is_windows()) win64_emit_export_thunk(&g, fn);
         }
         else if (fn->is_runtime) emit_runtime_primitive(&g, fn->name);
     }
@@ -1892,7 +1936,9 @@ void codegen_x64(const Module *m, const Program *prog, FILE *out) {
         /* w.panic(msg = rdi, len = rsi): print to stderr, exit with status 101. */
         fputs("\n# Runtime check failures.\n"
               "w.panic:\n", out);
-        if (g.freestanding) {   /* the program's watr_panic(msg, len) if it has one, else stop here */
+        if (target_is_windows()) {
+            win64_emit_panic(&g);
+        } else if (g.freestanding) {   /* the program's watr_panic(msg, len) if it has one, else stop here */
             fputs("    .weak watr_panic\n"
                   "    movabs rax, offset watr_panic\n"
                   "    test rax, rax\n"
@@ -1928,7 +1974,7 @@ void codegen_x64(const Module *m, const Program *prog, FILE *out) {
                       "    syscall\n",
                       out);
         }
-        fputs("\n    .section .rodata\n", out);
+        fprintf(out, "\n    %s\n", section(SEC_RODATA));
         for (size_t i = 0; i < g.panics.len; i++) {
             PanicSite *site = g.panics.items[i];
             fprintf(out, ".Lpanic%d:\n", site->label);
@@ -1943,12 +1989,12 @@ void codegen_x64(const Module *m, const Program *prog, FILE *out) {
     emit_class_descriptors(&g, prog);
 
     if (g.strobjs.len) {   /* string values: {ptr, len} */
-        fputs("\n    .section .data.rel.ro\n    .p2align 3\n", out);
+        fprintf(out, "\n    %s\n    .p2align 3\n", section(SEC_RELRO));
         for (size_t i = 0; i < g.strobjs.len; i++) {
             StringLit *lit = g.strobjs.items[i];
             fprintf(out, ".Lstr%d:\n    .quad .Lsb%d, %zu\n", lit->label, lit->label, lit->bytes.len);
         }
-        fputs("\n    .section .rodata\n", out);
+        fprintf(out, "\n    %s\n", section(SEC_RODATA));
         for (size_t i = 0; i < g.strobjs.len; i++) {
             StringLit *lit = g.strobjs.items[i];
             fprintf(out, ".Lsb%d:\n", lit->label);
@@ -1959,7 +2005,7 @@ void codegen_x64(const Module *m, const Program *prog, FILE *out) {
     }
 
     if (g.strings.len) {
-        fputs("\n    .section .rodata\n", out);
+        fprintf(out, "\n    %s\n", section(SEC_RODATA));
         for (size_t i = 0; i < g.strings.len; i++) {
             StringLit *lit = g.strings.items[i];
             fprintf(out, ".Lstr%d:\n", lit->label);
@@ -1970,12 +2016,14 @@ void codegen_x64(const Module *m, const Program *prog, FILE *out) {
     }
 
 
-    /* Tell the linker this code doesn't need an executable stack. */
-    fputs("\n    .section .note.GNU-stack,\"\",@progbits\n", out);
+    if (target_is_windows()) win64_emit_thunks(&g);
+    else   /* tell the linker this code doesn't need an executable stack */
+        fputs("\n    .section .note.GNU-stack,\"\",@progbits\n", out);
 
     free(g.panics.items);
     free(g.strings.items);
     free(g.strobjs.items);
+    free(g.thunks.items);
     free(g.loops);
     free(g.defers.items);
     free(g.scopes);

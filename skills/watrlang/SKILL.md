@@ -5,7 +5,8 @@ description: Write, fix, explain, port, or review code in watrlang (.watr files,
 
 # Writing watrlang
 
-watrlang compiles to native x86-64 Linux code. It reads like PHP without
+watrlang compiles to native x86-64 code for Linux (and for Windows with
+`watrc --target windows`, which writes a .exe). It reads like PHP without
 the `$`, with C's explicit types. Most mistakes come from carrying over a
 PHP, C or JavaScript habit that watrlang deliberately rejects, so the rules
 below are worth reading closely even when the syntax looks familiar.

@@ -12,6 +12,7 @@
 
 #include "parser.h"
 #include "prelude.h"
+#include "target.h"
 #include "vec.h"
 
 #ifndef PATH_MAX
@@ -41,7 +42,8 @@ static const char *display_path(Arena *a, const char *path) {
 }
 
 /* The standard library: $WATR_STD, or std/ next to (or one level above)
- * the directory holding the watrc binary. */
+ * the directory holding the watrc binary, or where `make install` puts it
+ * (<prefix>/lib/watrlang/std for <prefix>/bin/watrc). */
 static const char *std_dir(Arena *a) {
     const char *env = getenv("WATR_STD");
     if (env && env[0]) return display_path(a, env);
@@ -51,10 +53,12 @@ static const char *std_dir(Arena *a) {
     exe[n] = '\0';
     char *slash = strrchr(exe, '/');
     if (slash) *slash = '\0';
-    char candidate[PATH_MAX + 16];
+    char candidate[PATH_MAX + 32];
     snprintf(candidate, sizeof candidate, "%s/std", exe);
     if (dir_exists(candidate)) return display_path(a, candidate);
     snprintf(candidate, sizeof candidate, "%s/../std", exe);
+    if (dir_exists(candidate)) return display_path(a, candidate);
+    snprintf(candidate, sizeof candidate, "%s/../lib/watrlang/std", exe);
     if (dir_exists(candidate)) return display_path(a, candidate);
     return "std";
 }
@@ -118,6 +122,45 @@ static int find_loaded(Loader *L, const char *real) {
     return -1;
 }
 
+/* A std module path for this target: std/<os>/NAME.watr if the OS has its
+ * own version (std/linux/platform.watr, std/windows/platform.watr), else
+ * std/NAME.watr. */
+static char *std_path(Loader *L, const char *name, size_t len) {
+    const char *os = watr_target->os_name;
+    size_t n = strlen(os) + len + 2;
+    char *rel = arena_alloc(L->arena, n);
+    snprintf(rel, n, "%s/%.*s", os, (int)len, name);
+    char *own = join(L->arena, L->std, rel, strlen(rel));
+    return file_exists(own) ? own : join(L->arena, L->std, name, len);
+}
+
+/* A module that starts with a `// targets: linux windows` comment line
+ * only works on those OSes (std/sys makes Linux system calls). Returns the
+ * list if this target isn't on it, else NULL. */
+static char *wrong_target(Loader *L, const char *path) {
+    FILE *f = fopen(path, "r");
+    if (!f) return NULL;
+    char line[256];
+    char *found = NULL;
+    while (fgets(line, sizeof line, f) && strncmp(line, "//", 2) == 0) {
+        if (strncmp(line, "// targets:", 11) != 0) continue;
+        char *list = line + 11;
+        list[strcspn(list, "\r\n")] = '\0';
+        while (*list == ' ') list++;
+        bool listed = false;
+        for (char *w = list; *w;) {
+            size_t k = strcspn(w, " ,");
+            listed |= k == strlen(watr_target->os_name) && strncmp(w, watr_target->os_name, k) == 0;
+            w += k;
+            w += strspn(w, " ,");
+        }
+        if (!listed) found = arena_strndup(L->arena, list, strlen(list));
+        break;
+    }
+    fclose(f);
+    return found;
+}
+
 static Module *parse_path(Loader *L, const char *path) {
     SrcFile *f = src_load(L->arena, path);
     if (!f) return NULL;
@@ -154,13 +197,24 @@ static void resolve_imports(Loader *L, int index) {
         const char *path = d->u.import.path.data;
         size_t len = d->u.import.path.len;
         bool is_std = len > 4 && strncmp(path, "std/", 4) == 0;
-        char *resolved = is_std ? join(L->arena, L->std, path + 4, len - 4) : join(L->arena, dir, path, len);
+        char *resolved = is_std ? std_path(L, path + 4, len - 4) : join(L->arena, dir, path, len);
 
         if (!file_exists(resolved)) {
             Diag *e = diag_start(DIAG_ERROR, "E0342", d->loc, "can't find module `%.*s`", (int)len, path);
             diag_label(e, "no file at %s", resolved);
             if (is_std) diag_note(e, "the standard library is in %s (set WATR_STD to change it)", L->std);
             else diag_note(e, "import paths are relative to the importing file, without the .watr extension");
+            diag_end(e);
+            L->ok = false;
+            d->u.import.module = -1;
+            continue;
+        }
+        const char *only = wrong_target(L, resolved);
+        if (only) {
+            Diag *e = diag_start(DIAG_ERROR, "E0385", d->loc, "module `%.*s` isn't available on %s", (int)len, path,
+                                 watr_target->name);
+            diag_label(e, "only for: %s", only);
+            if (is_std) diag_note(e, "std/fs, std/os, std/time and std/rand work on every target");
             diag_end(e);
             L->ok = false;
             d->u.import.module = -1;

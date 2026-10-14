@@ -8,6 +8,7 @@
 #include <unistd.h>
 
 #include "diag.h"
+#include "target.h"
 
 bool write_file(const char *path, const char *data, size_t len) {
     FILE *f = fopen(path, "wb");
@@ -23,7 +24,7 @@ bool write_file(const char *path, const char *data, size_t len) {
 
 /* Runs argv[0] with arguments and waits. No shell is involved, so paths
  * with spaces or quotes are passed through untouched. */
-static bool run(char *const argv[], bool verbose) {
+static bool run_tool(char *const argv[], bool verbose, bool assembling) {
     if (verbose) {
         for (int i = 0; argv[i]; i++) fprintf(stderr, "%s%s", i ? " " : "", argv[i]);
         fputc('\n', stderr);
@@ -39,7 +40,8 @@ static bool run(char *const argv[], bool verbose) {
         execvp(argv[0], argv);
         /* Only reached if exec failed; 127 is the shell convention for "not found". */
         fprintf(stderr, "error: cannot run `%s`: %s (is %s installed?)\n", argv[0], strerror(errno),
-                strcmp(argv[0], "as") == 0 || strcmp(argv[0], "ld") == 0 ? "GNU binutils" : "a C compiler");
+                strstr(argv[0], "mingw") ? "mingw-w64 (set WATR_WINDOWS_CC to use another compiler)"
+                : strcmp(argv[0], "as") == 0 || strcmp(argv[0], "ld") == 0 ? "GNU binutils" : "a C compiler");
         _exit(127);
     }
 
@@ -52,11 +54,15 @@ static bool run(char *const argv[], bool verbose) {
     }
     if (WIFEXITED(status) && WEXITSTATUS(status) == 0) return true;
     if (WIFEXITED(status) && WEXITSTATUS(status) == 127) return false;  /* already explained */
-    if (strcmp(argv[0], "as") == 0)
+    if (assembling)
         fprintf(stderr, "error: the assembler rejected watrc's output; this is a compiler bug, please report it\n");
     else
         fprintf(stderr, "error: linking failed (see the messages above)\n");
     return false;
+}
+
+static bool run(char *const argv[], bool verbose) {
+    return run_tool(argv, verbose, strcmp(argv[0], "as") == 0);
 }
 
 /* Creates an empty temp file and returns its malloc'd path. */
@@ -86,7 +92,53 @@ static const char *c_compiler(void) {
     return cc && cc[0] ? cc : "cc";
 }
 
+/* The C compiler that targets Windows: mingw-w64's gcc, which also
+ * assembles (GNU as for COFF) and links against msvcrt. */
+static const char *windows_cc(void) {
+    const char *cc = getenv("WATR_WINDOWS_CC");
+    return cc && cc[0] ? cc : "x86_64-w64-mingw32-gcc";
+}
+
+/* Windows: always through the C compiler, with the C runtime. */
+static bool build_windows(const char *asm_path, const char *obj_path, const char *out_path, const BuildOptions *o) {
+    const char *cc = windows_cc();
+    char *as_argv[] = {(char *)cc, "-c", "-x", "assembler", "-o", (char *)(o->mode == BUILD_OBJECT ? out_path : obj_path),
+                       (char *)asm_path, NULL};
+    if (!run_tool(as_argv, o->verbose, true)) return false;
+    if (o->mode == BUILD_OBJECT) return true;
+
+    char **argv = xmalloc((o->nextra + 12) * sizeof *argv);
+    size_t n = 0;
+    argv[n++] = (char *)cc;
+    argv[n++] = "-o";
+    argv[n++] = (char *)out_path;
+    argv[n++] = (char *)obj_path;
+    for (size_t i = 0; i < o->nextra; i++) argv[n++] = (char *)o->extra[i];
+    /* An 8 MiB stack, like Linux's default, committed up front: watrlang
+     * functions don't probe the stack page by page, which a stack that
+     * Windows grows on demand would need for frames over 4 KiB. */
+    argv[n++] = "-Xlinker";
+    argv[n++] = "--stack";
+    argv[n++] = "-Xlinker";
+    argv[n++] = "8388608,8388608";
+    argv[n] = NULL;
+    bool ok = run_tool(argv, o->verbose, false);
+    free(argv);
+    return ok;
+}
+
 bool toolchain_build(const char *asm_text, size_t asm_len, const char *out_path, const BuildOptions *o) {
+    if (target_is_windows()) {
+        char *asm_path = make_temp();
+        char *obj_path = asm_path ? make_temp() : NULL;
+        bool ok = asm_path && obj_path && write_file(asm_path, asm_text, asm_len) &&
+                  build_windows(asm_path, obj_path, out_path, o);
+        if (asm_path) unlink(asm_path);
+        if (obj_path) unlink(obj_path);
+        free(asm_path);
+        free(obj_path);
+        return ok;
+    }
     char *asm_path = make_temp();
     char *obj_path = asm_path ? make_temp() : NULL;
     bool ok = asm_path && obj_path && write_file(asm_path, asm_text, asm_len);

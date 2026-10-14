@@ -8,10 +8,10 @@
 //     string token = crypto::sign(key, "user=42", 3600);   // valid for an hour
 //     string who = crypto::unsign(key, token) ?? "";
 //
-// Everything works on byte strings. Randomness comes from the kernel
-// (getrandom), never from std/rand.
+// Everything works on byte strings. Randomness comes from the operating
+// system (getrandom on Linux, RtlGenRandom on Windows), never from std/rand.
 
-import "std/sys";
+import "std/platform";
 import "std/hash";
 import "std/time";
 
@@ -19,18 +19,10 @@ enum CryptoError { Invalid, Forged, Expired }
 
 // --- randomness ---
 
-// n bytes from the kernel's cryptographic random generator.
+// n bytes from the OS's cryptographic random generator.
 function random_bytes(usize n): string {
     u8* p = __rt_alloc_bytes(n + 1);
-    usize got = 0;
-    while (got < n) {
-        i64 r = sys::syscall3(sys::GETRANDOM, (p + got) as i64, (n - got) as i64, 0);
-        if (r > 0) {
-            got += r as usize;
-        } else if (r != -4) {
-            __rt_panic("crypto::random_bytes: getrandom failed");
-        }
-    }
+    platform::random(p, n);
     return string { ptr: p, len: n };
 }
 

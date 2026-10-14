@@ -14,10 +14,12 @@ value, in both directions:
 main() returns the index of the first disagreement, or 0.
 
     python3 tests/abi_fuzz.py [--seed N] [--programs N]
+    python3 tests/abi_fuzz.py --target windows   # Win64 thunks; mingw-w64 C, run with Wine
 """
 import argparse
 import os
 import random
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -191,7 +193,14 @@ def main():
     ap.add_argument("--structs", type=int, default=6)
     ap.add_argument("--watrc", default=os.path.join(os.path.dirname(__file__), "..", "build", "watrc"))
     ap.add_argument("--keep", help="directory to save failing programs in")
+    ap.add_argument("--target", help="compile for this target (windows runs the programs with $WINE)")
     args = ap.parse_args()
+    target_flags = ["--target", args.target] if args.target else []
+    runner, exe = [], ""
+    if args.target and "windows" in args.target:
+        wine = os.environ.get("WINE") or shutil.which("wine64") or shutil.which("wine") or "/usr/lib/wine/wine64"
+        runner, exe = [wine], ".exe"
+        os.environ["WINEDEBUG"] = "-all"
 
     rng = random.Random(args.seed)
     failures = 0
@@ -200,17 +209,17 @@ def main():
             structs = gen_structs(rng, args.structs)
             wsrc, nchecks = w_source(structs)
             csrc = c_source(structs)
-            wpath, cpath, bpath = (os.path.join(tmp, f"p{n}{ext}") for ext in (".watr", ".c", ""))
+            wpath, cpath, bpath = (os.path.join(tmp, f"p{n}{ext}") for ext in (".watr", ".c", exe))
             with open(wpath, "w") as f:
                 f.write(wsrc)
             with open(cpath, "w") as f:
                 f.write(csrc)
-            c = subprocess.run([args.watrc, "-o", bpath, wpath, cpath], capture_output=True, text=True)
+            c = subprocess.run([args.watrc, *target_flags, "-o", bpath, wpath, cpath], capture_output=True, text=True)
             ok = c.returncode == 0
             if not ok:
                 print(f"program {n}: compile failed\n{c.stderr[:3000]}")
             else:
-                r = subprocess.run([bpath])
+                r = subprocess.run([*runner, bpath])
                 ok = r.returncode == 0
                 if not ok:
                     print(f"program {n}: check {r.returncode} of {nchecks} failed")

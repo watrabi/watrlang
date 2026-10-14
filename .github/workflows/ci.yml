@@ -34,3 +34,48 @@ jobs:
         run: make
       - name: Boot the example kernel
         run: ./tests/kernel_test.sh
+
+  # The Windows target, cross-compiled on Linux and run under Wine, plus the
+  # C ABI fuzzer through the Win64 thunks.
+  windows-wine:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install mingw-w64 and Wine
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends gcc-mingw-w64-x86-64 binutils-mingw-w64-x86-64 wine64
+      - name: Build
+        run: make
+      - name: Test
+        run: make test-windows
+
+  # Wine passes some things through to Linux (even raw system calls), so the
+  # same .exe files also run on a real Windows machine.
+  windows-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install mingw-w64
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends gcc-mingw-w64-x86-64 binutils-mingw-w64-x86-64
+      - name: Build watrc
+        run: make
+      - name: Cross-compile the tests
+        run: WATR_TARGET=windows WATR_BUILD_ONLY=1 ./tests/run_tests.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-tests
+          path: build/tests/
+
+  windows-run:
+    needs: windows-build
+    runs-on: windows-latest
+    steps:
+      - name: Keep line endings as they are (the .expected files hold exact output)
+        run: git config --global core.autocrlf false
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-tests
+          path: build/tests/
+      - name: Run the tests on Windows
+        shell: bash
+        run: WATR_TARGET=windows WATR_PREBUILT=1 ./tests/run_tests.sh
