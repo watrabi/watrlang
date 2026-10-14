@@ -15,7 +15,13 @@ SRCS  := $(wildcard src/*.c)
 OBJS  := $(SRCS:src/%.c=$(BUILD)/%.o)
 DEPS  := $(OBJS:.o=.d)
 
-.PHONY: all test clean run-kernel docs
+# make install PREFIX=~/.local: bin/watrc, and the standard library in
+# lib/watrlang/std, where watrc looks for it. (./install.sh does this and
+# puts the bin directory on your PATH.)
+PREFIX  ?= /usr/local
+DESTDIR ?=
+
+.PHONY: all test test-windows clean run-kernel docs install uninstall
 
 all: $(BUILD)/watrc
 
@@ -47,6 +53,23 @@ test: $(BUILD)/watrc
 	WATR_GC_STRESS=1 python3 tests/array_fuzz.py --programs 4
 	python3 tools/check_docs.py
 	./tests/kernel_test.sh
+
+# The Windows target, without Windows: cross-compiled with mingw-w64 and
+# run under Wine (WINE=/path/to/wine to pick one).
+test-windows: $(BUILD)/watrc
+	WATR_TARGET=windows ./tests/run_tests.sh
+	WATR_TARGET=windows WATR_OPT=0 ./tests/run_tests.sh
+	python3 tests/abi_fuzz.py --target windows --programs 6
+
+install: $(BUILD)/watrc
+	mkdir -p $(DESTDIR)$(PREFIX)/bin $(DESTDIR)$(PREFIX)/lib/watrlang
+	cp $(BUILD)/watrc $(DESTDIR)$(PREFIX)/bin/watrc
+	rm -rf $(DESTDIR)$(PREFIX)/lib/watrlang/std
+	cp -R std $(DESTDIR)$(PREFIX)/lib/watrlang/std
+
+uninstall:
+	rm -f $(DESTDIR)$(PREFIX)/bin/watrc
+	rm -rf $(DESTDIR)$(PREFIX)/lib/watrlang
 
 # Regenerates docs/STDLIB.md from std/ and copies the guides into the LLM
 # skill (skills/watrlang), which ships them as references.

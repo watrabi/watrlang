@@ -275,6 +275,7 @@ static int call_with(Fn *f, const char *name, bool variadic, int *args, const Ty
     c->ret_slot = -1;
     c->vslot = 0;
     c->iface = NULL;
+    c->foreign = NULL;
     Ins *in = ir_emit(f, I_CALL);
     in->call = c;
     if (ret->kind == TY_VOID) return -1;
@@ -355,6 +356,12 @@ static int lower_call(Fn *f, const Expr *e) {
     }
     const Symbol *direct = e->vslot ? devirtualize(f, e) : NULL;
     int d = call_with(f, direct ? direct->asm_name : fn->asm_name, fn->is_variadic, args, types, n, fn->type);
+    if (target_is_windows() && fn->is_extern && !fn->is_runtime && !e->vslot)
+        for (size_t i = f->n; i-- > 0;)
+            if (f->code[i].op == I_CALL) {
+                f->code[i].call->foreign = fn;
+                break;
+            }
     if (e->vslot && !direct) {   /* the call is the last instruction emitted */
         for (size_t i = f->n; i-- > 0;)
             if (f->code[i].op == I_CALL) {

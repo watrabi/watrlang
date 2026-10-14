@@ -21,7 +21,7 @@ function main(): int {
     echo fs::exists("build/tests/std_fs_dir"), " ", fs::rmdir("build/tests/std_fs_dir") ?? false, "\n";
 
     vec::Vec<string> a = os::args();
-    echo a->len(), " ", os::argc(), " ", str::ends_with(a->get(0), "std_fs_os_fmt"), "\n";
+    echo a->len(), " ", os::argc(), " ", str::contains(a->get(0), "std_fs_os_fmt"), "\n";
     echo os::has_env("PATH"), " [", os::getenv("WATR_SURELY_NOT_SET"), "] ", os::pid() > 0, "\n";
 
     echo fmt::pad_left("7", 3, '0'), " ", fmt::pad_right("ab", 5, '.'), "|", fmt::center("hi", 6, '*'), "\n";

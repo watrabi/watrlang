@@ -1,0 +1,99 @@
+// The operating system layer under std/fs, std/os, std/time, std/rand and
+// std/crypto: Linux, through system calls. `import "std/platform"` loads
+// this file when compiling for Linux and std/windows/platform.watr when
+// compiling for Windows; both have the same functions.
+//
+// Results follow Linux: a value >= 0, or -errno (2 not found, 13 denied,
+// 17 exists, 20 not a directory, 21 is a directory, 39 not empty, 5 other).
+
+import "std/sys";
+
+// open() modes.
+const int READ = 0;     // an existing file
+const int WRITE = 1;    // created or emptied
+const int APPEND = 2;   // created if needed, written at the end
+
+// Environment variable names are case-sensitive.
+const bool ENV_IGNORES_CASE = false;
+
+// A NUL-terminated copy of s, for the OS.
+function cstr(string s): const u8* {
+    return __rt_new_string(s->ptr, len(s))->ptr;
+}
+
+// A file handle (>= 0), or -errno.
+function open(string path, int mode): i64 {
+    i64 flags = 0;                        // O_RDONLY
+    if (mode == WRITE) {
+        flags = 1 | 64 | 512;             // O_WRONLY | O_CREAT | O_TRUNC
+    } else if (mode == APPEND) {
+        flags = 1 | 64 | 1024;            // O_WRONLY | O_CREAT | O_APPEND
+    }
+    return sys::syscall3(sys::OPEN, cstr(path) as i64, flags | 524288, 420);   // O_CLOEXEC, mode 0644
+}
+
+// Bytes read (0 at the end of the file), or -errno.
+function read(i64 fd, u8* buf, usize n): i64 {
+    return sys::syscall3(sys::READ, fd, buf as i64, n as i64);
+}
+
+// Bytes written, or -errno.
+function write(i64 fd, const u8* buf, usize n): i64 {
+    return sys::syscall3(sys::WRITE, fd, buf as i64, n as i64);
+}
+
+function close(i64 fd): void {
+    sys::syscall1(sys::CLOSE, fd);
+}
+
+// The open file's size in bytes, or -errno.
+function size(i64 fd): i64 {
+    return sys::syscall3(sys::LSEEK, fd, 0, 2);   // SEEK_END
+}
+
+function exists(string path): bool {
+    return sys::syscall2(sys::ACCESS, cstr(path) as i64, 0) == 0;
+}
+
+// These return 0 or -errno.
+function remove(string path): i64 { return sys::syscall1(sys::UNLINK, cstr(path) as i64); }
+function rename(string from, string to): i64 { return sys::syscall2(sys::RENAME, cstr(from) as i64, cstr(to) as i64); }
+function mkdir(string path): i64 { return sys::syscall2(sys::MKDIR, cstr(path) as i64, 493); }   // 0755
+function rmdir(string path): i64 { return sys::syscall1(sys::RMDIR, cstr(path) as i64); }
+
+private struct Timespec {
+    i64 sec;
+    i64 nsec;
+}
+
+private function clock(i64 which): i64 {
+    Timespec ts;
+    sys::syscall2(sys::CLOCK_GETTIME, which, (&ts) as i64);
+    return ts->sec * 1000000000 + ts->nsec;
+}
+
+// Nanoseconds on a clock that only goes forward.
+function monotonic_ns(): i64 { return clock(1); }
+
+// Nanoseconds since 1970-01-01 UTC.
+function realtime_ns(): i64 { return clock(0); }
+
+function sleep_ns(i64 ns): void {
+    Timespec ts = Timespec { sec: ns / 1000000000, nsec: ns % 1000000000 };
+    sys::syscall2(sys::NANOSLEEP, (&ts) as i64, 0);
+}
+
+function pid(): int { return sys::syscall0(sys::GETPID) as int; }
+
+// Fills p[0..n) from the OS's cryptographic random generator.
+function random(u8* p, usize n): void {
+    usize got = 0;
+    while (got < n) {
+        i64 r = sys::syscall3(sys::GETRANDOM, (p + got) as i64, (n - got) as i64, 0);
+        if (r > 0) {
+            got += r as usize;
+        } else if (r != -4) {   // EINTR: try again
+            __rt_panic("panic: getrandom failed\n");
+        }
+    }
+}

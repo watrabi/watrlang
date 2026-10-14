@@ -67,6 +67,7 @@ usize __gc_stack_cap;
 u64 __rt_stack_base;           // set by the entry code before main runs
 u64 __rt_argc;                 // the command line, also set by the entry code (std/os)
 u8** __rt_argv;
+u8** __rt_envp;                // the environment: NAME=value strings, then null
 bool __rt_gc_stress;           // collect at every allocation (watrc reads WATR_GC_STRESS)
 
 function __gc_bit(__RtChunk* c, u8* h): u64* {

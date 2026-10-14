@@ -10,6 +10,7 @@
 #include "prelude.h"
 #include "codegen.h"
 #include "sema.h"
+#include "target.h"
 #include "types.h"
 #include "toolchain.h"
 
@@ -25,6 +26,8 @@ static void usage(FILE *out) {
           "  -o <path>    write the output here\n"
           "  -S           write assembly (.s) instead of an executable\n"
           "  -c           write an object file (.o) instead of an executable\n"
+          "  --target <t> the platform to compile for: x86_64-linux (the default)\n"
+          "               or x86_64-windows (a .exe, built with mingw-w64)\n"
           "  -O0, -O1     optimization: -O1 (the default) allocates registers;\n"
           "               -O0 is a simple stack machine, for comparison\n"
           "  --freestanding  no C library, no runtime heap, no entry point: for\n"
@@ -137,6 +140,17 @@ int main(int argc, char **argv) {
             emit_obj = 1;
         } else if (strcmp(arg, "-O0") == 0 || strcmp(arg, "-O1") == 0 || strcmp(arg, "-O") == 0) {
             opt = arg[2] == '0' ? 0 : 1;
+        } else if (strcmp(arg, "--target") == 0 || strncmp(arg, "--target=", 9) == 0) {
+            const char *name = arg[8] == '=' ? arg + 9 : i + 1 < argc ? argv[++i] : NULL;
+            if (!name) {
+                fprintf(stderr, "error: `--target` needs a platform: %s\n", target_names());
+                return 2;
+            }
+            watr_target = target_find(name);
+            if (!watr_target) {
+                fprintf(stderr, "error: unknown target `%s`; the targets are %s\n", name, target_names());
+                return 2;
+            }
         } else if (strcmp(arg, "--freestanding") == 0) {
             freestanding = true;
         } else if (strcmp(arg, "-T") == 0 || strcmp(arg, "-e") == 0) {
@@ -169,6 +183,10 @@ int main(int argc, char **argv) {
 
     if (!path) {
         usage(stderr);
+        return 2;
+    }
+    if (freestanding && watr_target->os != OS_LINUX) {
+        fprintf(stderr, "error: `--freestanding` builds ELF files, so it needs `--target x86_64-linux`\n");
         return 2;
     }
     if ((linker_script || entry) && !freestanding) {
@@ -226,12 +244,12 @@ int main(int argc, char **argv) {
             codegen_x64(m_root, &prog, asm_out);
             fclose(asm_out);
 
-            char *def = default_output(path, emit_asm ? ".s" : emit_obj ? ".o" : "");
+            char *def = default_output(path, emit_asm ? ".s" : emit_obj ? ".o" : watr_target->exe_suffix);
             const char *dest = out_path ? out_path : def;
             BuildOptions opts = {0};
             opts.mode = emit_obj ? BUILD_OBJECT
                         : freestanding ? BUILD_FREESTANDING
-                        : prog.needs_libc || nlink > 0 ? BUILD_LIBC
+                        : prog.needs_libc || nlink > 0 || target_is_windows() ? BUILD_LIBC
                                                         : BUILD_STATIC;
             opts.verbose = verbose;
             opts.linker_script = linker_script;

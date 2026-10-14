@@ -5,7 +5,8 @@ to write real programs, all the way down to an operating system kernel.
 
 - **Compiler:** written in plain C99, no dependencies (`watrc`)
 - **Output:** x86-64 assembly (GNU `as`, Intel syntax), linked with `ld`
-- **Targets:** Linux x86-64 (System V ABI), plus bare metal via `--freestanding`
+- **Targets:** Linux x86-64 (System V ABI), plus bare metal via `--freestanding`;
+  Windows x86-64 (`--target x86_64-windows`, milestone 20)
 - **Files:** `.watr`
 
 ## 1. Decisions so far
@@ -642,6 +643,40 @@ they'd mostly be noise.
 **The runtime** is a watrlang prelude (see the strings rules above) plus a
 few assembly primitives emitted by codegen.
 
+**Targets (milestone 20):** `src/target.c` names the platforms;
+`--target` picks one (the default is Linux). Every target is x86-64, so
+the backends don't change: inside a program, watrlang calls watrlang with
+the System V convention everywhere. What a target changes:
+
+- *the object format:* ELF or COFF section names and directives
+  (`section()`, `emit_func_begin()` in codegen_x64.c);
+- *the edges of the program* (codegen_win64.c on Windows): the entry point
+  is the C runtime's `main(argc, argv, envp)`; the runtime primitives call
+  msvcrt and kernel32 (`fwrite`, `VirtualAlloc`, `exit`) instead of making
+  system calls;
+- *the C ABI:* every call to an `extern` function goes through a thunk
+  that takes System V arguments and makes a Microsoft x64 call (four
+  register slots, shadow space, structs other than 1/2/4/8 bytes by
+  pointer, variadic floats duplicated into integer registers), one thunk
+  per signature. An `export` function's body gets an internal name, and
+  its public name is the reverse thunk, which also saves rsi, rdi and
+  xmm6-15 (callee-saved on Windows only). `tests/abi_fuzz.py --target
+  windows` checks both directions against mingw-w64's gcc;
+- *the standard library's OS layer:* `import "std/x"` loads
+  `std/<os>/x.watr` when the target's OS has one. `std/platform` exists in
+  `std/linux/` (system calls) and `std/windows/` (kernel32 with UTF-16
+  paths, errors mapped to errno numbers), and `std/fs`, `std/os`,
+  `std/time`, `std/rand` and `std/crypto` use only it. A module whose first
+  lines say `// targets: linux` can't be imported elsewhere (E0385);
+- *the toolchain:* GNU `as`/`ld` or the system C compiler on Linux,
+  mingw-w64's gcc for Windows (which links msvcrt, and gets an 8 MiB stack
+  committed up front since watrlang doesn't probe stack pages).
+
+A new OS needs those five things. macOS would add Mach-O directives,
+leading underscores on C symbols, and its own `std/macos/platform.watr`;
+its C ABI is System V, so it needs no thunks. Another CPU (arm64) would be
+a new backend.
+
 ## 5. Milestones
 
 Each milestone ends with tests passing and something you can run.
@@ -668,6 +703,7 @@ Each milestone ends with tests passing and something you can run.
 | 17 | Generics               | `max<T>`, `Box<T>`, `Pair<A, B>`, generic interfaces; type inference for calls |
 | 18 | Standard library       | Vec, Map, sort, str, fmt, fs, os, time, rand, sys (syscalls in watrlang) |
 | 19 | Optimizer, part 2      | folding, extended-block propagation, bounds/null check removal, inlining, devirtualization, division by constants |
+| 20 | Windows                | `--target x86_64-windows` builds .exe files (mingw-w64); Win64 ABI thunks; portable std |
 | ∞  | Self-hosting           | watrc rewritten in watrlang                               |
 
 ## 6. Settled after the first pass

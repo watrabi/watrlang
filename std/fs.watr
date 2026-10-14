@@ -1,14 +1,14 @@
-// Files, through Linux system calls. Failures come back as IoError values:
+// Files, on Linux and Windows. Failures come back as IoError values:
 //
 //     import "std/fs";
 //     string text = fs::read("notes.txt") ?? "";   // or `?` to pass the error on
 //     bool saved = fs::write("out.txt", "hello\n") ?? false;
 
-import "std/sys";
+import "std/platform";
 
 enum IoError { NotFound, Denied, Exists, IsDir, NotDir, NotEmpty, Other }
 
-// The IoError for a negative syscall result (-errno).
+// The IoError for a negative result (-errno, as std/platform returns).
 function error_of(i64 r): IoError {
     if (r == -2) { return IoError::NotFound; }
     if (r == -13 || r == -1) { return IoError::Denied; }
@@ -30,15 +30,8 @@ function describe(IoError e): string {
     return "input/output error";
 }
 
-private const i64 O_RDONLY = 0;
-private const i64 O_WRONLY = 1;
-private const i64 O_CREAT = 64;
-private const i64 O_TRUNC = 512;
-private const i64 O_APPEND = 1024;
-private const i64 O_CLOEXEC = 524288;
-
-private function open(string path, i64 flags): i64!IoError {
-    i64 fd = sys::syscall3(sys::OPEN, sys::cstr(path) as i64, flags | O_CLOEXEC, 420);   // mode 0644
+private function open(string path, int mode): i64!IoError {
+    i64 fd = platform::open(path, mode);
     if (fd < 0) {
         return error_of(fd);
     }
@@ -47,8 +40,8 @@ private function open(string path, i64 flags): i64!IoError {
 
 // The whole file as a string.
 function read(string path): string!IoError {
-    i64 fd = open(path, O_RDONLY)?;
-    defer sys::syscall1(sys::CLOSE, fd);
+    i64 fd = open(path, platform::READ)?;
+    defer platform::close(fd);
     usize cap = 4096;
     usize n = 0;
     u8* buf = __rt_alloc_bytes(cap + 1);
@@ -59,7 +52,7 @@ function read(string path): string!IoError {
             buf = bigger;
             cap = cap * 2;
         }
-        i64 got = sys::syscall3(sys::READ, fd, (buf + n) as i64, (cap - n) as i64);
+        i64 got = platform::read(fd, buf + n, cap - n);
         if (got < 0) {
             return error_of(got);
         }
@@ -74,7 +67,7 @@ function read(string path): string!IoError {
 private function write_all(i64 fd, string data): bool!IoError {
     usize done = 0;
     while (done < len(data)) {
-        i64 put = sys::syscall3(sys::WRITE, fd, (data->ptr + done) as i64, (len(data) - done) as i64);
+        i64 put = platform::write(fd, data->ptr + done, len(data) - done);
         if (put < 0) {
             return error_of(put);
         }
@@ -85,20 +78,20 @@ private function write_all(i64 fd, string data): bool!IoError {
 
 // Replaces the file's contents (creating it if needed).
 function write(string path, string data): bool!IoError {
-    i64 fd = open(path, O_WRONLY | O_CREAT | O_TRUNC)?;
-    defer sys::syscall1(sys::CLOSE, fd);
+    i64 fd = open(path, platform::WRITE)?;
+    defer platform::close(fd);
     return write_all(fd, data);
 }
 
 // Adds to the end of the file (creating it if needed).
 function append(string path, string data): bool!IoError {
-    i64 fd = open(path, O_WRONLY | O_CREAT | O_APPEND)?;
-    defer sys::syscall1(sys::CLOSE, fd);
+    i64 fd = open(path, platform::APPEND)?;
+    defer platform::close(fd);
     return write_all(fd, data);
 }
 
 function exists(string path): bool {
-    return sys::syscall2(sys::ACCESS, sys::cstr(path) as i64, 0) == 0;
+    return platform::exists(path);
 }
 
 private function check(i64 r): bool!IoError {
@@ -108,18 +101,16 @@ private function check(i64 r): bool!IoError {
     return true;
 }
 
-function remove(string path): bool!IoError { return check(sys::syscall1(sys::UNLINK, sys::cstr(path) as i64)); }
-function rename(string from, string to): bool!IoError {
-    return check(sys::syscall2(sys::RENAME, sys::cstr(from) as i64, sys::cstr(to) as i64));
-}
-function mkdir(string path): bool!IoError { return check(sys::syscall2(sys::MKDIR, sys::cstr(path) as i64, 493)); }   // 0755
-function rmdir(string path): bool!IoError { return check(sys::syscall1(sys::RMDIR, sys::cstr(path) as i64)); }
+function remove(string path): bool!IoError { return check(platform::remove(path)); }
+function rename(string from, string to): bool!IoError { return check(platform::rename(from, to)); }
+function mkdir(string path): bool!IoError { return check(platform::mkdir(path)); }
+function rmdir(string path): bool!IoError { return check(platform::rmdir(path)); }
 
 // The file's size in bytes.
 function size(string path): i64!IoError {
-    i64 fd = open(path, O_RDONLY)?;
-    defer sys::syscall1(sys::CLOSE, fd);
-    i64 end = sys::syscall3(sys::LSEEK, fd, 0, 2);   // SEEK_END
+    i64 fd = open(path, platform::READ)?;
+    defer platform::close(fd);
+    i64 end = platform::size(fd);
     if (end < 0) {
         return error_of(end);
     }

@@ -1,6 +1,8 @@
+// targets: linux
 // Linux system calls, made directly with the `syscall` instruction (no C
 // library needed). Each returns the kernel's result: a value >= 0, or
-// -errno on failure. std/fs, std/os and std/time are built on these.
+// -errno on failure. Linux only: the portable modules (std/fs, std/os,
+// std/time) go through std/platform, which uses these on Linux.
 
 function syscall0(i64 n): i64 {
     i64 r = n;

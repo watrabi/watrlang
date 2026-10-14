@@ -10,6 +10,7 @@
 #include <stdio.h>
 
 #include "codegen.h"
+#include "target.h"
 #include "vec.h"
 
 typedef struct {
@@ -53,6 +54,7 @@ typedef struct {
     PtrVec panics;          /* PanicSite*: runtime check failure messages */
     PtrVec strings;         /* StringLit*: literals for .rodata */
     PtrVec strobjs;         /* StringLit*: {ptr, len} string values for .data.rel.ro (label is the object's) */
+    PtrVec thunks;          /* Win64Thunk*: calls into C that need converting to the Win64 convention */
 } Gen;
 
 typedef enum { CLS_GPR, CLS_SSE, CLS_MEM, CLS_NONE } ValClass;
@@ -68,6 +70,13 @@ typedef struct {
 } Classification;
 
 void emit(Gen *g, const char *fmt, ...) WATR_PRINTF(2, 3);
+
+/* The target's object format (target.h). */
+typedef enum { SEC_TEXT, SEC_DATA, SEC_RODATA, SEC_BSS, SEC_RELRO } SectionKind;
+const char *section(SectionKind k);   /* the directive that switches to it */
+void emit_func_begin(Gen *g, const char *name, bool global);
+void emit_func_end(Gen *g, const char *name);
+void emit_extern_addr(Gen *g, const char *reg, const char *sym);
 int new_label(Gen *g);
 void emit_label(Gen *g, int label);
 ValClass cls(const Type *t);
@@ -79,6 +88,16 @@ int add_panic(Gen *g, const Expr *at, const char *what);
 void emit_panic_call(Gen *g, int label);
 const Field *eu_field(const Type *t, const char *name);
 void emit_virtual_call(Gen *g, const char *self, int slot, const char *iface);
+
+/* codegen_win64.c: the Windows target. Inside a program, watrlang code
+ * calls watrlang code with the System V convention, as on Linux; these
+ * convert at the edges, where C code calls in or is called. */
+const char *win64_extern_thunk(Gen *g, const Symbol *fn, const Type **types, size_t n);   /* the name to call */
+void win64_emit_thunks(Gen *g);
+void win64_emit_export_thunk(Gen *g, const Symbol *fn);
+void win64_emit_entry(Gen *g);
+void win64_emit_panic(Gen *g);
+bool win64_runtime_primitive(Gen *g, const char *name);   /* false: the portable version applies */
 
 /* opt_*.c: one function at -O1. */
 /* -O1 (opt_emit.c): prepare every function, then emit them one by one. */

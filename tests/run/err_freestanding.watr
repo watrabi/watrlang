@@ -1,4 +1,5 @@
 // watrc-flags: --freestanding
+// targets: linux
 class Box { public int v; }
 
 export function entry(): void {

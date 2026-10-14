@@ -3,5 +3,5 @@ header: 7 bytes, length 1000, flags 3
 aligned: 64 true true
 mode: Graphics 9
 checksum: 1685462677, true
-panic at tests/run/freestanding.watr:54:13: index out of bounds (array length 3)
+panic at tests/run/freestanding.watr:55:13: index out of bounds (array length 3)
 exit: 101

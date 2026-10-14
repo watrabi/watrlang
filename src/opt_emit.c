@@ -704,6 +704,7 @@ static void emit_call(Em *e, const Ins *in) {
     if (ret.memory) emit(e->g, "lea rdi, [rbp - %d]", e->f->slots[c->ret_slot].off);
     if (c->variadic) emit(e->g, "mov eax, %d", nsse);   /* vector registers used, for varargs */
     if (c->vslot) emit_virtual_call(e->g, R64[ARG_GPR[ret.memory ? 1 : 0]], c->vslot - 1, c->iface);
+    else if (c->foreign) emit(e->g, "call %s", win64_extern_thunk(e->g, c->foreign, c->types, c->n));
     else emit(e->g, "call %s", c->name);
     if (total) emit(e->g, "add rsp, %d", total);
     free(p);
@@ -981,7 +982,7 @@ static void emit_ins(Em *e, size_t i) {
     }
     case I_GOT: {
         int t = target(e, d, RAX);
-        emit(e->g, "mov %s, qword ptr [rip + %s@GOTPCREL]", R64[t], in->sym);
+        emit_extern_addr(e->g, R64[t], in->sym);
         store_int(e, d, t);
         return;
     }
@@ -1066,9 +1067,7 @@ void ir_emit_function(Fn *f) {
 
     const char *name = f->fn->asm_name;
     FILE *out = f->g->out;
-    fputc('\n', out);
-    if (f->fn->is_export) fprintf(out, "    .globl %s\n", name);
-    fprintf(out, "    .type %s, @function\n%s:\n", name, name);
+    emit_func_begin(f->g, name, f->fn->is_export && !target_is_windows());   /* Windows exports go through a thunk */
     emit(e.g, "push rbp");
     emit(e.g, "mov rbp, rsp");
     for (int k = 0; k < e.nsaved; k++) emit(e.g, "push %s", R64[e.saved[k]]);
@@ -1091,14 +1090,14 @@ void ir_emit_function(Fn *f) {
     }
     for (size_t i = 0; i < f->n; i++)
         if (i != e.skip) emit_ins(&e, i);
-    fprintf(out, "    .size %s, .-%s\n", name, name);
+    emit_func_end(f->g, name);
     free(e.uses);
 
     /* The float constants it reads. */
     bool any = false;
     for (int v = 0; v < f->nv; v++) {
         if (!f->is_imm[v] || f->vk[v] == VK_INT) continue;
-        if (!any) fputs("    .section .rodata\n", out);
+        if (!any) fprintf(out, "    %s\n", section(SEC_RODATA));
         any = true;
         if (f->vk[v] == VK_F32)
             fprintf(out, "    .p2align 2\n.LF%d_%d:\n    .long %u\n", e.serial, v, (unsigned)(uint32_t)f->imm_val[v]);
